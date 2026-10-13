@@ -140,7 +140,7 @@ PageDecider.decide(goal, elements, excerpt, history)
 decidePageAction(decision, budget, thresholds)   <- pure policy, in core
         |
         +-- act       -> BrowserProvider.act (one step)
-        +-- done      -> return to the model with the goal met
+        +-- done      -> hand back with a goal-met confidence for the model to check
         +-- escalate  -> today's path: screenshot + the bot's own model
         +-- takeover  -> request_takeover / waiting_takeover
         +-- refuse    -> budget exhausted, hand back with what is known
