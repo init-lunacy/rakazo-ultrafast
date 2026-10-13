@@ -225,6 +225,27 @@ describe("runPageDecisionChain", () => {
     expect(sent).not.toContain("fake-run-secret");
   });
 
+  // Cutting the excerpt first would leave a secret's first half unmatched.
+  it("scrubs a secret that straddles the excerpt's cut", async () => {
+    const { browser } = await onForm();
+    const decider = new FakePageDecider({ decisions: [{ goalMet: 0.99 }] });
+    await runPageDecisionChain({
+      browser,
+      decider,
+      computer,
+      context,
+      goal: "read it",
+      snapshot: {
+        url: "https://example.test/form",
+        title: "Signup",
+        tree: `${"x".repeat(3_990)}fake-run-secret`,
+        elements: [],
+      },
+      redactions: () => ["fake-run-secret"],
+    });
+    expect(decider.requests[0]?.excerpt).not.toContain("fake-");
+  });
+
   it("treats a decider that throws as an escalation", async () => {
     const { browser, snapshot } = await onForm();
     const throwing: PageDecider = {

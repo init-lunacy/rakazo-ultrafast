@@ -76,13 +76,17 @@ function pageForDecider(
   snapshot: BrowserSnapshotResult,
   secrets: string[],
 ): Pick<PageDecisionRequest, "elements" | "excerpt" | "url" | "title"> {
-  const page = {
-    elements: snapshot.elements.map(({ value: _value, ...element }) => element),
-    excerpt: snapshot.tree.replace(TREE_VALUE, "").slice(0, PAGE_DECISION_MAX_EXCERPT_CHARS),
-    url: snapshot.url,
-    title: snapshot.title,
-  };
-  return redactConnectorPayload(page, secrets) as typeof page;
+  const page = redactConnectorPayload(
+    {
+      elements: snapshot.elements.map(({ value: _value, ...element }) => element),
+      excerpt: snapshot.tree.replace(TREE_VALUE, ""),
+      url: snapshot.url,
+      title: snapshot.title,
+    },
+    secrets,
+  ) as Pick<PageDecisionRequest, "elements" | "excerpt" | "url" | "title">;
+  // Cut only after scrubbing: a secret split by the cut would no longer match.
+  return { ...page, excerpt: page.excerpt.slice(0, PAGE_DECISION_MAX_EXCERPT_CHARS) };
 }
 
 /** One viewport capture for a seeing decider, or nothing. Never throws. */
