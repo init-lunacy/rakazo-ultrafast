@@ -14,4 +14,8 @@ describe("adapter registry", () => {
     const registry = new AdapterRegistry();
     expect(() => registry.get("nope")).toThrow(/no adapter/i);
   });
+
+  it("exposes a page-decider slot", () => {
+    expect(slots.pageDecider).toBe("page-decider");
+  });
 });

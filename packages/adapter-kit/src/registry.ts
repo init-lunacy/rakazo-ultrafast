@@ -35,6 +35,7 @@ export const slots = {
   voice: "voice",
   web: "web",
   browser: "browser",
+  pageDecider: "page-decider",
   cloudAgent: "cloud-agent",
   autoReview: "auto-review",
 } as const;
