@@ -17,6 +17,7 @@ Exact values, copied from the spec and `AGENTS.md`. Every task's requirements im
 - Use top-level `import type`, never inline type imports. Reserve dynamic `import()` for necessary deferred loading.
 - Never add a provider- or model-specific environment variable when the generic connection can express the behavior. Hosted and self-hosted `systemone` differ only by `baseUrl` and key.
 - Tests are deterministic and offline by default. No test may reach the network.
+- The snapshot element cap is 240, set by the System One protocol's 255-option ceiling so any element can always be offered as a choice. Element rects are CSS pixels relative to the viewport, matching a CDP viewport capture; never the desktop screenshot's device-pixel space.
 - The decider never produces or receives text to type, and never receives a screenshot. It returns a ref and a kind only.
 - Confidence thresholds live in code as configuration with documented defaults, never as magic numbers inline at a call site: `goalMet` 0.85, `stuck` 0.85, `blocked` 0.85, candidate confidence 0.70, step budget 24, time budget 180000ms.
 - `systemone` request `state` is capped at 20000 characters; total JSON body capped at 64000 bytes, matching `MAX_JSON_BYTES` in `jev-auto-review.ts`.
@@ -35,6 +36,7 @@ Five input classes the spec implies, that a naive task-by-task reading would lea
 3. **The elements list is empty** — a page drawn entirely in canvas or a cross-origin frame. Expected: escalate to the screenshot path, not a crash and not a zero-candidate "done". Pinned in Task 2.
 4. **The decider times out or the connection drops mid-chain.** Expected: escalate, and never replay an action whose result was uncertain. Pinned in Task 5 (adapter-side timeout) and Task 9 (chain-side `uncertain` handling).
 5. **`goal` arrives empty, whitespace, or absurdly long.** Expected: treated as absent so the decider is skipped and behavior is exactly today's, rather than sending a junk goal to a third party. Pinned in Task 9.
+6. **A point arrives but no element carries a rect** — a bot on a computer image that predates geometry, which will be common in a mixed fleet while images roll out. Expected: no candidate, escalate, no crash; and a provider with no `screenshot()` at all must simply lose the accelerator. Pinned in Task 5b.
 
 ---
 
@@ -67,6 +69,12 @@ Five input classes the spec implies, that a naive task-by-task reading would lea
 | File | Edit |
 |---|---|
 | `packages/adapter-kit/src/registry.ts` | one `slots` entry: `pageDecider: "page-decider"` |
+| `packages/adapter-kit/src/types.ts` | `rect?` on `BrowserSnapshotNode`, `geometry` capability, screenshot shapes, `PageBrowserCommand` variant |
+| `packages/adapter-kit/src/interfaces.ts` | one optional `BrowserProvider.screenshot?` |
+| `infra/sandboxes/computer/rakazo-page-browser` | report rects, cap 240, `screenshot` command |
+| `packages/adapters/src/computer-browser.ts` | `screenshot()` via the page-browser contract |
+| `packages/adapters/src/fake-browser.ts` | deterministic rects and a fixed capture |
+| `packages/adapters/src/browser-emulator.ts` | deterministic rects and a fixed capture |
 | `packages/adapter-kit/src/index.ts` | export `./page-decider.js` |
 | `packages/core/src/index.ts` | export `./page-decision-policy.js` |
 | `packages/adapters/src/index.ts` | export the six new adapter modules |
@@ -218,6 +226,261 @@ Expected: no type errors.
 ```bash
 git add packages/adapter-kit/src/page-decider.ts packages/adapter-kit/src/registry.ts packages/adapter-kit/src/index.ts packages/adapter-kit/src/registry.test.ts
 git commit -m "feat(adapter-kit): add the page-decider contract and slot"
+```
+
+---
+
+### Task 1b: Element geometry and a viewport screenshot
+
+The page browser gains two optional capabilities the vision backend needs: where each element is, and a screenshot in the same coordinate space. Both are additive, and a provider without them loses the accelerator rather than the browser.
+
+**Files:**
+- Modify: `packages/adapter-kit/src/types.ts`, `packages/adapter-kit/src/interfaces.ts`, `infra/sandboxes/computer/rakazo-page-browser`, `packages/adapters/src/computer-browser.ts`, `packages/adapters/src/fake-browser.ts`, `packages/adapters/src/browser-emulator.ts`
+- Test: `packages/adapters/src/browser-conformance.test.ts`
+
+**Interfaces:**
+- Produces: `BrowserSnapshotNode.rect?`, `BrowserScreenshotRequest`, `BrowserScreenshotResult`, `BrowserProvider.screenshot?`, `PageBrowserCommand` variant `{ command: "screenshot" }`, and `BrowserCapabilities.geometry`. Tasks 5b and 9 consume all of these.
+
+- [ ] **Step 1: Write the failing conformance assertions**
+
+In `packages/adapters/src/browser-conformance.test.ts`, extend `assertBrowserConformance` after the existing snapshot assertions:
+
+```typescript
+  // Geometry is optional: a provider on an older computer image reports none.
+  // When it does report a rect, the rect must be usable.
+  if (desc.capabilities.geometry) {
+    const withRect = snap.elements.find((element) => element.rect);
+    expect(withRect).toBeTruthy();
+    expect(withRect!.rect!.width).toBeGreaterThan(0);
+    expect(withRect!.rect!.height).toBeGreaterThan(0);
+    expect(withRect!.rect!.x).toBeGreaterThanOrEqual(0);
+    expect(withRect!.rect!.y).toBeGreaterThanOrEqual(0);
+  }
+
+  // Likewise the capture: present or absent, never malformed.
+  if (provider.screenshot) {
+    const shot = await provider.screenshot(computer, {}, context);
+    if (!shot.fallback && !shot.error) {
+      expect(shot.data.length).toBeGreaterThan(0);
+      expect(shot.mimeType).toMatch(/^image\//);
+      expect(shot.scale).toBeGreaterThan(0);
+    }
+  }
+```
+
+Add `expect(desc.capabilities.geometry).toBeTypeOf("boolean");` beside the existing `page`/`refs` assertions.
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `pnpm vitest run packages/adapters/src/browser-conformance.test.ts`
+Expected: FAIL — `capabilities.geometry` is `undefined`, not a boolean.
+
+- [ ] **Step 3: Add the contract**
+
+In `packages/adapter-kit/src/types.ts`, add `rect` to `BrowserSnapshotNode`:
+
+```typescript
+export interface BrowserSnapshotNode {
+  /** Stable element ref for browser_act (e.g. e12). */
+  ref: string;
+  role: string;
+  name: string;
+  value?: string;
+  tag?: string;
+  /**
+   * CSS pixels relative to the viewport, matching a CDP viewport capture's
+   * coordinate space. Absent when the computer image predates geometry.
+   */
+  rect?: { x: number; y: number; width: number; height: number };
+}
+```
+
+Add `geometry` to `BrowserCapabilities`:
+
+```typescript
+  /** True when snapshot elements carry a rect. */
+  geometry: boolean;
+```
+
+Add the screenshot shapes next to the other browser types:
+
+```typescript
+export interface BrowserScreenshotRequest {
+  signal?: AbortSignal;
+}
+
+export interface BrowserScreenshotResult {
+  /** Base64 image bytes, no data: prefix. */
+  data: string;
+  mimeType: string;
+  /**
+   * Device pixels per CSS pixel in this capture, so a consumer can convert
+   * between image coordinates and element rects.
+   */
+  scale: number;
+  fallback?: "computer_act";
+  error?: string;
+}
+```
+
+Extend the page-browser command union:
+
+```typescript
+export type PageBrowserCommand =
+  | { command: "navigate"; url: string }
+  | { command: "snapshot" }
+  | { command: "screenshot" }
+  | { command: "act"; actions: BrowserActStep[] };
+
+export type PageBrowserResult = Partial<
+  BrowserSnapshotResult & BrowserActResult & BrowserScreenshotResult
+> & { ok: boolean };
+```
+
+In `packages/adapter-kit/src/interfaces.ts`, add one optional method to `BrowserProvider`:
+
+```typescript
+  /**
+   * A viewport capture in the same coordinate space as snapshot rects.
+   *
+   * Optional: a provider whose computer image predates it simply omits it, and
+   * a caller needing pixels escalates instead. Deliberately not the desktop
+   * observe path — that is the full screen in device pixels, and converting it
+   * to viewport CSS pixels needs a window offset and a device pixel ratio that
+   * are unreliable under X11.
+   */
+  screenshot?(
+    computer: ComputerRef,
+    request: BrowserScreenshotRequest,
+    context: AdapterContext,
+  ): Promise<BrowserScreenshotResult>;
+```
+
+- [ ] **Step 4: Report rects from the in-computer helper, and raise the cap**
+
+In `infra/sandboxes/computer/rakazo-page-browser`, `visible()` already computes the rect and discards it (line ~359). Return it from `snapshot()` instead. Inside the element loop, add to the pushed object:
+
+```javascript
+          rect: (() => {
+            const r = el.getBoundingClientRect();
+            return {
+              x: Math.round(r.x),
+              y: Math.round(r.y),
+              width: Math.round(r.width),
+              height: Math.round(r.height),
+            };
+          })(),
+```
+
+Raise the cap in the same loop:
+
+```javascript
+        if (elements.length >= 240) break;
+```
+
+240 matches the reference implementation and stays under the System One protocol's 255-option ceiling, so an element can always be offered as a choice option.
+
+- [ ] **Step 5: Add the screenshot command to the helper**
+
+Add a `screenshot` function beside the existing `snapshot`, using the CDP session the helper already holds:
+
+```python
+def screenshot(client, session_id):
+    # Page.captureScreenshot returns the viewport, in the same coordinate
+    # space as getBoundingClientRect, so no transform is needed.
+    metrics = client.call("Page.getLayoutMetrics", session_id=session_id)
+    scale = (metrics.get("visualViewport") or {}).get("scale") or 1
+    shot = client.call(
+        "Page.captureScreenshot",
+        {"format": "png", "captureBeyondViewport": False},
+        session_id=session_id,
+        timeout_s=15.0,
+    )
+    return {
+        "ok": True,
+        "data": shot.get("data") or "",
+        "mimeType": "image/png",
+        "scale": scale,
+    }
+```
+
+Add the dispatch branch beside the others (line ~670):
+
+```python
+            elif command == "screenshot":
+                result = screenshot(client, session_id)
+```
+
+- [ ] **Step 6: Thread it through the computer provider**
+
+In `packages/adapters/src/computer-browser.ts`, add a `screenshot` method that issues `{ command: "screenshot" }` through the same `pageBrowser` contract and lease checks the existing methods use, and set `geometry: true` in its `describe()` capabilities. Follow the existing `snapshot` method exactly — same lease handling, same `fallback: "computer_act"` on a provider that does not implement `pageBrowser`.
+
+In `packages/adapters/src/fake-browser.ts` and `packages/adapters/src/browser-emulator.ts`, set `geometry: true` and have their in-process snapshot assign each element a deterministic non-overlapping rect, so offline tests can exercise point mapping:
+
+```typescript
+/** Deterministic stacked boxes: offline point mapping needs real geometry. */
+function fakeRect(index: number) {
+  return { x: 0, y: index * 24, width: 320, height: 24 };
+}
+```
+
+Give both providers a `screenshot()` returning a fixed 1×1 PNG with `scale: 1`, plus a mutable `noScreenshot` flag beside the existing `navigateError` / `snapshotError` / `actError` / `forceFallback` ones, so a test can model a provider whose computer image predates the capture:
+
+```typescript
+  /** When set, this provider reports no capture at all (older image). */
+  noScreenshot?: boolean;
+
+  async screenshot(): Promise<BrowserScreenshotResult> {
+    if (this.noScreenshot) {
+      return {
+        data: "",
+        mimeType: "image/png",
+        scale: 1,
+        fallback: "computer_act",
+        error: "This computer has no page-browser capture.",
+      };
+    }
+    if (this.forceFallback) {
+      return {
+        data: "",
+        mimeType: "image/png",
+        scale: 1,
+        fallback: "computer_act",
+        error: this.forceFallback,
+      };
+    }
+    return {
+      data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==",
+      mimeType: "image/png",
+      scale: 1,
+    };
+  }
+```
+
+`noScreenshot` returns a `fallback` rather than removing the method, because the real mixed-fleet case is a provider whose helper does not implement the command — which surfaces as `fallback: "computer_act"`, exactly what `captureViewport` already treats as "no pixels available".
+
+- [ ] **Step 7: Run the browser suites**
+
+Run: `pnpm vitest run packages/adapters/src/browser-conformance.test.ts packages/adapters/src/computer-browser.test.ts packages/adapters/src/browser-tools.test.ts packages/adapters/src/page-browser-login-fill.test.ts`
+Expected: PASS. Existing assertions must not need editing — `rect` and `screenshot` are additive and nothing reads them yet.
+
+- [ ] **Step 8: Rebuild the computer image**
+
+Run: `pnpm sandbox:build`
+Expected: the image builds with the updated helper.
+
+Then confirm the helper still parses and dispatches, which catches a Python syntax error without needing a running container:
+
+Run: `python3 -c "import ast,sys; ast.parse(open('infra/sandboxes/computer/rakazo-page-browser').read()); print('helper parses')"`
+Expected: `helper parses`
+
+E2B, Daytona and Box ship their own images. Until those carry the updated helper they report no `rect` and no screenshot, the vision backend cannot run on them, and the policy escalates — today's behavior. Say this in the PR description rather than leaving it to be discovered.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add packages/adapter-kit/src/types.ts packages/adapter-kit/src/interfaces.ts infra/sandboxes/computer/rakazo-page-browser packages/adapters/src/computer-browser.ts packages/adapters/src/fake-browser.ts packages/adapters/src/browser-emulator.ts packages/adapters/src/browser-conformance.test.ts
+git commit -m "feat(browser): report element geometry and a viewport screenshot"
 ```
 
 ---
@@ -930,10 +1193,12 @@ Create `packages/adapters/src/model-page-decider.ts`:
 import type {
   AdapterContext,
   AdapterDescriptor,
+  BrowserSnapshotNode,
   ComputerRef,
   PageDecider,
   PageDeciderCapabilities,
   PageDecision,
+  PageDecisionCandidate,
   PageDecisionRequest,
 } from "@rakazo/adapter-kit";
 import { z } from "zod";
@@ -960,6 +1225,14 @@ const answerSchema = z.object({
       }),
     )
     .default([]),
+  point: z
+    .object({
+      x: z.number(),
+      y: z.number(),
+      kind: z.enum(["click", "fill", "type"]),
+      confidence: z.number(),
+    })
+    .optional(),
   goalMet: z.number().default(0),
   stuck: z.number().default(0),
   blocked: z.number().default(0),
@@ -979,6 +1252,18 @@ const RESPONSE_SCHEMA: Record<string, unknown> = {
         },
         required: ["ref", "kind", "confidence"],
       },
+    },
+    // Only a vision backend fills this in, and only when no listed element
+    // fits. The text backends leave it out and nothing reads it.
+    point: {
+      type: "object",
+      properties: {
+        x: { type: "number" },
+        y: { type: "number" },
+        kind: { type: "string", enum: ["click", "fill", "type"] },
+        confidence: { type: "number" },
+      },
+      required: ["x", "y", "kind", "confidence"],
     },
     goalMet: { type: "number" },
     stuck: { type: "number" },
@@ -1780,27 +2065,176 @@ In `packages/adapters/src/model-page-decider.ts`, rename and export the three co
 export const PAGE_DECISION_SYSTEM = SYSTEM;
 export const PAGE_DECISION_RESPONSE_SCHEMA = RESPONSE_SCHEMA;
 
-/** Validate a decision answer and drop any ref that was not offered. */
+/**
+ * Validate a decision answer, drop any ref that was not offered, and map a
+ * point onto a ref when the model pointed instead of choosing.
+ *
+ * Mapping here rather than in the chain is what keeps coordinates out of the
+ * `PageDecider` contract: the policy only ever sees refs, so geometry stays an
+ * implementation detail of the backends that have it.
+ */
 export function parsePageDecision(
   raw: unknown,
-  offeredRefs: readonly string[],
+  elements: readonly BrowserSnapshotNode[],
 ): PageDecision | { error: string } {
   const parsed = answerSchema.safeParse(raw);
   if (!parsed.success) return { error: "The decider model returned no decision." };
-  const offered = new Set(offeredRefs);
+
+  const offered = new Set(elements.map((element) => element.ref));
+  const candidates: PageDecisionCandidate[] = parsed.data.candidates
+    .filter((candidate) => offered.has(candidate.ref))
+    .map((candidate) => ({ ...candidate, source: "list" as const }));
+
+  // Fall back to the point only when the list produced nothing usable, so a
+  // confident named element is never overridden by a coordinate.
+  if (candidates.length === 0 && parsed.data.point) {
+    const hit = elementAtPoint(elements, parsed.data.point.x, parsed.data.point.y);
+    if (hit) {
+      candidates.push({
+        ref: hit.ref,
+        kind: parsed.data.point.kind,
+        confidence: parsed.data.point.confidence,
+        source: "point",
+      });
+    }
+    // A point that maps to nothing yields no candidate. The policy escalates,
+    // which is today's behavior; the chain never clicks a bare coordinate.
+  }
+
   return {
-    candidates: parsed.data.candidates.filter((candidate) => offered.has(candidate.ref)),
+    candidates,
     goalMet: parsed.data.goalMet,
     stuck: parsed.data.stuck,
     blocked: parsed.data.blocked,
   };
 }
+
+const POINT_TOLERANCE_PX = 12;
+
+/**
+ * The smallest element containing the point, else the nearest within a small
+ * tolerance. Smallest-first matters because interactive elements nest: a point
+ * inside a button inside a card should resolve to the button.
+ */
+export function elementAtPoint(
+  elements: readonly BrowserSnapshotNode[],
+  x: number,
+  y: number,
+): BrowserSnapshotNode | undefined {
+  const withRect = elements.filter(
+    (element): element is BrowserSnapshotNode & { rect: NonNullable<BrowserSnapshotNode["rect"]> } =>
+      Boolean(element.rect),
+  );
+  if (withRect.length === 0) return undefined;
+
+  const containing = withRect.filter(
+    (element) =>
+      x >= element.rect.x &&
+      x <= element.rect.x + element.rect.width &&
+      y >= element.rect.y &&
+      y <= element.rect.y + element.rect.height,
+  );
+  if (containing.length > 0) {
+    return containing.reduce((a, b) =>
+      b.rect.width * b.rect.height < a.rect.width * a.rect.height ? b : a,
+    );
+  }
+
+  let best: { element: BrowserSnapshotNode; distance: number } | undefined;
+  for (const element of withRect) {
+    const dx = Math.max(element.rect.x - x, 0, x - (element.rect.x + element.rect.width));
+    const dy = Math.max(element.rect.y - y, 0, y - (element.rect.y + element.rect.height));
+    const distance = Math.hypot(dx, dy);
+    if (distance <= POINT_TOLERANCE_PX && (!best || distance < best.distance)) {
+      best = { element, distance };
+    }
+  }
+  return best?.element;
+}
 ```
 
-Then rewrite `ModelPageDecider.decide`'s parsing block to call `parsePageDecision(raw, request.elements.map((e) => e.ref))` and return its result, so the two backends cannot drift.
+Then rewrite `ModelPageDecider.decide`'s parsing block to call `parsePageDecision(raw, request.elements)` and return its result, so the two backends cannot drift. The `model` backend never emits a `point` — it is not given a screenshot — so that branch simply never fires for it.
 
 Run: `pnpm vitest run packages/adapters/src/model-page-decider.test.ts`
-Expected: PASS unchanged — this is a pure extraction.
+Expected: PASS unchanged — the `model` backend emits no `point`, so only the list branch runs for it.
+
+- [ ] **Step 1b: Test the point mapping**
+
+Append to `packages/adapters/src/model-page-decider.test.ts`:
+
+```typescript
+import { elementAtPoint, parsePageDecision } from "./model-page-decider.js";
+
+const boxes = [
+  { ref: "e1", role: "group", name: "Card", rect: { x: 0, y: 0, width: 300, height: 200 } },
+  { ref: "e2", role: "button", name: "Continue", rect: { x: 20, y: 150, width: 100, height: 30 } },
+  { ref: "e3", role: "textbox", name: "Email", rect: { x: 20, y: 60, width: 200, height: 24 } },
+];
+
+describe("elementAtPoint", () => {
+  // Interactive elements nest, so a point inside a button inside a card must
+  // resolve to the button, not the card.
+  it("prefers the smallest containing element", () => {
+    expect(elementAtPoint(boxes, 60, 160)?.ref).toBe("e2");
+  });
+
+  it("snaps to the nearest element just outside a rect", () => {
+    expect(elementAtPoint(boxes, 20, 55)?.ref).toBe("e3");
+  });
+
+  it("returns nothing when the point is far from everything", () => {
+    expect(elementAtPoint(boxes, 900, 900)).toBeUndefined();
+  });
+
+  // Review Focus 6: a computer image that predates geometry reports no rects.
+  it("returns nothing when no element carries a rect", () => {
+    expect(elementAtPoint([{ ref: "e1", role: "button", name: "Go" }], 10, 10)).toBeUndefined();
+  });
+});
+
+describe("parsePageDecision point fallback", () => {
+  it("maps a point onto a ref when the list is empty", () => {
+    const result = parsePageDecision(
+      { candidates: [], point: { x: 60, y: 160, kind: "click", confidence: 0.8 }, goalMet: 0, stuck: 0, blocked: 0 },
+      boxes,
+    );
+    expect(result).toEqual({
+      candidates: [{ ref: "e2", kind: "click", confidence: 0.8, source: "point" }],
+      goalMet: 0,
+      stuck: 0,
+      blocked: 0,
+    });
+  });
+
+  // A confident named element must never be overridden by a coordinate.
+  it("ignores the point when the list already produced a candidate", () => {
+    const result = parsePageDecision(
+      {
+        candidates: [{ ref: "e3", kind: "fill", confidence: 0.9 }],
+        point: { x: 60, y: 160, kind: "click", confidence: 0.99 },
+        goalMet: 0,
+        stuck: 0,
+        blocked: 0,
+      },
+      boxes,
+    );
+    expect(result).toMatchObject({
+      candidates: [{ ref: "e3", kind: "fill", confidence: 0.9, source: "list" }],
+    });
+  });
+
+  it("yields no candidate when the point maps to nothing", () => {
+    const result = parsePageDecision(
+      { candidates: [], point: { x: 900, y: 900, kind: "click", confidence: 0.99 }, goalMet: 0, stuck: 0, blocked: 0 },
+      boxes,
+    );
+    expect(result).toMatchObject({ candidates: [] });
+  });
+});
+```
+
+Run: `pnpm vitest run packages/adapters/src/model-page-decider.test.ts`
+Expected: PASS, all seven new cases.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -1897,6 +2331,49 @@ describe("VisionPageDecider", () => {
     expect(decision.candidates).toEqual([]);
   });
 
+  // Review Focus 6: a mixed fleet means some bots report no geometry at all.
+  it("yields no candidate when the model points but nothing has a rect", async () => {
+    const decider = new VisionPageDecider({
+      baseUrl: "https://vision.example.test",
+      fetch: completion({
+        candidates: [],
+        point: { x: 10, y: 10, kind: "click", confidence: 0.99 },
+        goalMet: 0,
+        stuck: 0,
+        blocked: 0,
+      }),
+    });
+    const decision = await decider.decide(computer, request, context);
+    expect(decision.candidates).toEqual([]);
+    expect(decision.error).toBeUndefined();
+  });
+
+  it("maps a point onto a ref when the elements carry rects", async () => {
+    const decider = new VisionPageDecider({
+      baseUrl: "https://vision.example.test",
+      fetch: completion({
+        candidates: [],
+        point: { x: 30, y: 10, kind: "click", confidence: 0.8 },
+        goalMet: 0,
+        stuck: 0,
+        blocked: 0,
+      }),
+    });
+    const decision = await decider.decide(
+      computer,
+      {
+        ...request,
+        elements: [
+          { ref: "e1", role: "button", name: "Continue", rect: { x: 0, y: 0, width: 80, height: 24 } },
+        ],
+      },
+      context,
+    );
+    expect(decision.candidates).toEqual([
+      { ref: "e1", kind: "click", confidence: 0.8, source: "point" },
+    ]);
+  });
+
   it("reports an error on a non-OK status", async () => {
     const decider = new VisionPageDecider({
       baseUrl: "https://vision.example.test",
@@ -1946,6 +2423,14 @@ import { readBodyCapped } from "./web-ssrf.js";
 const DEFAULT_TIMEOUT_MS = 20_000;
 const MAX_JSON_BYTES = 64_000;
 const MAX_ELEMENTS = 240;
+
+const VISION_POINT_SYSTEM = [
+  "Each element also carries a rect in CSS pixels relative to the viewport,",
+  "matching this screenshot's coordinate space.",
+  "If a listed element fits the goal, name it in candidates.",
+  "Only if none fits, set point to the x and y you would click.",
+  "Never set both.",
+].join(" ");
 
 export interface VisionPageDeciderOptions {
   baseUrl: string;
@@ -2025,7 +2510,10 @@ export class VisionPageDecider implements PageDecider {
             json_schema: { name: "page_decision", schema: PAGE_DECISION_RESPONSE_SCHEMA },
           },
           messages: [
-            { role: "system", content: PAGE_DECISION_SYSTEM },
+            // The shared prompt covers the list pick. Only a vision backend can
+            // point, so that instruction is appended here instead of polluting
+            // the prompt the text backends also use.
+            { role: "system", content: `${PAGE_DECISION_SYSTEM} ${VISION_POINT_SYSTEM}` },
             {
               role: "user",
               content: [
@@ -2074,10 +2562,7 @@ export class VisionPageDecider implements PageDecider {
       return { ...EMPTY, error: "The vision decider returned no decision." };
     }
 
-    const parsed = parsePageDecision(
-      content,
-      elements.map((element) => element.ref),
-    );
+    const parsed = parsePageDecision(content, elements);
     return "error" in parsed ? { ...EMPTY, error: parsed.error } : parsed;
   }
 }
@@ -2791,6 +3276,38 @@ describe("runPageDecisionChain", () => {
     expect(result.outcome).toBe("takeover");
   });
 
+  // Review Focus 6, provider half: no capture means no accelerator, not a crash.
+  it("escalates when a vision decider has no screenshot source", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    await browser.navigate(computer, { url: "https://example.test/form" }, context);
+    const snapshot = await browser.snapshot(computer, {}, context);
+    // Simulate a provider on a computer image that predates the capture.
+    browser.noScreenshot = true;
+
+    const decider = new FakePageDecider({ decisions: [{ candidates: [] }] });
+    // A vision-declaring decider that is never given pixels must not act.
+    const visionLike = {
+      describe: () => ({
+        ...decider.describe(),
+        capabilities: { ...decider.describe().capabilities, vision: true },
+      }),
+      decide: decider.decide.bind(decider),
+    };
+
+    const result = await runPageDecisionChain({
+      browser,
+      decider: visionLike,
+      computer,
+      context,
+      goal: "press continue",
+      snapshot,
+    });
+
+    expect(result.outcome).toBe("escalate");
+    expect(result.steps).toBe(0);
+    expect(decider.requests[0]?.screenshot).toBeUndefined();
+  });
+
   // The spec requires logging the outcome, reason and scores, and never page
   // text, element names, or a URL beyond its origin.
   it("logs the decision without leaking page content", async () => {
@@ -2885,6 +3402,28 @@ const MAX_EXCERPT_CHARS = 4_000;
  * means "absent", which skips the decider entirely and leaves behavior exactly
  * as it was before this feature existed.
  */
+/**
+ * One viewport capture for a vision decider, or undefined when this provider
+ * cannot take one. Never throws: a missing screenshot is an escalation, not an
+ * error the caller has to handle.
+ */
+async function captureViewport(
+  input: PageDecisionChainInput,
+): Promise<{ data: string; mimeType: string; scale?: number } | undefined> {
+  if (!input.browser.screenshot) return undefined;
+  try {
+    const shot = await input.browser.screenshot(
+      input.computer,
+      { signal: input.context.signal },
+      input.context,
+    );
+    if (shot.fallback || shot.error || !shot.data) return undefined;
+    return { data: shot.data, mimeType: shot.mimeType, scale: shot.scale };
+  } catch {
+    return undefined;
+  }
+}
+
 export function normalizeGoal(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -2918,15 +3457,6 @@ export interface PageDecisionChainInput {
   thresholds?: PageDecisionThresholds;
   now?: () => number;
   log?: (event: PageDecisionLogEvent) => void;
-  /**
-   * Called once per step, and only when the decider declares `vision`.
-   *
-   * `BrowserProvider` has no screenshot method — pixels come from the
-   * computer's observe path — so the source is injected rather than reached
-   * for here. A text-only decider never triggers it, which is what keeps the
-   * cheap path free of a screen capture.
-   */
-  screenshot?: () => Promise<{ data: string; mimeType: string } | undefined>;
 }
 
 export interface PageDecisionChainResult {
@@ -2955,7 +3485,10 @@ export async function runPageDecisionChain(
   let steps = 0;
 
   for (;;) {
-    const screenshot = needsPixels ? await input.screenshot?.() : undefined;
+    // Pixels come from the page browser's own viewport capture, so they share
+    // the rects' coordinate space. A provider without it yields undefined and
+    // the vision adapter reports that it cannot decide, which escalates.
+    const screenshot = needsPixels ? await captureViewport(input) : undefined;
     const decision = await input.decider.decide(
       input.computer,
       {
@@ -3084,8 +3617,6 @@ Leave both `required` arrays unchanged — `goal` is optional, and its absence m
 ```typescript
 export interface BrowserToolDeciderOptions {
   decider?: PageDecider;
-  /** Supplied by the executor, which owns the computer's observe path. */
-  deciderScreenshot?: () => Promise<{ data: string; mimeType: string } | undefined>;
 }
 
 // browserNavigateFromTool: append, never insert.
@@ -3131,7 +3662,6 @@ async function chainForGoal(
     context,
     goal,
     snapshot,
-    screenshot: options.deciderScreenshot,
   });
 }
 
@@ -3537,8 +4067,6 @@ export async function replayPageDeciderCase(
     context,
     goal: fixture.goal,
     snapshot,
-    // Only the vision backend asks for this; the others never trigger it.
-    screenshot: async () => ({ data: "aGk=", mimeType: "image/png" }),
   });
   return { ...result, deciderCalls };
 }
