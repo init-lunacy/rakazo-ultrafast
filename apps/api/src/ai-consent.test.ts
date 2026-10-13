@@ -112,6 +112,48 @@ describe("consent grants", () => {
       orderBy: { position: "asc" },
     });
   });
+  it("discloses a bot's page decider as a model recipient until it is allowed", async () => {
+    const { deps, actor } = setup();
+    deps.env.agentRuntime = "pi";
+    vi.mocked(deps.prisma.bot.findMany).mockResolvedValue([
+      {
+        modelProvider: null,
+        modelId: null,
+        thinkingLevel: null,
+        pageDeciderProvider: "anthropic",
+        pageDeciderModel: "claude-haiku-4-5",
+      },
+    ] as never);
+    vi.mocked(deps.prisma.userModelCredential.findMany).mockResolvedValue([
+      {
+        id: "decider-credential",
+        userId: actor.userId,
+        provider: "anthropic",
+        label: "fixture",
+        secretId: "decider-secret",
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
+      },
+    ] as never);
+
+    const status = await aiConsentStatus(deps, actor, { uses: ["model"] });
+
+    expect(status.recipients).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Anthropic",
+          detail: "claude-haiku-4-5",
+          use: "model",
+          allowed: false,
+        }),
+      ]),
+    );
+    expect(deps.prisma.bot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ pageDeciderProvider: true, pageDeciderModel: true }),
+      }),
+    );
+  });
   it("discloses only the selected voice provider before a voice action", async () => {
     const { deps, actor } = setup();
     vi.mocked(deps.prisma.spaceVoicePreference.findMany).mockResolvedValue([

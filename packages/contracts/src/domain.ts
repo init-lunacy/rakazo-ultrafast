@@ -74,6 +74,8 @@ export const BotSchema = z.object({
   autoSpeak: z.boolean(),
   modelProvider: z.string().nullable(),
   modelId: z.string().nullable(),
+  pageDeciderProvider: z.string().nullable(),
+  pageDeciderModel: z.string().nullable(),
   thinkingLevel: ThinkingLevelSchema.nullable(),
   teamChatAmbientEnabled: z.boolean(),
   teamChatRules: z.string(),
@@ -342,12 +344,25 @@ export const UpdateBotInput = z
     autoSpeak: z.boolean().optional(),
     modelProvider: z.string().trim().min(1).max(80).nullable().optional(),
     modelId: z.string().trim().min(1).max(200).nullable().optional(),
+    pageDeciderProvider: z.string().trim().min(1).max(80).nullable().optional(),
+    pageDeciderModel: z.string().trim().min(1).max(200).nullable().optional(),
     thinkingLevel: ThinkingLevelSchema.nullable().optional(),
     teamChatAmbientEnabled: z.boolean().optional(),
     teamChatRules: z.string().max(TEAM_CHAT_RULES_MAX_LENGTH).optional(),
     disabledBuiltinTools: DisabledBuiltinToolsSchema.optional(),
   })
   .superRefine((value, ctx) => {
+    // Before the model check, which returns early when the model is not updated.
+    const deciderProvider =
+      value.pageDeciderProvider !== undefined && value.pageDeciderProvider !== null;
+    const deciderModel = value.pageDeciderModel !== undefined && value.pageDeciderModel !== null;
+    if (deciderProvider !== deciderModel) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Page decider provider and model must both be set or both cleared",
+        path: ["pageDeciderModel"],
+      });
+    }
     const providerProvided = value.modelProvider !== undefined;
     const modelProvided = value.modelId !== undefined;
     if (!providerProvided && !modelProvided) return;

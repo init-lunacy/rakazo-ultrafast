@@ -63,7 +63,13 @@ export async function aiConsentStatus(
             archivedAt: null,
             ...(botIds ? { id: { in: botIds } } : {}),
           },
-          select: { modelProvider: true, modelId: true, thinkingLevel: true },
+          select: {
+            modelProvider: true,
+            modelId: true,
+            thinkingLevel: true,
+            pageDeciderProvider: true,
+            pageDeciderModel: true,
+          },
         })
       : [],
     // An active routine with its own model is another recipient for this bot.
@@ -167,6 +173,21 @@ export async function aiConsentStatus(
           actor,
           deps.env.teamChatJudgeProvider,
           deps.env.teamChatJudgeModel,
+        ),
+        thinkingLevel: null,
+      });
+    }
+    // A bot's page decider sees page content, so it is one more model recipient.
+    for (const bot of bots) {
+      if (!bot.pageDeciderProvider || !bot.pageDeciderModel) continue;
+      selected.push({
+        provider: bot.pageDeciderProvider,
+        id: bot.pageDeciderModel,
+        credential: await findModelCredential(
+          deps.prisma,
+          actor,
+          bot.pageDeciderProvider,
+          bot.pageDeciderModel,
         ),
         thinkingLevel: null,
       });

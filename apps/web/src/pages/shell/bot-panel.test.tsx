@@ -96,6 +96,8 @@ function bot(description = "Billing"): Bot {
     autoSpeak: false,
     modelProvider: null,
     modelId: null,
+    pageDeciderProvider: null,
+    pageDeciderModel: null,
     thinkingLevel: null,
     teamChatAmbientEnabled: false,
     teamChatRules: "",

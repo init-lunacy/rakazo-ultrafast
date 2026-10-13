@@ -62,6 +62,8 @@ function mapBot(
     autoSpeak?: boolean;
     modelProvider?: string | null;
     modelId?: string | null;
+    pageDeciderProvider?: string | null;
+    pageDeciderModel?: string | null;
     thinkingLevel?: string | null;
     teamChatAmbientEnabled?: boolean;
     teamChatRules?: string;
@@ -102,6 +104,8 @@ function mapBot(
     autoSpeak: bot.autoSpeak ?? false,
     modelProvider: bot.modelProvider ?? null,
     modelId: bot.modelId ?? null,
+    pageDeciderProvider: bot.pageDeciderProvider ?? null,
+    pageDeciderModel: bot.pageDeciderModel ?? null,
     thinkingLevel: (bot.thinkingLevel as Bot["thinkingLevel"]) ?? null,
     teamChatAmbientEnabled: bot.teamChatAmbientEnabled ?? false,
     teamChatRules: bot.teamChatRules ?? "",

@@ -1761,6 +1761,12 @@ export function createRouter(deps: RouterDeps) {
             ...(input.modelProvider !== undefined
               ? { modelProvider: input.modelProvider, modelId: input.modelId ?? null }
               : {}),
+            ...(input.pageDeciderProvider !== undefined
+              ? {
+                  pageDeciderProvider: input.pageDeciderProvider,
+                  pageDeciderModel: input.pageDeciderModel ?? null,
+                }
+              : {}),
             ...(input.thinkingLevel !== undefined ? { thinkingLevel } : {}),
             ...(input.teamChatAmbientEnabled !== undefined
               ? { teamChatAmbientEnabled: input.teamChatAmbientEnabled }

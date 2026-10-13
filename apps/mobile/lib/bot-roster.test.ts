@@ -23,6 +23,8 @@ function bot(id = "bot-1"): Bot {
     computerMode: "team",
     modelProvider: null,
     modelId: null,
+    pageDeciderProvider: null,
+    pageDeciderModel: null,
     thinkingLevel: null,
     autoSpeak: false,
     spaceId: "space-1",
