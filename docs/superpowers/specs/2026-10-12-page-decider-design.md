@@ -29,12 +29,12 @@ user and to the bot's model.
 
 Success is measured, not asserted:
 
-- **Accuracy floor, absolute.** Task success on the replay suite does not regress
+- **Accuracy floor, absolute.** Task success does not regress
   against the current loop. The design guarantees this structurally: every decider
   outcome other than a confident pick falls through to today's behavior, so the
   worst case is the current loop plus one cheap call.
 - **Fewer expensive calls.** Vision-model calls per completed browser task drop
-  materially. Target: at least a 50% reduction on the replay suite. The published
+  materially. Target: at least a 50% reduction, measured on recorded traffic. The published
   comparable is roughly a tenth, on a task shape we have not replicated, so 50% is
   the bar to clear, not the ceiling to expect.
 - **Decision latency.** Median per-step decision under 500ms on the hosted
@@ -87,7 +87,7 @@ proven, not because structure-only is disqualified.
 Jev-style browser loop is single-task anecdote and one vendor's call-count
 comparison. There is no WebVoyager or Online-Mind2Web figure for it. Every
 benchmarked localizer in the table above is a *vision* model; Jev is text-only.
-The success criteria above are therefore hypotheses the replay suite tests, not
+The success criteria above are therefore hypotheses to measure on real traffic, not
 results anyone has reproduced — which is the reason the decider is built as a
 removable accelerator with a structural accuracy floor rather than as a new
 default path.
@@ -172,18 +172,11 @@ New types in `packages/adapter-kit/src/types.ts`, new interface in
 
 ```ts
 export interface PageDeciderCapabilities {
-  /** True when the adapter ranks candidate actions over enumerated elements. */
-  pick: boolean;
-  /** True when the adapter returns probabilities rather than a bare label. */
-  scores: boolean;
-  /** True when the adapter needs a screenshot to decide. */
-  vision: boolean;
   /**
-   * True when the adapter adds no vendor beyond the bot's configured model.
-   * The `model` backend is keyless in this sense even when the bot's own model
-   * is hosted; a `systemone` adapter pointed at a self-hosted endpoint is too.
+   * True when the decider uses a screenshot. The only capability, because it is
+   * the only one anything branches on: the chain captures the viewport only then.
    */
-  keyless?: boolean;
+  vision: boolean;
 }
 
 export interface PageDecisionAttempt {
@@ -208,7 +201,7 @@ export interface PageDecisionRequest {
    * `rect`. Supplied only when the adapter declares `vision`, so a text-only
    * decider is never handed pixels and the cheap path stays cheap.
    */
-  screenshot?: { data: string; mimeType: string; scale?: number };
+  screenshot?: { data: string; mimeType: "image/png"; scale: number };
   signal?: AbortSignal;
 }
 
@@ -323,46 +316,48 @@ Defaults, recorded as starting points requiring calibration:
 
 ### Backends
 
-Three real adapters plus a fake.
+Two real deciders plus a fake, and the default is none at all.
 
-- **`model`** — asks the bot's existing model one structured question through the
-  machinery already used for structured tool schemas. Requires no vendor and no key,
-  so core keeps working with nothing configured. Its value is a dependency-free
-  conformance baseline and a correct fallback, **not** speed: it will not be
-  meaningfully faster than today's loop for the pick itself. It earns its place by
-  making the seam real and by letting the whole suite run with no external service.
-- **`systemone`** — any `/v1/systemone` endpoint, distinguished only by base URL and
-  key. One adapter, not two, because the wire protocol is identical; this is the "one
-  source of truth" rule applied. Questions map onto the protocol's `choice` (element
-  pick) and `noul` (goal met, stuck, blocked) types, evaluated in a single parallel
-  pass. A `choice` answer carries a `probabilities` map over every option, so the
-  adapter returns a fully ranked candidate list rather than only the winner — without
-  it, the policy's next-best fallback would be dead code on the real adapter. The
-  protocol accepts up to 255 options, which is what bounds the element cap. The
-  existing `jev-auto-review.ts` client is refactored so its request plumbing, body
-  capping and response validation are shared rather than duplicated. Text-only:
-  declares `vision: false`.
-- **`vision`** — any OpenAI-compatible vision endpoint, which is how an open-weight
-  GUI specialist is reached. The reference target is **Holo1.5-7B** (Apache 2.0, open
-  weights, Docker-served, the localizer inside a 97.1% WebVoyager system). Declares
-  `vision: true`, so the caller supplies a screenshot alongside the element list.
+- **Off (default).** No decider: the tools behave exactly as today at zero extra
+  calls, and the product runs with no vendor. An earlier draft defaulted to asking
+  the bot's own model before every step, which was strictly slower than today and
+  bought nothing escalation does not already do.
+- **`model`** — any connected model, run through the agent runtime exactly as Auto
+  Review runs its checker: no tools, no history, JSON only. That reaches every model
+  rakazo supports — Holo1.5-7B on the `local` provider, Haiku through Anthropic,
+  anything through OpenRouter or the Cloudflare gateway — with credentials, OAuth and
+  usage already handled. Whether it sees the page is a property of the chosen model,
+  read with `modelAcceptsImageInput`, not a separate backend: a model that accepts
+  images gets the viewport capture and may point; one that does not picks from the
+  element list. An earlier draft had a separate hand-written vision client, which
+  reached only OpenAI-compatible endpoints.
 
-  It asks for both at once: name the element that advances the goal, or, when no
-  listed element fits, give a point. A point is mapped to the element whose `rect`
-  contains it — or the nearest within a small tolerance — and returned as an ordinary
-  ref-bearing candidate marked `source: "point"`. One round trip, and the pick path
-  and the point path share a single answer schema.
+  The self-hosted reference is **Holo1.5-7B** (Apache 2.0, open weights, the
+  localizer inside a 97.1% WebVoyager system), connected like any other local model.
 
-  This is what makes the model's coordinate-localization strength usable without
-  letting coordinates escape the adapter. A point that maps to nothing yields no
-  candidate, and the policy escalates as it does for any other empty ranking.
+  It asks for both at once: name the element that advances the goal, or — only when
+  it saw the page and nothing fits — give a point. The point is divided by the
+  capture's scale into CSS pixels and mapped to the smallest element whose rect
+  contains it, or the nearest within a few pixels, then returned as an ordinary
+  candidate marked `source: "point"`. The model is never shown rects: it names a ref
+  or points at an image pixel, and only our code maps back. A point that maps to
+  nothing yields no candidate, and the policy escalates. Without a capture — an older
+  computer image — the model still decides from the element list.
+- **`systemone`** — hosted Jev, through the code the Auto Review Jev client already
+  uses, at the same fixed URL with the existing `TYPESAFE_API_KEY`. Questions map
+  onto the protocol's `choice` (element pick) and `noul` (goal met, stuck, blocked)
+  types in one parallel pass. A `choice` answer carries `probabilities` over every
+  option, so the adapter returns a fully ranked list — without it the policy's
+  next-best fallback would be dead code. The protocol accepts up to 255 options,
+  which bounds the element cap. The request code is extracted from
+  `jev-auto-review.ts` so both share it; it returns a failure kind rather than a
+  message, so Auto Review keeps its exact wording, and it passes `state` through
+  untouched, so Auto Review's payload is unchanged. Text-only.
 
-  This is the self-hosted path. It replaces the text-only drop-in an earlier draft
-  named, which scored 63.9 against Jev's 90.4 on the vendor's own intelligence
-  benchmark and had no published browser result at all. Holo1.5-7B needs no new
-  transport either: an OpenAI-compatible vision endpoint is already reachable through
-  `pi-local-provider.ts` and declared vision-capable with `RAKAZO_LOCAL_VISION_MODELS`.
-- **`fake`** — in-process, seeded decisions, for offline conformance and replay.
+  The URL is not configurable. That existed only for a self-hosted Jev replacement,
+  which Holo1.5 on the `local` provider now covers, and a fixed public endpoint
+  needs no SSRF policy.
+- **`fake`** — seeded decisions, for offline tests.
 
 ### Geometry and the viewport screenshot
 
@@ -399,55 +394,38 @@ exactly the dense pages it exists for. 240 matches the reference implementation 
 stays under the protocol's 255-option ceiling. The image rebuild the cap change
 needs is already required by the geometry work.
 
-### Selection: per bot, per run
+### Selection: per bot
 
-The decider is selected the same way the bot's main model is selected, because
-anything else would make it the one model in the product that an operator cannot
-route. A deployment must be able to run one bot entirely on its own hardware and
-another against a hosted endpoint, and to override that for a single run.
+The decider is chosen per bot, like the bot's model, so one bot can run entirely on
+the operator's hardware and another against a hosted service. `Bot` gains
+`pageDeciderProvider` and `pageDeciderModel`, both nullable, travelling the same
+path as `modelProvider` / `modelId`: the Prisma model, the `Bot` contract and its
+update schema with the same "both set or both cleared" rule, the bot mapper in
+`db/src/repos.ts`, and the API's bot update. Null means off.
 
-Rakazo already stores `modelProvider` / `modelId` on `Bot`, on `Run`, and on
-`SteeringMessage`. The decider mirrors the first two:
+There is no per-run column and no deployment-wide default. Nothing would write a
+per-run decider — per-run model choice exists through `modelPin`, and carrying a
+decider on it is separate work — and with off-by-default and per-bot choice, a
+deployment default would be a second way to set the same thing.
 
-| Table | Columns | Meaning |
-|---|---|---|
-| `Bot` | `pageDeciderProvider`, `pageDeciderModel` (both nullable) | this bot's default |
-| `Run` | `pageDeciderProvider`, `pageDeciderModel` (both nullable) | override for one run |
-
-Resolution precedence, highest first: the run's columns, then the bot's columns, then
-the deployment default from configuration, then `model`. Null at every level means
-`model`, so an unconfigured deployment is still a working deployment and the
-environment variable is only a default — never the only way to choose.
-
-The connection itself resolves through the hook `AgentRunRequest` already exposes:
-
-```ts
-/** Resolve an explicitly requested helper model within the active user and space scope. */
-resolveModel?: (provider: string, modelId: string) => Promise<AgentRunModel>;
-```
-
-That gives the decider the same user-and-space credential scoping as the main model,
-with no second secret path to secure. Hosted and self-hosted `systemone` endpoints
-are two connection entries differing by `baseUrl` — a field `AgentRunModel` already
-carries, and the mechanism the existing `openai-compatible` provider already uses.
-Per AGENTS.md, no provider- or model-specific environment variable is added for
-either; the generic connection expresses the difference.
+At run time the decider's model resolves through `resolveConnectedModel`, the call
+the run already uses for backup and helper models, so it accepts exactly the models
+the picker lists and inherits the run's user-and-space credential scope. Jev is the
+provider id `jev` and needs the deployment's `TYPESAFE_API_KEY`. The decider is
+built lazily, once per run, on the first browser call that carries a goal, so a run
+that never sends one resolves nothing. A decider whose model can no longer be
+resolved is skipped with a log line: it is an accelerator, and losing it never fails
+a run. Its calls are billed through `recordUsage`, as Auto Review's are.
 
 ### Settings surface
 
-Choosing the decider is a real control, and it is the only user-facing addition in
-this design.
-
-It is shown progressively, not persistently. Most people will never set it, so it
-does not become a second model dropdown sitting next to the first. It appears beside
-the existing model choice, and only once a bot has a computer capable of the page
-browser contract — before that it has nothing to configure and is not rendered.
-
-The control is a connection picker with the same shape as the model picker, with no
-explanatory body copy: the choice is between named connections the operator has
-already configured, and a default option meaning "use this bot's own model." Any
-wording lands in the PR description per AGENTS.md, quoted, with the case for why the
-label cannot be shorter.
+One select directly under the bot's model select. That select already sits inside
+the bot panel's Advanced `<details>`, so the decider inherits native progressive
+disclosure with no new state. Its options are `Off`, the same connected models the
+model select lists, and Jev when the deployment can run it — signalled by
+`Me.jevAvailable`, which follows the existing `ticketBoardEnabled` flag and reads the
+existing key. A saved decider that is no longer offered stays visible, as the model
+select already does. The new copy is the label `Page decider` and the option `Off`.
 
 ### Integration point
 
@@ -465,8 +443,8 @@ gain one optional `goal` string in their input schemas. Return shapes do not cha
 
 When `goal` is absent, the decider is skipped entirely and behavior is exactly
 today's. That makes the parameter a genuine opt-in rather than a silent behavior
-change, keeps the fallback path honest, and gives the replay suite a way to run the
-same recorded task both with and without the decider. The model sees the same two
+change, keeps the fallback path honest, and lets a test compare output with and
+without a decider byte for byte. The model sees the same two
 tools; with a goal supplied it simply gets further per call, because a confident
 decider chain runs several steps before returning.
 
@@ -478,8 +456,8 @@ This is additive to the tool schema and adds no user-facing copy.
 application, a terminal, or a canvas-heavy surface goes through
 `computer_observe` / `computer_act` and never reaches the decider. The
 call-reduction target therefore applies to the fraction of work that is web pages
-reachable through the page browser, not to all browser-ish work — a distinction the
-replay suite should report rather than average away.
+reachable through the page browser, not to all browser-ish work — a distinction
+measurement on real traffic should report rather than average away.
 
 The two paths are already coupled, which is worth knowing before extending either:
 `unchangedVisualStreakAfterPageBrowser` clears the desktop visual-loop streak after a
@@ -521,9 +499,9 @@ gestures they need.
 shared abstraction would cost more than it saves. The policy in `@rakazo/core` already
 depends on nothing and declares its own structural types; its identifiers are named
 `target` and `knownTargets` rather than `ref`, so a desktop chain could pass coordinate
-keys and reuse `decidePageAction`, its thresholds, its evaluation order and its
-calibration harness unchanged. The adaptation at the page chain's boundary is three
-`map` calls. Per-bot selection, the consent gate and the factory are already
+keys and reuse `decidePageAction`, its thresholds, and its evaluation order
+unchanged. The adaptation at the page chain's boundary is three
+`map` calls. Per-bot selection and consent are already
 path-neutral.
 
 What is deliberately *not* generalized: `PageDecider` keeps `BrowserSnapshotNode[]` and
@@ -533,66 +511,66 @@ this repository's conventions tell us to avoid.
 
 ## Security and privacy
 
-The decider receives the text and element names of a page the bot is logged into.
-That is among the most sensitive data the product handles, and it is the reason both
-configurations are first-class.
+The decider receives the text and element names of a page the bot is logged into,
+and a seeing model also receives a viewport capture. That is among the most sensitive
+data the product handles, which is why a fully local configuration is first-class.
 
-- **Consent gates the selection, not just the request.** Decider requests go through
-  the existing AI data-sharing consent path
-  (`packages/adapters/src/ai-consent.ts`). Because the decider is now selectable per
-  bot and per run, consent is checked at resolution: selecting a hosted endpoint in a
-  space that has not consented to sharing page content externally fails the
-  selection with a clear reason rather than silently falling back, and a run-level
-  override cannot escalate a bot past its space's consent. Falling back silently
-  would mean a bot the operator believed was private had quietly stopped being
-  private, which is the one failure this design must not have.
-- **A screenshot raises the stakes, so only a vision adapter gets one.** The caller
-  supplies `screenshot` only when the adapter declares `vision`, and a screenshot of
-  a logged-in page is treated as external data sharing exactly as page text is: the
-  same consent gate, checked at selection. Since the `vision` backend's reference
-  target is a model running on the operator's own hardware, the accurate
-  configuration and the private one are the same configuration here.
+- **Consent is the existing flow.** `aiConsentStatus` already collects every bot
+  model, routine model, backup, voice and cloud agent as recipients and prompts for
+  any not yet allowed. A bot's decider is appended to the same list the way backups
+  and the team-chat judge model are, so it is the existing `"model"` use — the same
+  one Auto Review's checker falls under — with the same base-URL binding as any other
+  use of that connection, and no new disclosure copy. The existing flow blocks rather
+  than substitutes, so a private bot is never silently re-routed to an outside
+  service.
 - **No secrets, structurally.** The decider never produces or receives typed text,
-  so credential values cannot reach it through the action path. Element `value`
-  fields for password-type inputs are dropped before the request is built; the
-  in-computer helper already masks password values at the source.
-- **Bounded payloads.** Element count, excerpt length and total body size are capped
-  before the request, following the limits already set in `jev-auto-review.ts`.
-  Redaction reuses `connector-safety.ts`.
-- **SSRF.** A self-hosted base URL is validated through the existing
-  `web-ssrf.ts` / `private-endpoint.ts` checks, as the current client does.
-- **Logging.** Decisions log the outcome, the reason and the scores. They never log
-  page text, element names or URLs beyond origin.
+  so credential values cannot reach it through the action path. Element values are
+  never sent: `systemone` sends one label per element, built by a single function
+  that excludes the value, and `model` sends `ref`, `role`, `name` and `tag` only.
+  The in-computer helper already masks password values at the source.
+- **Rects stay in the process.** The model is never shown them; only our code maps a
+  point back to an element.
+- **Bounded payloads.** At most 240 elements, labels capped at 120 characters, the
+  page excerpt at 4,000, and the System One response read through `readBodyCapped`.
+- **No new network surface.** `systemone` calls the same fixed public endpoint as
+  today's Auto Review client; `model` reaches whatever connection the operator
+  configured, through the runtime's existing path.
+- **Logging.** One event per stop, built by a pure function tested to carry outcome,
+  reason, scores and URL origin only — never page text, element names or a full URL.
 
 ## Testing
 
-Deterministic and offline by default, and identical across both configurations.
+Deterministic and offline throughout.
 
-1. **`page-decider-conformance.test.ts`** — every adapter must advertise
-   `pick` and `scores`, return a well-formed `PageDecision` for a seeded page, and
-   honor cancellation. Mirrors `browser-conformance.test.ts`, including its seeded
-   HTML approach.
-2. **Policy unit tests** — exhaustive over the evaluation order and every threshold
-   boundary, including the ordering case that matters most: a page that is both
-   `blocked` and `stuck` must produce `takeover`, never `escalate`.
-3. **Replay suite** — recorded page states with expected outcomes, run against the
-   `model` backend through the existing model emulator and against a seeded
-   `systemone` emulator. The same assertions must pass on both. This is the suite
-   the accuracy floor is measured on, and it is where "both, equally" is enforced.
-4. **Resolution precedence tests** — run columns beat bot columns beat the
-   deployment default beats `model`, with null at each level falling through rather
-   than erroring. Includes the case that protects the privacy promise: a bot pinned
-   to a self-hosted decider must not be silently upgraded to a hosted one by a
-   deployment default, and a run override must be scoped to the same user and space
-   as the credential it resolves.
-5. **Calibration harness** — a script, not a test, that replays labeled states and
-   reports a confusion matrix per threshold, so thresholds are set from data.
-   Follows the `test:evals` precedent.
+1. **Policy** — every branch and threshold boundary, the evaluation order,
+   out-of-range and `NaN` scores, unknown refs, empty lists, dispatchable-kind
+   filtering.
+2. **Decider conformance** — `fake`, `systemone` and `model` run identical
+   assertions: in-range scores, only offered refs, valid kinds, cancellation
+   honored. Hosted and self-hosted are first-class together because they meet one
+   contract.
+3. **Adapters** — ranking from `probabilities`, timeouts, no element value sent,
+   fenced JSON, point mapping through the capture's scale, list-only fallback
+   without a capture.
+4. **Chain and tools** — confident clicks, escalation, takeover, no replay of an
+   uncertain action, a capture only for a seeing decider, byte-identical output
+   without a goal, preserved result shape, redaction, and the desktop loop-guard
+   reset.
+5. **Selection and consent** — the decider is built only when configured and
+   resolvable, and a bot's decider appears as a consent recipient.
+6. **Settings** — the picker sits inside Advanced, offers Jev only when available,
+   saves and clears.
 
-The desktop Playwright suite is not run locally for this work, per AGENTS.md; CI's
-virtual-display job covers it. The settings picker gets a web test that opens the
-screen, so the CI E2E screenshot can be linked on the PR as AGENTS.md requires for
-UI changes.
+Measuring the success criteria — call reduction, latency, bot-wall recall and false
+takeovers — needs recorded real traffic, not a handful of fixtures, so it is not part
+of this change. A replay suite and calibration harness from an earlier draft were
+dropped for that reason: three fixtures make a percentage meaningless, and a
+calibration tool needs labelled data to calibrate on. Thresholds remain configuration
+in the meantime.
+
+The desktop Playwright suite is not run locally, per AGENTS.md; CI's virtual-display
+job covers it. A web test opens the bot panel's Advanced section so the CI screenshot
+can be linked on the PR.
 
 ## Fork and upstream workflow
 
@@ -605,19 +583,23 @@ edits to shared files are each one or two lines, and they are the complete list:
 | File | Edit |
 |---|---|
 | `packages/adapter-kit/src/registry.ts` | one `slots` entry |
-| `packages/adapter-kit/src/types.ts` | new type block, appended |
-| `packages/adapter-kit/src/interfaces.ts` | new interface, appended |
-| `packages/adapters/src/index.ts` | export lines for the new modules |
-| `packages/adapters/src/browser-tools.ts` | the decider consultation |
+| `packages/adapter-kit/src/types.ts` | optional `rect`, screenshot types, one command variant |
+| `packages/adapter-kit/src/interfaces.ts` | one optional `BrowserProvider.screenshot` |
+| `infra/sandboxes/computer/rakazo-page-browser` | rects, cap 240, a `screenshot` command |
+| `packages/adapters/src/computer-browser.ts` | `screenshot()` |
+| `packages/adapters/src/fake-browser.ts`, `page-browser-session.ts` | offline rects and capture |
+| `packages/adapters/src/jev-auto-review.ts` | moved onto the shared System One client |
+| `packages/adapters/src/browser-tools.ts` | the chain, behind an options field |
 | `packages/adapters/src/builtin-tools.ts` | one optional `goal` field on two tool schemas |
-| `packages/adapters/src/executor.ts` | one `deps.pageDecider` default beside `deps.browser` |
-| `packages/db/prisma/schema.prisma` | two nullable columns on `Bot`, two on `Run` |
-| bot settings UI | one progressively-disclosed connection picker |
+| `packages/adapters/src/executor.ts` | a lazy per-run decider and two dispatch edits |
+| `packages/db/prisma/schema.prisma` | two nullable columns on `Bot` |
+| `packages/contracts/src/domain.ts`, `db/src/repos.ts`, `api/src/router.ts` | the two columns, end to end, and `jevAvailable` |
+| `apps/api/src/ai-consent.ts` | the decider as one more model recipient |
+| `apps/web/src/pages/shell/bot-panel.tsx` | one select under Advanced |
 
 The schema change is additive and nullable, so a merge that brings in upstream
-migrations orders cleanly alongside it. The settings picker is the only edit that
-touches a file upstream is also likely to be changing, and it is the one to keep
-smallest.
+migrations orders cleanly alongside it. The files most likely to collide on an
+upstream merge are the helper and `bot-panel.tsx`; both edits are kept to additions.
 
 **Remote topology.** `origin` currently points at the upstream repository. Create a
 fork, then:
@@ -641,20 +623,13 @@ Stated explicitly, so scope does not drift during implementation.
   interstitial and hands the live screen to the human through the takeover path that
   already exists. Circumventing anti-abuse controls is out of scope, and it would
   also break on every vendor change, which is the opposite of the reliability goal.
-- **The 80-element snapshot cap stays.** The reference design enumerates up to 240
-  DOM elements and prefers the DOM over the accessibility tree because
-  accessibility trees under-report inputs. Our cap is at
-  `infra/sandboxes/computer/rakazo-page-browser:434`, inside the in-computer helper,
-  so raising it requires rebuilding the computer image. It is a plausible constraint
-  on dense pages and a likely follow-up, measured first on the replay suite rather
-  than changed on assumption.
 - **No set-of-marks rendering.** Element geometry plus `sharp`, already an adapters
   dependency, would allow drawing numbered boxes onto the screenshot — an
   established way to improve a vision model's grounding. Geometry makes it possible;
   this spec does not build it. Follow-up once the point fallback has numbers.
-- **No raw coordinate dispatch.** When a point maps to no element, the result is
-  `fallback: "computer_act"` — the path that exists today. The chain never clicks a
-  bare coordinate, because that would leave the ref envelope's origin checks and
+- **No raw coordinate dispatch.** When a point maps to no element it yields no
+  candidate and the policy escalates, so the tool returns what it returned before.
+  The chain never clicks a bare coordinate, because that would leave the ref envelope's origin checks and
   stale-ref rejection and create a new way to click the wrong thing.
 - **No new browser engine.** `ComputerBrowserProvider` remains the default; this is
   not a Playwright or hosted-browser product.
