@@ -521,7 +521,7 @@ const fresh: PageDecisionBudget = { steps: 0, elapsedMs: 0 };
 
 function decision(over: Partial<PageDecisionLike> = {}): PageDecisionLike {
   return {
-    candidates: [{ ref: "e1", kind: "click", confidence: 0.95 }],
+    candidates: [{ target: "e1", kind: "click", confidence: 0.95 }],
     goalMet: 0,
     stuck: 0,
     blocked: 0,
@@ -540,7 +540,7 @@ function run(
     decision: decision(over),
     budget,
     history,
-    knownRefs: elements,
+    knownTargets: elements,
     dispatchableKinds,
     thresholds: DEFAULT_PAGE_DECISION_THRESHOLDS,
   });
@@ -548,7 +548,7 @@ function run(
 
 describe("decidePageAction", () => {
   it("acts on a confident candidate", () => {
-    expect(run()).toEqual({ action: "act", ref: "e1", kind: "click" });
+    expect(run()).toEqual({ action: "act", target: "e1", kind: "click" });
   });
 
   it("refuses when the step budget is spent", () => {
@@ -594,7 +594,7 @@ describe("decidePageAction", () => {
   });
 
   it("escalates when the best candidate is below the confidence threshold", () => {
-    expect(run({ candidates: [{ ref: "e1", kind: "click", confidence: 0.5 }] })).toEqual({
+    expect(run({ candidates: [{ target: "e1", kind: "click", confidence: 0.5 }] })).toEqual({
       action: "escalate",
       reason: "low_confidence",
     });
@@ -609,7 +609,7 @@ describe("decidePageAction", () => {
   // Review Focus 2: a stale snapshot or an invented ref must never dispatch.
   it("escalates when every candidate names an unknown ref", () => {
     expect(
-      run({ candidates: [{ ref: "e99", kind: "click", confidence: 0.99 }] }, fresh, [], ["e1"]),
+      run({ candidates: [{ target: "e99", kind: "click", confidence: 0.99 }] }, fresh, [], ["e1"]),
     ).toEqual({ action: "escalate", reason: "no_candidates" });
   });
 
@@ -618,15 +618,15 @@ describe("decidePageAction", () => {
       run(
         {
           candidates: [
-            { ref: "e99", kind: "click", confidence: 0.99 },
-            { ref: "e2", kind: "click", confidence: 0.9 },
+            { target: "e99", kind: "click", confidence: 0.99 },
+            { target: "e2", kind: "click", confidence: 0.9 },
           ],
         },
         fresh,
         [],
         ["e1", "e2"],
       ),
-    ).toEqual({ action: "act", ref: "e2", kind: "click" });
+    ).toEqual({ action: "act", target: "e2", kind: "click" });
   });
 
   // Review Focus 1: scores from a third party are untrusted input. An
@@ -636,7 +636,7 @@ describe("decidePageAction", () => {
     ["below zero", -0.2],
     ["not a number", Number.NaN],
   ])("treats a %s goalMet score as unknown", (_label, value) => {
-    expect(run({ goalMet: value })).toEqual({ action: "act", ref: "e1", kind: "click" });
+    expect(run({ goalMet: value })).toEqual({ action: "act", target: "e1", kind: "click" });
   });
 
   it.each([
@@ -644,39 +644,39 @@ describe("decidePageAction", () => {
     ["below zero", -0.2],
     ["not a number", Number.NaN],
   ])("escalates rather than acting on a %s candidate confidence", (_label, value) => {
-    expect(run({ candidates: [{ ref: "e1", kind: "click", confidence: value }] })).toEqual({
+    expect(run({ candidates: [{ target: "e1", kind: "click", confidence: value }] })).toEqual({
       action: "escalate",
       reason: "low_confidence",
     });
   });
 
   it("does not take over on an out-of-range blocked score", () => {
-    expect(run({ blocked: 2 })).toEqual({ action: "act", ref: "e1", kind: "click" });
+    expect(run({ blocked: 2 })).toEqual({ action: "act", target: "e1", kind: "click" });
   });
 
   it("drops a candidate that already failed to change the page", () => {
-    const history: PageDecisionAttemptLike[] = [{ ref: "e1", kind: "click", changed: false }];
+    const history: PageDecisionAttemptLike[] = [{ target: "e1", kind: "click", changed: false }];
     expect(
       run(
         {
           candidates: [
-            { ref: "e1", kind: "click", confidence: 0.99 },
-            { ref: "e2", kind: "click", confidence: 0.8 },
+            { target: "e1", kind: "click", confidence: 0.99 },
+            { target: "e2", kind: "click", confidence: 0.8 },
           ],
         },
         fresh,
         history,
       ),
-    ).toEqual({ action: "act", ref: "e2", kind: "click" });
+    ).toEqual({ action: "act", target: "e2", kind: "click" });
   });
 
   it("keeps a candidate that previously did change the page", () => {
-    const history: PageDecisionAttemptLike[] = [{ ref: "e1", kind: "click", changed: true }];
-    expect(run({}, fresh, history)).toEqual({ action: "act", ref: "e1", kind: "click" });
+    const history: PageDecisionAttemptLike[] = [{ target: "e1", kind: "click", changed: true }];
+    expect(run({}, fresh, history)).toEqual({ action: "act", target: "e1", kind: "click" });
   });
 
   it("escalates when repeat-filtering empties the ranking", () => {
-    const history: PageDecisionAttemptLike[] = [{ ref: "e1", kind: "click", changed: false }];
+    const history: PageDecisionAttemptLike[] = [{ target: "e1", kind: "click", changed: false }];
     expect(run({}, fresh, history)).toEqual({ action: "escalate", reason: "no_candidates" });
   });
 
@@ -687,8 +687,8 @@ describe("decidePageAction", () => {
       run(
         {
           candidates: [
-            { ref: "e1", kind: "fill", confidence: 0.99 },
-            { ref: "e2", kind: "click", confidence: 0.9 },
+            { target: "e1", kind: "fill", confidence: 0.99 },
+            { target: "e2", kind: "click", confidence: 0.9 },
           ],
         },
         fresh,
@@ -696,13 +696,13 @@ describe("decidePageAction", () => {
         ["e1", "e2"],
         ["click"],
       ),
-    ).toEqual({ action: "act", ref: "e2", kind: "click" });
+    ).toEqual({ action: "act", target: "e2", kind: "click" });
   });
 
   it("reports needs_text when the only addressable candidate needs typing", () => {
     expect(
       run(
-        { candidates: [{ ref: "e1", kind: "fill", confidence: 0.99 }] },
+        { candidates: [{ target: "e1", kind: "fill", confidence: 0.99 }] },
         fresh,
         [],
         ["e1", "e2"],
@@ -715,7 +715,7 @@ describe("decidePageAction", () => {
   it("reports no_candidates when nothing was addressable at all", () => {
     expect(
       run(
-        { candidates: [{ ref: "e9", kind: "fill", confidence: 0.99 }] },
+        { candidates: [{ target: "e9", kind: "fill", confidence: 0.99 }] },
         fresh,
         [],
         ["e1"],
@@ -727,13 +727,13 @@ describe("decidePageAction", () => {
   // The threshold applies to whichever candidate is selected, never to one
   // the policy has already discarded.
   it("applies the confidence threshold after repeat-filtering", () => {
-    const history: PageDecisionAttemptLike[] = [{ ref: "e1", kind: "click", changed: false }];
+    const history: PageDecisionAttemptLike[] = [{ target: "e1", kind: "click", changed: false }];
     expect(
       run(
         {
           candidates: [
-            { ref: "e1", kind: "click", confidence: 0.99 },
-            { ref: "e2", kind: "click", confidence: 0.4 },
+            { target: "e1", kind: "click", confidence: 0.99 },
+            { target: "e2", kind: "click", confidence: 0.4 },
           ],
         },
         fresh,
@@ -766,7 +766,15 @@ Create `packages/core/src/page-decision-policy.ts`:
 export type PageActionKind = "click" | "fill" | "type";
 
 export interface PageDecisionCandidateLike {
-  ref: string;
+  /**
+   * Opaque identifier for the thing to act on.
+   *
+   * A browser element ref today. Named `target` rather than `ref` because this
+   * module has no browser dependency and nothing here interprets the string —
+   * a desktop chain could pass a coordinate key and reuse this function as-is.
+   * That is a naming choice, not an abstraction: no code is added for it.
+   */
+  target: string;
   kind: PageActionKind;
   confidence: number;
 }
@@ -780,7 +788,7 @@ export interface PageDecisionLike {
 }
 
 export interface PageDecisionAttemptLike {
-  ref: string;
+  target: string;
   kind: PageActionKind;
   changed: boolean;
 }
@@ -818,8 +826,8 @@ export interface PageDecisionPolicyInput {
   decision: PageDecisionLike;
   budget: PageDecisionBudget;
   history: readonly PageDecisionAttemptLike[];
-  /** Refs present in the snapshot this decision was made against. */
-  knownRefs: readonly string[];
+  /** Targets that existed when this decision was made. */
+  knownTargets: readonly string[];
   /**
    * Kinds the caller can actually dispatch.
    *
@@ -833,7 +841,7 @@ export interface PageDecisionPolicyInput {
 }
 
 export type PageDecisionOutcome =
-  | { action: "act"; ref: string; kind: PageActionKind }
+  | { action: "act"; target: string; kind: PageActionKind }
   | { action: "done" }
   | {
       action: "escalate";
@@ -858,14 +866,17 @@ function score(value: number): number {
 function addressable(
   candidates: readonly PageDecisionCandidateLike[],
   history: readonly PageDecisionAttemptLike[],
-  knownRefs: readonly string[],
+  knownTargets: readonly string[],
 ): PageDecisionCandidateLike[] {
-  const refs = new Set(knownRefs);
+  const known = new Set(knownTargets);
   const inert = new Set(
-    history.filter((attempt) => !attempt.changed).map((attempt) => `${attempt.kind}:${attempt.ref}`),
+    history
+      .filter((attempt) => !attempt.changed)
+      .map((attempt) => `${attempt.kind}:${attempt.target}`),
   );
   return candidates.filter(
-    (candidate) => refs.has(candidate.ref) && !inert.has(`${candidate.kind}:${candidate.ref}`),
+    (candidate) =>
+      known.has(candidate.target) && !inert.has(`${candidate.kind}:${candidate.target}`),
   );
 }
 
@@ -875,7 +886,7 @@ function addressable(
  * existed before the decider, which is what makes the accuracy floor structural.
  */
 export function decidePageAction(input: PageDecisionPolicyInput): PageDecisionOutcome {
-  const { decision, budget, history, knownRefs, thresholds } = input;
+  const { decision, budget, history, knownTargets, thresholds } = input;
 
   if (budget.steps >= thresholds.maxSteps) return { action: "refuse", reason: "step_budget" };
   if (budget.elapsedMs >= thresholds.maxElapsedMs) {
@@ -889,7 +900,7 @@ export function decidePageAction(input: PageDecisionPolicyInput): PageDecisionOu
   if (score(decision.stuck) >= thresholds.stuck) return { action: "escalate", reason: "stuck" };
   if (decision.error) return { action: "escalate", reason: "error" };
 
-  const reachable = addressable(decision.candidates, history, knownRefs);
+  const reachable = addressable(decision.candidates, history, knownTargets);
   const candidates = reachable.filter((candidate) =>
     input.dispatchableKinds.includes(candidate.kind),
   );
@@ -907,7 +918,7 @@ export function decidePageAction(input: PageDecisionPolicyInput): PageDecisionOu
   if (score(best.confidence) < thresholds.confidence) {
     return { action: "escalate", reason: "low_confidence" };
   }
-  return { action: "act", ref: best.ref, kind: best.kind };
+  return { action: "act", target: best.target, kind: best.kind };
 }
 ```
 
@@ -3665,11 +3676,25 @@ export async function runPageDecisionChain(
       input.context,
     );
 
+    // The decider speaks element refs; the policy speaks opaque targets. The
+    // whole adaptation is these three map calls, which is what keeps the
+    // policy free of browser concepts and reusable by a desktop chain.
     const outcome = decidePageAction({
-      decision,
+      decision: {
+        ...decision,
+        candidates: decision.candidates.map((candidate) => ({
+          target: candidate.ref,
+          kind: candidate.kind,
+          confidence: candidate.confidence,
+        })),
+      },
       budget: { steps, elapsedMs: clock() - started },
-      history,
-      knownRefs: snapshot.elements.map((element) => element.ref),
+      history: history.map((attempt) => ({
+        target: attempt.ref,
+        kind: attempt.kind,
+        changed: attempt.changed,
+      })),
+      knownTargets: snapshot.elements.map((element) => element.ref),
       // The chain can only click: the decider never supplies text to type.
       // The policy uses this to skip a fill candidate and try the next click.
       dispatchableKinds: ["click"],
@@ -3708,10 +3733,10 @@ export async function runPageDecisionChain(
 
     const before = snapshot.url + snapshot.tree;
     const chosenName =
-      snapshot.elements.find((element) => element.ref === outcome.ref)?.name ?? "";
+      snapshot.elements.find((element) => element.ref === outcome.target)?.name ?? "";
     const result = await input.browser.act(
       input.computer,
-      { actions: [{ kind: "click", ref: outcome.ref }], signal: input.context.signal },
+      { actions: [{ kind: "click", ref: outcome.target }], signal: input.context.signal },
       input.context,
     );
     steps += 1;
@@ -3732,13 +3757,13 @@ export async function runPageDecisionChain(
       elements: result.elements ?? snapshot.elements,
     };
     history.push({
-      ref: outcome.ref,
+      ref: outcome.target,
       kind: "click",
       changed: before !== snapshot.url + snapshot.tree,
     });
     // Captured from the pre-act snapshot's element, which is the one the
     // decider chose. Names go to the model, never to the log.
-    acted.push(chosenName || outcome.ref);
+    acted.push(chosenName || outcome.target);
   }
 }
 ```
@@ -3933,6 +3958,62 @@ describe("browser tool integration", () => {
     expect(withDecider).toEqual(without);
   });
 
+  // rakazo already couples the page-browser and desktop paths: a successful
+  // browser mutation clears the desktop visual-loop streak, because the live
+  // view can change without a new desktop frame. That reset reads `error`,
+  // `fallback` and `ok`, so a chain result must keep those three meaning what
+  // they meant before, or the desktop loop guard silently mis-fires.
+  it("keeps the desktop visual-loop reset working after a chain", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    await browser.navigate(computer, { url: "https://example.test/form" }, context);
+    const snapshot = await browser.snapshot(computer, {}, context);
+    const button = snapshot.elements.find((el) => el.name.toLowerCase().includes("continue"))!;
+
+    const result = await browserActFromTool(
+      browser,
+      computer,
+      context,
+      { actions: [{ kind: "click", ref: button.ref }], goal: "press continue" },
+      {
+        decider: new FakePageDecider({
+          decisions: [
+            { candidates: [{ ref: button.ref, kind: "click", confidence: 0.95 }] },
+            { goalMet: 0.95 },
+          ],
+        }),
+      },
+    );
+
+    const streak = unchangedVisualStreakAfterPageBrowser(
+      { frameId: "f1", actionKey: "k", count: 3 },
+      "browser_act",
+      result,
+    );
+    expect(streak.count).toBe(0);
+  });
+
+  it("does not clear the desktop streak when the chain's action failed", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    await browser.navigate(computer, { url: "https://example.test/form" }, context);
+    const snapshot = await browser.snapshot(computer, {}, context);
+    browser.actError = new Error("click failed");
+
+    const result = await browserActFromTool(
+      browser,
+      computer,
+      context,
+      { actions: [{ kind: "click", ref: snapshot.elements[0]!.ref }], goal: "press continue" },
+      { decider: new FakePageDecider({ decisions: [{ candidates: [] }] }) },
+    );
+
+    const streak = unchangedVisualStreakAfterPageBrowser(
+      { frameId: "f1", actionKey: "k", count: 3 },
+      "browser_act",
+      result,
+    );
+    expect(streak.count).toBe(3);
+  });
+
   // The act path redacts saved-login values. A chain result must not go around it.
   it("still redacts the payload when a chain runs", async () => {
     const browser = new FakeBrowserProvider({ pages });
@@ -3959,6 +4040,7 @@ Add to that file's imports:
 
 ```typescript
 import { browserActFromTool, browserNavigateFromTool } from "./browser-tools.js";
+import { unchangedVisualStreakAfterPageBrowser } from "./computer-tools.js";
 ```
 
 Run: `pnpm vitest run packages/adapters/src/page-decision-chain.test.ts`

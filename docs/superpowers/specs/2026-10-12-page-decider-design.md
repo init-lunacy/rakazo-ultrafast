@@ -472,6 +472,65 @@ decider chain runs several steps before returning.
 
 This is additive to the tool schema and adds no user-facing copy.
 
+## Scope, and what carries over to computer use
+
+**This accelerates the page-browser path only.** A task driving a native
+application, a terminal, or a canvas-heavy surface goes through
+`computer_observe` / `computer_act` and never reaches the decider. The
+call-reduction target therefore applies to the fraction of work that is web pages
+reachable through the page browser, not to all browser-ish work — a distinction the
+replay suite should report rather than average away.
+
+The two paths are already coupled, which is worth knowing before extending either:
+`unchangedVisualStreakAfterPageBrowser` clears the desktop visual-loop streak after a
+successful browser mutation, because the live view can change without a new desktop
+frame. That reset reads `error`, `fallback` and `ok`, so a chain result must keep
+those three meaning exactly what they meant before. Two tests pin it.
+
+**The evidence for doing this on the desktop is stronger than for the browser.**
+Surfer 2 reaches 97.1% purely visually, with no DOM or accessibility tree at all, and
+Holo1.5 and UI-Venus-2 are GUI localizers trained on desktop screenshots. The role
+split is better supported there than the typed-decision pick is here.
+
+Three things block a straight extension, and they are design problems rather than
+volume of code — `computer-tools.ts` already supplies the loop guard, `ComputerAction`
+the dispatch contract, and six providers the implementations:
+
+1. **No element refs, so the dispatch safety model inverts.** This design's guarantee
+   is that the decider names a ref and the action goes through `browser_act` with its
+   origin checks and stale-ref rejection. A desktop has no element list, so a decider
+   would return a coordinate and we would dispatch it raw — the non-goal above.
+2. **Geometry does not transfer.** Rects come from `getBoundingClientRect()` inside
+   the page. A desktop screenshot has nothing to snap a coordinate onto, so the
+   "map the point back to a safe named target" step disappears.
+3. **Only one of the three backends applies.** Jev is text-only and a desktop state is
+   pixels, so `systemone` is inapplicable; only `vision` carries over.
+
+A fourth point is a prerequisite rather than a blocker: pointer input has no
+interpolation. `ComputerInput` carries absolute `move` / `down` / `up` / `click`, and
+every move is an `xdotool mousemove` warp with no intermediate motion. Scroll is
+`up`/`down` with an amount, implemented as repeated button clicks — no horizontal and
+no pixel-precise scrolling. Hover fires, because a motion event is generated at the
+destination, but path-dependent interaction does not: drags are two-point teleports,
+so canvas drawing, slider drags, drag-to-select and anything reading velocity
+misbehave. Those are exactly the surfaces the desktop path exists to handle, so an
+accurate localizer would be feeding points into an input layer that cannot express the
+gestures they need.
+
+**What this design does to stay reusable** is deliberately small, because a premature
+shared abstraction would cost more than it saves. The policy in `@rakazo/core` already
+depends on nothing and declares its own structural types; its identifiers are named
+`target` and `knownTargets` rather than `ref`, so a desktop chain could pass coordinate
+keys and reuse `decidePageAction`, its thresholds, its evaluation order and its
+calibration harness unchanged. The adaptation at the page chain's boundary is three
+`map` calls. Per-bot selection, the consent gate and the factory are already
+path-neutral.
+
+What is deliberately *not* generalized: `PageDecider` keeps `BrowserSnapshotNode[]` and
+refs. A desktop decider would be its own interface, because that is a real boundary,
+and merging them before a second implementation exists is the speculative abstraction
+this repository's conventions tell us to avoid.
+
 ## Security and privacy
 
 The decider receives the text and element names of a page the bot is logged into.
