@@ -1,3 +1,35 @@
+> [!NOTE]
+> **This is a fork of [Rakazo](https://github.com/elie222/rakazo)** that focuses on browser and
+> computer use. It tracks upstream and merges its changes regularly; everything below this note
+> is upstream's README.
+>
+> **Added so far: a page decider.** A bot can hand simple browser steps to a fast "page decider"
+> instead of its main model. The decider answers four questions about the current page: which
+> element to click, whether the goal is already met, whether the bot is stuck, and whether the
+> page needs a human. It works like this:
+>
+> - Confident clicks run back to back inside one browser tool call.
+> - Anything uncertain falls back to the bot's own model, exactly as before.
+> - It is off by default. Turn it on per bot under **Advanced → Page decider**.
+> - Any connected model can be the decider: a local one such as Holo1.5-7B on the `local`
+>   provider, or a hosted one. Hosted Jev is offered when the deployment sets `TYPESAFE_API_KEY`.
+> - It is held to the same approval rules and secret redaction as the bot itself. It stops if a
+>   click leaves the page's site.
+>
+> Design and rationale are in
+> [docs/superpowers/specs/2026-10-12-page-decider-design.md](./docs/superpowers/specs/2026-10-12-page-decider-design.md).
+>
+> **Direction.**
+>
+> - **Measure first.** The next step is recording real browsing runs to test whether the decider
+>   actually cuts model calls and latency. Its thresholds get tuned from that data.
+> - **Computer use next.** The decision policy is deliberately path-neutral, so the same
+>   accelerator can later drive the desktop (`computer_act`), not only web pages.
+> - **Model-agnostic and self-hostable.** Local and cloud models stay interchangeable per bot,
+>   and every feature must run fully on the operator's own hardware.
+> - **Upstreamable.** Changes are additive, behind optional interfaces, with offline tests, so
+>   they can be offered back to Rakazo.
+
 # Rakazo
 
 [![GitHub stars](https://img.shields.io/github/stars/elie222/rakazo?labelColor=black&style=for-the-badge&color=2563EB)](https://github.com/elie222/rakazo/stargazers)
