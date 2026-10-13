@@ -188,10 +188,11 @@ export interface PageDecisionRequest {
   title: string;
   history: readonly PageDecisionAttempt[];
   /**
-   * Supplied only when the adapter declares `vision`. A text-only decider is
-   * never handed pixels, so the cheap path stays cheap.
+   * A CDP viewport capture, in the same coordinate space as each element's
+   * `rect`. Supplied only when the adapter declares `vision`, so a text-only
+   * decider is never handed pixels and the cheap path stays cheap.
    */
-  screenshot?: { data: string; mimeType: string };
+  screenshot?: { data: string; mimeType: string; scale?: number };
   signal?: AbortSignal;
 }
 
@@ -199,6 +200,8 @@ export interface PageDecisionCandidate {
   ref: string;
   kind: BrowserActKind;
   confidence: number;
+  /** How this candidate was found. Calibration reads it; the policy ignores it. */
+  source?: "list" | "point";
 }
 
 export interface PageDecision {
@@ -233,9 +236,13 @@ export interface PageDecider {
 - **A text-only decider never receives a screenshot.** The caller supplies
   `screenshot` only when the adapter declares `vision`, so the `systemone` path
   stays structural and fast while a vision localizer gets what it needs.
-- **The decider never returns coordinates.** It names one of the refs it was given.
-  `BrowserSnapshotNode` carries no geometry, so a coordinate could not be mapped to
-  an element anyway; see the non-goal on geometry.
+- **The decider always returns refs, never coordinates.** A vision adapter may ask
+  its model to *point* when no listed element fits, but it maps that point to a ref
+  itself before returning. Geometry therefore stays an implementation detail of the
+  one backend that needs it: `PageDecider`, the policy and the chain are all
+  unchanged by it. `PageDecisionCandidate` carries an optional
+  `source?: "list" | "point"` purely so calibration can tell how often the point
+  path fires and whether it is more or less reliable than the list path.
 
 ### Policy, in code
 
@@ -314,10 +321,15 @@ Three real adapters plus a fake.
   weights, Docker-served, the localizer inside a 97.1% WebVoyager system). Declares
   `vision: true`, so the caller supplies a screenshot alongside the element list.
 
-  It is used in its UI-VQA mode — "given this screen and these numbered elements,
-  which one advances the goal" — rather than its coordinate-localization mode,
-  because `BrowserSnapshotNode` carries no geometry to map a coordinate back to an
-  element. That is a deliberate narrowing of a model trained for both.
+  It asks for both at once: name the element that advances the goal, or, when no
+  listed element fits, give a point. A point is mapped to the element whose `rect`
+  contains it — or the nearest within a small tolerance — and returned as an ordinary
+  ref-bearing candidate marked `source: "point"`. One round trip, and the pick path
+  and the point path share a single answer schema.
+
+  This is what makes the model's coordinate-localization strength usable without
+  letting coordinates escape the adapter. A point that maps to nothing yields no
+  candidate, and the policy escalates as it does for any other empty ranking.
 
   This is the self-hosted path. It replaces the text-only drop-in an earlier draft
   named, which scored 63.9 against Jev's 90.4 on the vendor's own intelligence
@@ -325,6 +337,41 @@ Three real adapters plus a fake.
   transport either: an OpenAI-compatible vision endpoint is already reachable through
   `pi-local-provider.ts` and declared vision-capable with `RAKAZO_LOCAL_VISION_MODELS`.
 - **`fake`** — in-process, seeded decisions, for offline conformance and replay.
+
+### Geometry and the viewport screenshot
+
+The vision backend needs two things the page browser does not expose yet: where each
+element is, and a screenshot in the same coordinate space. Both are additive.
+
+**Element rects are nearly free.** The in-computer helper's `visible()` already calls
+`getBoundingClientRect()` and discards the result. `BrowserSnapshotNode` gains an
+optional `rect: { x, y, width, height }` in CSS pixels relative to the viewport.
+
+**The screenshot comes from CDP, not the desktop.** `BrowserProvider` gains an
+optional `screenshot()`, backed by a new `{ command: "screenshot" }` page-browser
+command that calls `Page.captureScreenshot` in the session the helper already holds.
+
+This choice is the whole reason geometry is tractable. A desktop screenshot is the
+full screen including window chrome, in device pixels; element rects are CSS pixels
+relative to the viewport. Mapping between them needs the window offset and the
+device pixel ratio, both unreliable under X11, and every error there becomes a click
+in the wrong place. A CDP viewport capture is in the *same space as the rects by
+construction*, so there is no transform to get wrong. The capture reports its own
+scale factor for the one conversion that remains.
+
+**Everything degrades.** `rect` and `screenshot()` are both optional. Providers
+shipping an older computer image report neither; the vision backend then cannot run
+and the policy escalates, which is exactly today's behavior. No provider breaks, and
+a bot on an un-rebuilt image loses the accelerator rather than the browser.
+
+This revises two earlier decisions in this document. `BrowserProvider` does change
+after all — by one optional method, because that is where a page-browser capability
+belongs, and routing around it through an injected callback to preserve a stale
+promise would be worse design. And the element cap rises from 80 to 240: a point
+landing on element 81 cannot be named, so the fallback would fail silently on
+exactly the dense pages it exists for. 240 matches the reference implementation and
+stays under the protocol's 255-option ceiling. The image rebuild the cap change
+needs is already required by the geometry work.
 
 ### Selection: per bot, per run
 
@@ -516,15 +563,14 @@ Stated explicitly, so scope does not drift during implementation.
   so raising it requires rebuilding the computer image. It is a plausible constraint
   on dense pages and a likely follow-up, measured first on the replay suite rather
   than changed on assumption.
-- **No element geometry, and so no coordinate localization.** `BrowserSnapshotNode`
-  carries `ref`, `role`, `name`, `value` and `tag` — no box. Adding geometry would
-  let a vision localizer work the way Surfer 2 uses Holo1.5, by pointing at pixels
-  rather than picking from a list, and it is the most promising follow-up here. It is
-  out of scope because the geometry would have to come from the in-computer helper,
-  which means a computer-image rebuild, and because the UI-VQA framing is enough to
-  find out whether the role split pays off at all.
-- **No change to `BrowserProvider`.** The existing contract and its adapters are
-  untouched.
+- **No set-of-marks rendering.** Element geometry plus `sharp`, already an adapters
+  dependency, would allow drawing numbered boxes onto the screenshot — an
+  established way to improve a vision model's grounding. Geometry makes it possible;
+  this spec does not build it. Follow-up once the point fallback has numbers.
+- **No raw coordinate dispatch.** When a point maps to no element, the result is
+  `fallback: "computer_act"` — the path that exists today. The chain never clicks a
+  bare coordinate, because that would leave the ref envelope's origin checks and
+  stale-ref rejection and create a new way to click the wrong thing.
 - **No new browser engine.** `ComputerBrowserProvider` remains the default; this is
   not a Playwright or hosted-browser product.
 - **No vision model swap.** Which model sees screenshots stays a connection setting.
