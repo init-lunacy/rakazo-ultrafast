@@ -73,8 +73,7 @@ Five input classes the spec implies, that a naive task-by-task reading would lea
 | `packages/adapter-kit/src/interfaces.ts` | one optional `BrowserProvider.screenshot?` |
 | `infra/sandboxes/computer/rakazo-page-browser` | report rects, cap 240, `screenshot` command |
 | `packages/adapters/src/computer-browser.ts` | `screenshot()` via the page-browser contract |
-| `packages/adapters/src/fake-browser.ts` | deterministic rects and a fixed capture |
-| `packages/adapters/src/browser-emulator.ts` | deterministic rects and a fixed capture |
+| `packages/adapters/src/fake-browser.ts` | deterministic rects and a fixed capture (the emulator extends it) |
 | `packages/adapter-kit/src/index.ts` | export `./page-decider.js` |
 | `packages/core/src/index.ts` | export `./page-decision-policy.js` |
 | `packages/adapters/src/index.ts` | export the six new adapter modules |
@@ -385,11 +384,14 @@ Raise the cap in the same loop:
 Add a `screenshot` function beside the existing `snapshot`, using the CDP session the helper already holds:
 
 ```python
-def screenshot(client, session_id):
-    # Page.captureScreenshot returns the viewport, in the same coordinate
-    # space as getBoundingClientRect, so no transform is needed.
-    metrics = client.call("Page.getLayoutMetrics", session_id=session_id)
-    scale = (metrics.get("visualViewport") or {}).get("scale") or 1
+def screenshot(client: CdpClient, session_id: str) -> dict[str, Any]:
+    # Page.captureScreenshot returns the viewport, in the same coordinate space
+    # as getBoundingClientRect, so no transform is needed. The image is in
+    # device pixels, so report devicePixelRatio as the one conversion factor a
+    # consumer may still need. Not visualViewport.scale, which is pinch-zoom.
+    ensure_helpers(client, session_id)
+    ratio = eval_json(client, session_id, "window.devicePixelRatio")
+    scale = ratio if isinstance(ratio, (int, float)) and ratio > 0 else 1
     shot = client.call(
         "Page.captureScreenshot",
         {"format": "png", "captureBeyondViewport": False},
@@ -415,7 +417,9 @@ Add the dispatch branch beside the others (line ~670):
 
 In `packages/adapters/src/computer-browser.ts`, add a `screenshot` method that issues `{ command: "screenshot" }` through the same `pageBrowser` contract and lease checks the existing methods use, and set `geometry: true` in its `describe()` capabilities. Follow the existing `snapshot` method exactly — same lease handling, same `fallback: "computer_act"` on a provider that does not implement `pageBrowser`.
 
-In `packages/adapters/src/fake-browser.ts` and `packages/adapters/src/browser-emulator.ts`, set `geometry: true` and have their in-process snapshot assign each element a deterministic non-overlapping rect, so offline tests can exercise point mapping:
+In `packages/adapters/src/fake-browser.ts`, set `geometry: true` and have its in-process snapshot assign each element a deterministic non-overlapping rect, so offline tests can exercise point mapping.
+
+`browser-emulator.ts` needs **no** change: `EmulatorBrowserProvider extends FakeBrowserProvider` and overrides only `id`, so it inherits both the rects and the capture. Adding them there too would duplicate the geometry logic in two places for no gain.
 
 ```typescript
 /** Deterministic stacked boxes: offline point mapping needs real geometry. */
@@ -424,7 +428,7 @@ function fakeRect(index: number) {
 }
 ```
 
-Give both providers a `screenshot()` returning a fixed 1×1 PNG with `scale: 1`, plus a mutable `noScreenshot` flag beside the existing `navigateError` / `snapshotError` / `actError` / `forceFallback` ones, so a test can model a provider whose computer image predates the capture:
+Give `FakeBrowserProvider` a `screenshot()` returning a fixed 1×1 PNG with `scale: 1`, plus a mutable `noScreenshot` flag beside the existing `navigateError` / `snapshotError` / `actError` / `forceFallback` ones, so a test can model a provider whose computer image predates the capture:
 
 ```typescript
   /** When set, this provider reports no capture at all (older image). */
@@ -479,7 +483,7 @@ E2B, Daytona and Box ship their own images. Until those carry the updated helper
 - [ ] **Step 9: Commit**
 
 ```bash
-git add packages/adapter-kit/src/types.ts packages/adapter-kit/src/interfaces.ts infra/sandboxes/computer/rakazo-page-browser packages/adapters/src/computer-browser.ts packages/adapters/src/fake-browser.ts packages/adapters/src/browser-emulator.ts packages/adapters/src/browser-conformance.test.ts
+git add packages/adapter-kit/src/types.ts packages/adapter-kit/src/interfaces.ts infra/sandboxes/computer/rakazo-page-browser packages/adapters/src/computer-browser.ts packages/adapters/src/fake-browser.ts packages/adapters/src/browser-conformance.test.ts
 git commit -m "feat(browser): report element geometry and a viewport screenshot"
 ```
 
@@ -507,6 +511,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PAGE_DECISION_THRESHOLDS,
   decidePageAction,
+  type PageActionKind,
   type PageDecisionAttemptLike,
   type PageDecisionBudget,
   type PageDecisionLike,
@@ -529,12 +534,14 @@ function run(
   budget: PageDecisionBudget = fresh,
   history: readonly PageDecisionAttemptLike[] = [],
   elements: readonly string[] = ["e1", "e2"],
+  dispatchableKinds: readonly PageActionKind[] = ["click", "fill", "type"],
 ) {
   return decidePageAction({
     decision: decision(over),
     budget,
     history,
     knownRefs: elements,
+    dispatchableKinds,
     thresholds: DEFAULT_PAGE_DECISION_THRESHOLDS,
   });
 }
@@ -673,6 +680,50 @@ describe("decidePageAction", () => {
     expect(run({}, fresh, history)).toEqual({ action: "escalate", reason: "no_candidates" });
   });
 
+  // The chain can only click. A fill at the top must not hide a clickable
+  // candidate ranked below it — that would defeat the ranked fallback.
+  it("skips a candidate the caller cannot dispatch in favour of one it can", () => {
+    expect(
+      run(
+        {
+          candidates: [
+            { ref: "e1", kind: "fill", confidence: 0.99 },
+            { ref: "e2", kind: "click", confidence: 0.9 },
+          ],
+        },
+        fresh,
+        [],
+        ["e1", "e2"],
+        ["click"],
+      ),
+    ).toEqual({ action: "act", ref: "e2", kind: "click" });
+  });
+
+  it("reports needs_text when the only addressable candidate needs typing", () => {
+    expect(
+      run(
+        { candidates: [{ ref: "e1", kind: "fill", confidence: 0.99 }] },
+        fresh,
+        [],
+        ["e1", "e2"],
+        ["click"],
+      ),
+    ).toEqual({ action: "escalate", reason: "needs_text" });
+  });
+
+  // needs_text and no_candidates mean different things, so they stay distinct.
+  it("reports no_candidates when nothing was addressable at all", () => {
+    expect(
+      run(
+        { candidates: [{ ref: "e9", kind: "fill", confidence: 0.99 }] },
+        fresh,
+        [],
+        ["e1"],
+        ["click"],
+      ),
+    ).toEqual({ action: "escalate", reason: "no_candidates" });
+  });
+
   // The threshold applies to whichever candidate is selected, never to one
   // the policy has already discarded.
   it("applies the confidence threshold after repeat-filtering", () => {
@@ -769,13 +820,25 @@ export interface PageDecisionPolicyInput {
   history: readonly PageDecisionAttemptLike[];
   /** Refs present in the snapshot this decision was made against. */
   knownRefs: readonly string[];
+  /**
+   * Kinds the caller can actually dispatch.
+   *
+   * The chain can only click, because the decider never supplies text to type.
+   * Without this the policy would hand back a `fill` candidate the caller must
+   * then reject, skipping a clickable candidate ranked just below it — which
+   * defeats the ranked fallback this function exists to provide.
+   */
+  dispatchableKinds: readonly PageActionKind[];
   thresholds: PageDecisionThresholds;
 }
 
 export type PageDecisionOutcome =
   | { action: "act"; ref: string; kind: PageActionKind }
   | { action: "done" }
-  | { action: "escalate"; reason: "low_confidence" | "stuck" | "no_candidates" | "error" }
+  | {
+      action: "escalate";
+      reason: "low_confidence" | "stuck" | "no_candidates" | "needs_text" | "error";
+    }
   | { action: "takeover"; reason: string }
   | { action: "refuse"; reason: "step_budget" | "time_budget" };
 
@@ -787,7 +850,12 @@ function score(value: number): number {
   return Number.isFinite(value) && value >= 0 && value <= 1 ? value : 0;
 }
 
-function usable(
+/**
+ * Candidates naming a real ref that has not already failed to change the page.
+ * Kind is deliberately not considered here, so the caller can tell "nothing to
+ * act on" apart from "something to act on, but not by me".
+ */
+function addressable(
   candidates: readonly PageDecisionCandidateLike[],
   history: readonly PageDecisionAttemptLike[],
   knownRefs: readonly string[],
@@ -821,8 +889,19 @@ export function decidePageAction(input: PageDecisionPolicyInput): PageDecisionOu
   if (score(decision.stuck) >= thresholds.stuck) return { action: "escalate", reason: "stuck" };
   if (decision.error) return { action: "escalate", reason: "error" };
 
-  const candidates = usable(decision.candidates, history, knownRefs);
-  if (candidates.length === 0) return { action: "escalate", reason: "no_candidates" };
+  const reachable = addressable(decision.candidates, history, knownRefs);
+  const candidates = reachable.filter((candidate) =>
+    input.dispatchableKinds.includes(candidate.kind),
+  );
+  if (candidates.length === 0) {
+    // Distinguish "nothing usable on this page" from "the only thing worth
+    // doing needs text", because the second is a normal hand-back to the model
+    // and the first often means the page is not what we think it is.
+    return {
+      action: "escalate",
+      reason: reachable.length > 0 ? "needs_text" : "no_candidates",
+    };
+  }
 
   const best = candidates.reduce((a, b) => (score(b.confidence) > score(a.confidence) ? b : a));
   if (score(best.confidence) < thresholds.confidence) {
@@ -1618,10 +1697,16 @@ describe("assertDeciderBaseUrl", () => {
 Add to that file's imports:
 
 ```typescript
+import type { ResolvedAddress } from "./network-address.js";
 import { assertDeciderBaseUrl } from "./systemone-client.js";
 
-/** Offline hostname resolution: public addresses only, no DNS. */
-const resolvePublic = async () => ["93.184.216.34"];
+/**
+ * Offline hostname resolution: a public address, no DNS.
+ * `ResolveHostname` returns `{ address, family }` objects, not bare strings.
+ */
+const resolvePublic = async (): Promise<ResolvedAddress[]> => [
+  { address: "93.184.216.34", family: 4 },
+];
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1856,10 +1941,16 @@ export interface SystemOnePageDeciderOptions {
 
 const EMPTY: PageDecision = { candidates: [], goalMet: 0, stuck: 0, blocked: 0 };
 
-/** Fields that may carry a typed secret never leave the process. */
-function safeElement(element: BrowserSnapshotNode): BrowserSnapshotNode {
-  const { ref, role, name, tag } = element;
-  return { ref, role, name, tag };
+/**
+ * The one description of an element that leaves the process.
+ *
+ * `value` is deliberately never included: it can carry a typed secret, and the
+ * decider has no use for it. Keeping the projection in one function is what
+ * makes that guarantee checkable.
+ */
+function labelFor(element: BrowserSnapshotNode): string {
+  const tag = element.tag ? ` <${element.tag}>` : "";
+  return `${element.role}${tag}: ${element.name}`.slice(0, 200);
 }
 
 /** The decider names an element; the kind follows from what that element is. */
@@ -1920,21 +2011,21 @@ export class SystemOnePageDecider implements PageDecider {
       model: this.model,
       signal,
       fetchImpl: this.fetchImpl,
+      // The criteria map already names every element, so the state deliberately
+      // does not repeat them: sending both would roughly double the bytes on
+      // the hot path for no added signal.
       state: {
         goal: request.goal,
         origin: new URL(request.url).origin,
         title: request.title,
         excerpt: request.excerpt.slice(0, MAX_EXCERPT_CHARS),
-        elements: elements.map(safeElement),
         history: request.history,
       },
       questions: {
         element: {
           type: "choice",
           instructions: "Which element should be acted on next to advance the goal?",
-          criteria: Object.fromEntries(
-            elements.map((element) => [element.ref, `${element.role}: ${element.name}`]),
-          ),
+          criteria: Object.fromEntries(elements.map((element) => [element.ref, labelFor(element)])),
         },
         goalMet: { type: "noul", instructions: "Is the goal already satisfied on this page?" },
         stuck: { type: "noul", instructions: "Is there no listed element that can progress?" },
@@ -2076,9 +2167,17 @@ export const PAGE_DECISION_RESPONSE_SCHEMA = RESPONSE_SCHEMA;
 export function parsePageDecision(
   raw: unknown,
   elements: readonly BrowserSnapshotNode[],
-): PageDecision | { error: string } {
+): PageDecision {
   const parsed = answerSchema.safeParse(raw);
-  if (!parsed.success) return { error: "The decider model returned no decision." };
+  if (!parsed.success) {
+    return {
+      candidates: [],
+      goalMet: 0,
+      stuck: 0,
+      blocked: 0,
+      error: "The decider model returned no decision.",
+    };
+  }
 
   const offered = new Set(elements.map((element) => element.ref));
   const candidates: PageDecisionCandidate[] = parsed.data.candidates
@@ -2562,8 +2661,10 @@ export class VisionPageDecider implements PageDecider {
       return { ...EMPTY, error: "The vision decider returned no decision." };
     }
 
-    const parsed = parsePageDecision(content, elements);
-    return "error" in parsed ? { ...EMPTY, error: parsed.error } : parsed;
+    // Returns a PageDecision either way, with `error` set on a bad answer, so
+    // there is no union to narrow here. `"error" in parsed` would not have been
+    // a sound discriminant: PageDecision carries an optional error of its own.
+    return parsePageDecision(content, elements);
   }
 }
 ```
@@ -3061,7 +3162,7 @@ it("refuses a loopback decider for an actor without the private-endpoint permiss
       choice: { provider: "systemone", model: null, external: false },
       baseUrl: "http://127.0.0.1:8000",
       allowPrivate: false,
-      resolve: async () => ["93.184.216.34"],
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
     }),
   ).rejects.toThrow(/private/i);
 });
@@ -3072,7 +3173,7 @@ it("allows a loopback decider for an actor with the permission", async () => {
       choice: { provider: "systemone", model: null, external: false },
       baseUrl: "http://127.0.0.1:8000",
       allowPrivate: true,
-      resolve: async () => ["93.184.216.34"],
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
     }),
   ).resolves.toMatchObject({ baseUrl: "http://127.0.0.1:8000" });
 });
@@ -3082,7 +3183,7 @@ it("needs no URL check for the model backend", async () => {
     resolveDeciderConnection({
       choice: { provider: "model", model: null, external: false },
       allowPrivate: false,
-      resolve: async () => ["93.184.216.34"],
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
     }),
   ).resolves.toMatchObject({ provider: "model" });
 });
@@ -3509,6 +3610,9 @@ export async function runPageDecisionChain(
       budget: { steps, elapsedMs: clock() - started },
       history,
       knownRefs: snapshot.elements.map((element) => element.ref),
+      // The chain can only click: the decider never supplies text to type.
+      // The policy uses this to skip a fill candidate and try the next click.
+      dispatchableKinds: ["click"],
       thresholds,
     });
 
@@ -3540,13 +3644,6 @@ export async function runPageDecisionChain(
     if (outcome.action === "escalate") {
       record("escalate", outcome.reason);
       return { outcome: "escalate", reason: outcome.reason, steps, snapshot };
-    }
-
-    // The decider never supplies text, so only click is dispatchable here.
-    // A fill or type candidate is the model's job and escalates.
-    if (outcome.kind !== "click") {
-      record("escalate", "needs_text");
-      return { outcome: "escalate", reason: "needs_text", steps, snapshot };
     }
 
     const before = snapshot.url + snapshot.tree;
@@ -3730,9 +3827,11 @@ describe("browser tool integration", () => {
       { url: "https://example.test/form", goal: "press continue" },
       { decider: new FakePageDecider({ decisions: [{ goalMet: 0.99 }] }) },
     );
-    expect(Object.keys(result).sort()).toEqual(["goalMet", "title", "url"]);
+    // Assert the absences, not an exact key set: a provider may include
+    // `fallback: undefined`, which would show up in Object.keys.
     expect(result).not.toHaveProperty("tree");
     expect(result).not.toHaveProperty("elements");
+    expect(result).toMatchObject({ goalMet: true });
   });
 
   it("returns exactly the old shape when no goal is supplied", async () => {

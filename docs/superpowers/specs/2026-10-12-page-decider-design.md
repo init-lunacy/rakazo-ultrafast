@@ -273,12 +273,22 @@ Evaluation order is fixed and tested, because the order is the policy:
 4. `stuck` at or above threshold → `escalate`.
 5. `decision.error` set, or no candidates at all → `escalate`.
 6. Drop every candidate that repeats a prior attempt which did not change the page.
-7. No candidates remain, or the best remaining candidate is below the confidence
-   threshold → `escalate`.
-8. Otherwise → `act` on the best remaining candidate.
+7. Drop every candidate whose kind the caller cannot dispatch. If that empties a
+   non-empty set → `escalate` with `needs_text`; if nothing was addressable to begin
+   with → `escalate` with `no_candidates`.
+8. The best remaining candidate is below the confidence threshold → `escalate`.
+9. Otherwise → `act` on the best remaining candidate.
 
-The confidence threshold is applied after repeat-filtering, to whichever candidate
-is actually selected — never to a candidate the policy has already discarded.
+The confidence threshold is applied last, to whichever candidate actually survives —
+never to one the policy has already discarded.
+
+Step 7 exists because the caller's dispatchable set is narrower than the decider's
+vocabulary: the chain can only click, since the decider never supplies text to type.
+Filtering inside the policy rather than rejecting afterwards is what keeps the ranked
+fallback working — a `fill` candidate at the top no longer hides a clickable one just
+below it. The two reasons are kept apart because they mean different things:
+`needs_text` is a routine hand-back to the model, while `no_candidates` usually means
+the page is not what we thought it was.
 
 Stop conditions are evaluated before any action executes. `elapsedMs` is measured
 from the start of the current browser leg, meaning the tool call that began this
