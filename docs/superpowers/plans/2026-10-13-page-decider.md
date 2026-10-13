@@ -10,6 +10,43 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-12-page-decider-design.md`. Read it before Task 1.
 
+## Corrections from execution
+
+This plan was executed on 2026-10-13. Where a step proved wrong, the code follows
+the fix below rather than the step's text. Each fix was made test-first. The spec
+is corrected to match.
+
+| Task | The plan said | What shipped, and why |
+|---|---|---|
+| 2 | Inline `type` specifiers in the test import | A top-level `import type`, per AGENTS.md |
+| 3 | Helper, adapter and fakes only | The Docker supervisor route also needed `extended` and `screenshot` in its schema, plus a 4 MiB output cap for captures; its 512 KiB cap is smaller than a typical base64 viewport PNG. `docker-sandbox.ts` mirrors the cap. |
+| 3 | `runLive` unchanged | `runLive` required `url`/`title` on every `ok` reply, so every live capture would have fallen back. A capture is now validated on `data`. |
+| 3 | `ast.parse` as the helper check | Added two Python unit tests, plus real-Chrome assertions in `apps/web/e2e/page-browser.spec.ts` |
+| 5 | Shared schema with an unbounded `confidence` | Kept Auto Review's `0..1` bound; otherwise a malformed `1.4` would auto-pass a tool call. Pinned by a test. |
+| 6 | `images` on the run request | `currentTurnImages`; `images` does not exist on `AgentRunRequest` |
+| 7 | Decider pairing check after the model check | Before it: the model check returns early when the model is not in the update |
+| 7 | `pnpm db:migrate` | `prisma migrate diff` (there was no database); the SQL is Prisma's own output |
+| 7 | `pnpm check` names other `Bot` builders | Web and mobile test fixtures gained the two fields |
+| 8 | Chain after any navigate or act | Only after a successful, certain step |
+| 8 | Direct `browser.snapshot` in the tools | One no-throw `readPage`, shared by the chain and the tools |
+| 8 | Fresh view only when the chain clicked | A fresh view whenever a chain ran, since the extended read renumbers refs; dropped rather than stale when unreadable |
+| 8 | Decider whenever a goal is present | Only where `browser_act` would run unasked: `builtinToolRunsUnasked` in core. A user's rule or a webhook run otherwise let the chain click past approval. |
+| 8 | `snapshot.tree` as the excerpt | `pageForDecider` drops values (by exact match), scrubs run secrets with `redactConnectorPayload`, then cuts to 4,000 characters |
+| 8 | History and change detection by ref | Attempts are keyed by role, name and tag and re-mapped to current refs each step, and the change check ignores refs. Otherwise the repeat-click guard could never fire. |
+| 8 | Chain `uncertain` flag alone | It also carries a note telling the model not to replay the click |
+| 8 | Two copies of the `goal` description | One `browserGoalProperty` constant |
+| 9 | `jevAvailable` in env, router and contract | Also `apps/api/src/app.ts` and the router's own `deps.env` type |
+| 9 | One test rendering twice | Two tests: `rpc.me` is fetched once on mount |
+| 9 | — | `intl:extract` run and catalogs committed (CI checks them); `model-settings.spec.ts` captures the picker |
+
+Deferred from the final review:
+- `goal` is advertised to bots without a decider.
+- Duplicating a bot does not copy its decider.
+- On very form-heavy pages, an extended snapshot can exceed the 512 KiB cap, and the chain then silently does not run.
+- The consent dialog names Jev as lowercase "jev", with no privacy link.
+- The systemone decider throws on an invalid URL; the chain catches it.
+- A doc comment sits above the wrong type in `types.ts`.
+
 ## Global Constraints
 
 Every task's requirements implicitly include these.
@@ -44,7 +81,7 @@ Each row replaces something an earlier draft would have built from scratch.
 | Fixture | Where | Used for |
 |---|---|---|
 | Auto Review's LLM checker | `packages/adapters/src/auto-review.ts` | the `model` decider: `runtime.run` with `tools: []`, `history: []`, JSON-only instructions, `done` text, usage forwarding |
-| `AgentRunRequest.images` | `packages/adapter-kit/src/types.ts:462` | sending the viewport capture to a model that can see |
+| `AgentRunRequest.currentTurnImages` | `packages/adapter-kit/src/types.ts` | sending the viewport capture to a model that can see (the field at `:462` is a history message's) |
 | `resolveConnectedModel` | `packages/adapters/src/executor.ts:2955` | resolving the decider's model exactly as backup and helper models are resolved |
 | `recordUsage` | `executor.ts`, as in the Auto Review wiring at `:4389` | billing decider calls |
 | `modelAcceptsImageInput` | `packages/adapters/src/model-vision.ts:87` | deciding whether to capture a screenshot at all |

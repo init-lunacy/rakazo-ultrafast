@@ -1,7 +1,30 @@
 # Page decider: a fast decision slot for the browser loop
 
-Status: design, approved for planning
+Status: implemented on 2026-10-13 (branch `feat/page-decider`, merged to the fork's `main`)
 Date: 2026-10-12
+
+> **Corrections from implementation.** Building and reviewing this design changed
+> several of its statements. They are corrected in place below, and listed here so
+> nothing changes silently:
+>
+> - The screenshot and extended snapshot travel through the Docker supervisor's
+>   `/computers/:id/browser` route, which validates commands against its own schema
+>   and caps replies. That route learned both, and a capture alone may be 4 MiB.
+>   Every other reply keeps the 512 KiB cap.
+> - The chain is held to `browser_act`'s approval gate. Browser tools are exempt from
+>   the default approval list, but a user's own rules and unattended (webhook) runs
+>   still apply to them, and the chain's clicks were nobody's approved action.
+> - The decider sees no more than the model does. Element values are removed by
+>   exact match, never by a pattern a page-controlled name could steer. The run's
+>   secrets are scrubbed before the excerpt is cut, so a secret straddling the cut
+>   cannot leak in part.
+> - Refs are renumbered on every snapshot. So `browser_act` returns a fresh view
+>   whenever a chain ran, not only when it clicked. Past attempts are remembered by
+>   what the element is (role, name, tag), and the "did it change" check ignores refs.
+> - The chain runs only after the tool's own step succeeded. A failed or uncertain
+>   step may have half-happened, so nothing acts on top of it.
+> - A chain click whose result was lost is reported with a note telling the model not
+>   to replay it.
 
 ## Why
 
@@ -161,9 +184,11 @@ result carries `acted`, the names of the elements clicked, in order. Without
 it the planner cannot see the path it just took and may repeat work or reason from a
 stale picture of the page. The highest-scoring published system's stated insight is
 precisely this: compress the browsing into one call and return a concise description
-of what changed. Those fields are absent when the chain acted zero times, so a no-op
-chain is byte-identical to the pre-decider result. Element names go to the model and
-never to the log.
+of what changed. `acted` is absent when the chain clicked nothing. Output is
+byte-identical to the pre-decider result whenever no decider runs, meaning no goal or
+no decider. Once a chain has run, `browser_act` returns a fresh view, because reading
+the page for the decider renumbers every ref. Element names go to the model and never
+to the log.
 
 The decider is strictly an accelerator. Every outcome except `act` and `done` lands
 in behavior that exists today. Removing the slot restores the current loop exactly.
@@ -183,9 +208,10 @@ export interface PageDeciderCapabilities {
 }
 
 export interface PageDecisionAttempt {
+  /** The element's ref on the current page; the chain re-maps each attempt per snapshot. */
   ref: string;
   kind: BrowserActKind;
-  /** Whether the page changed after this attempt. Drives the stuck signal. */
+  /** Whether the page changed after this attempt, ignoring refs. Drives the stuck signal. */
   changed: boolean;
 }
 
@@ -377,13 +403,19 @@ would enlarge every `browser_snapshot` for every bot, decider or not, and break 
 guarantee that a bot without a decider behaves exactly as today. `BrowserSnapshotRequest`
 gains `extended`, which only the decider sets: rects and up to 240 elements. The
 default snapshot stays at 80 elements with no rects. The chain re-reads the page
-extended after each click rather than reusing the act's own default snapshot, and
-when the chain has clicked, `browser_act`'s result carries a fresh default snapshot
-of the page it ended on — never the pre-chain tree, whose refs would be stale.
+extended after each click rather than reusing the act's own default snapshot. Once a
+chain has run, `browser_act`'s result carries a fresh default snapshot of the page it
+ended on. It never keeps the pre-chain tree, whose refs the extended read invalidated.
+If the fresh read fails, the tree is dropped rather than returned with dead refs.
 
 **The screenshot comes from CDP, not the desktop.** `BrowserProvider` gains an
 optional `screenshot()`, backed by a new `{ command: "screenshot" }` page-browser
 command that calls `Page.captureScreenshot` in the session the helper already holds.
+On Docker computers the command reaches the helper through the supervisor's
+`/computers/:id/browser` route. Its schema accepts `extended` and `screenshot`, and its
+output cap is 4 MiB for a capture and 512 KiB for everything else, mirrored in
+`docker-sandbox.ts`. An older supervisor rejects the command, and the chain proceeds
+without pixels.
 
 This choice is the whole reason geometry is tractable. A desktop screenshot is the
 full screen including window chrome, in device pixels; element rects are CSS pixels
@@ -445,9 +477,10 @@ The decider is consulted inside the browser tool path in
 `packages/adapters/src/browser-tools.ts`, not in the executor loop. That keeps the
 change local to the browser tools, leaves the agent loop untouched, and means a bot
 whose computer has no page-browser contract is unaffected. The adapter is
-constructed where `BrowserProvider` already is — the `deps.browser` defaulting site
-at `packages/adapters/src/executor.ts:2953` — and passed into the tool functions
-alongside `browser`, which those functions already take as a parameter.
+built lazily in the executor, once per run, after the bot is loaded. It is passed into
+the tool functions through an options object alongside `browser`, so no existing
+call site changes. It is built only when the call carries a goal and `browser_act`
+would run unasked (see Security).
 
 **Where the goal comes from.** The decider needs the leg's goal, and the current
 tool schemas have nowhere to put it. `browser_navigate` and `browser_act` therefore
@@ -536,19 +569,33 @@ data the product handles, which is why a fully local configuration is first-clas
   than substitutes, so a private bot is never silently re-routed to an outside
   service.
 - **No secrets, structurally.** The decider never produces or receives typed text,
-  so credential values cannot reach it through the action path. Element values are
-  never sent: `systemone` sends one label per element, built by a single function
-  that excludes the value, and `model` sends `ref`, `role`, `name` and `tag` only.
-  The in-computer helper already masks password values at the source.
+  so credential values cannot reach it through the action path.
+  - The chain decides what any decider is shown, in one function, `pageForDecider`.
+    It drops `value` from every element and removes each element's value from the
+    tree excerpt by exact match against the snapshot's own values.
+  - It scrubs the run's secrets with the same `redactConnectorPayload` the model's
+    copy goes through, before the excerpt is cut.
+  - `systemone` sends one label per element, and `model` sends `ref`, `role`, `name`
+    and `tag` only.
+  - The in-computer helper already masks password values at the source.
+  - The viewport capture is pixels and cannot be scrubbed. That is the same as
+    `computer_observe` for the model.
 - **Rects stay in the process.** The model is never shown them — not by the decider,
   and not in tool results, which use the default snapshot. Only our code maps a point
   back to an element.
 - **The origin is a trust boundary.** The decider reads text the page controls, and a
   small model is easier to steer than the bot's own. A click that lands on another
   origin stops the chain and hands control back to the bot's model, so a page cannot
-  walk the bot to another site through the decider. Browser tools were already exempt
-  from action approval, so the chain bypasses no approval; this bounds what the
-  weaker judge can do on its own.
+  walk the bot to another site through the decider.
+- **The chain is held to `browser_act`'s gate.** Browser tools are exempt from the
+  default approval list, but a user's rules and unattended triggers still apply to
+  them. The chain's clicks are `browser_act` actions nobody approved, so the executor
+  builds a decider only where `browser_act` itself would run unasked
+  (`builtinToolRunsUnasked` in `@rakazo/core`). A rule requiring approval for
+  `browser_act`, or a webhook-triggered run, therefore turns the chain off.
+- **Nothing acts on a half-done step.** The chain runs only after the tool's own
+  navigate or act succeeded with no uncertainty. A chain click whose result was lost
+  stops the chain, and the result tells the model not to replay it.
 - **Nothing in the chain throws.** A failing decider, click or snapshot becomes an
   escalation, so the accelerator can never turn a successful tool call into an error.
 - **Bounded payloads.** At most 240 elements, labels capped at 120 characters, the
@@ -573,14 +620,31 @@ Deterministic and offline throughout.
 3. **Adapters** — ranking from `probabilities`, timeouts, no element value sent,
    fenced JSON, point mapping through the capture's scale, list-only fallback
    without a capture.
-4. **Chain and tools** — confident clicks, escalation, takeover, no replay of an
-   uncertain action, a capture only for a seeing decider, byte-identical output
-   without a goal, preserved result shape, redaction, and the desktop loop-guard
-   reset.
-5. **Selection and consent** — the decider is built only when configured and
-   resolvable, and a bot's decider appears as a consent recipient.
-6. **Settings** — the picker sits inside Advanced, offers Jev only when available,
-   saves and clears.
+4. **Chain and tools**
+   - Clicking and stopping: confident clicks, escalation, takeover, and no replay of
+     an uncertain action, which carries a note saying so.
+   - Captures: taken only for a seeing decider.
+   - Output: byte-identical without a goal, the result shape preserved, and live refs
+     both after clicks and after a chain that clicked nothing.
+   - Failure handling: no chain after a failed or uncertain step, and a successful
+     navigate kept when the page cannot be re-read.
+   - Repeat clicks: an element that does nothing is not clicked twice, across ref
+     renumbering.
+   - Privacy: no element value reaches the decider whatever the element is named,
+     and run secrets are scrubbed, including one straddling the excerpt cut.
+   - Redaction and the desktop loop-guard reset.
+5. **Transport** — the supervisor forwards `extended` and accepts a capture larger
+   than the snapshot cap. The Docker adapter does the same. The helper's Python is
+   unit-tested, and its JavaScript and CDP capture run against headless Chrome in
+   `apps/web/e2e/page-browser.spec.ts`.
+6. **Approval** — `builtinToolRunsUnasked` is false under a `require_approval` rule
+   for the tool, on a webhook run, and for tools that need approval by default.
+7. **Selection and consent** — the decider is built only when configured and
+   resolvable, a bot's decider appears as a consent recipient, and the update schema
+   rejects a provider without a model even when the bot's own model is not in the
+   update.
+8. **Settings** — the picker sits inside Advanced, offers Jev only when available,
+   saves and clears. `model-settings.spec.ts` captures a CI screenshot of it.
 
 Measuring the success criteria — call reduction, latency, bot-wall recall and false
 takeovers — needs recorded real traffic, not a handful of fixtures, so it is not part
@@ -607,6 +671,9 @@ edits to shared files are each one or two lines, and they are the complete list:
 | `packages/adapter-kit/src/types.ts` | optional `rect`, screenshot types, one command variant |
 | `packages/adapter-kit/src/interfaces.ts` | one optional `BrowserProvider.screenshot` |
 | `infra/sandboxes/computer/rakazo-page-browser` | rects, cap 240, a `screenshot` command |
+| `infra/sandboxes/supervisor/src/index.ts` | `extended` and `screenshot` in the route schema; a 4 MiB capture cap |
+| `packages/adapters/src/docker-sandbox.ts` | the same capture cap on the client side |
+| `packages/core/src/action-approval.ts` | `builtinToolRunsUnasked` |
 | `packages/adapters/src/computer-browser.ts` | `screenshot()` |
 | `packages/adapters/src/fake-browser.ts`, `page-browser-session.ts` | offline rects and capture |
 | `packages/adapters/src/jev-auto-review.ts` | moved onto the shared System One client |
@@ -614,9 +681,10 @@ edits to shared files are each one or two lines, and they are the complete list:
 | `packages/adapters/src/builtin-tools.ts` | one optional `goal` field on two tool schemas |
 | `packages/adapters/src/executor.ts` | a lazy per-run decider and two dispatch edits |
 | `packages/db/prisma/schema.prisma` | two nullable columns on `Bot` |
-| `packages/contracts/src/domain.ts`, `db/src/repos.ts`, `api/src/router.ts` | the two columns, end to end, and `jevAvailable` |
+| `packages/contracts/src/domain.ts`, `db/src/repos.ts`, `api/src/router.ts`, `api/src/env.ts`, `api/src/app.ts` | the two columns, end to end, and `jevAvailable` |
 | `apps/api/src/ai-consent.ts` | the decider as one more model recipient |
 | `apps/web/src/pages/shell/bot-panel.tsx` | one select under Advanced |
+| `apps/web/src/locales/*/messages.po` | the two new strings, from `intl:extract` |
 
 The schema change is additive and nullable, so a merge that brings in upstream
 migrations orders cleanly alongside it. The files most likely to collide on an
@@ -631,10 +699,16 @@ git remote add origin <your-fork-url>
 git fetch upstream
 ```
 
-Keep `main` tracking `upstream/main` and never commit to it directly; do all work on
-topic branches off `main`. Sync with `git fetch upstream && git merge upstream/main`
-on `main`, then rebase live topic branches. Because the shared-file edits above are
-small additions rather than rewrites, that merge stays mechanical.
+The fork's `main` carries the fork's own work, including this feature and a README
+note, so it is no longer a pure mirror of upstream. Do new work on topic branches
+off `main` and merge them back. Sync with `git fetch upstream && git merge
+upstream/main` on `main`, then rebase live topic branches. Because the shared-file
+edits above are small additions rather than rewrites, that merge stays mechanical.
+The README note is the one edit most likely to conflict, since upstream edits its
+top too.
+
+To offer the feature upstream, open the pull request from `feat/page-decider`, not
+from `main`, so the README note and other fork-only commits stay out of it.
 
 ## Non-goals
 
