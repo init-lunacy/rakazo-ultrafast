@@ -19,7 +19,7 @@ Every task's requirements implicitly include these.
 - Tests are deterministic and offline. No test reaches the network.
 - The decider never produces text to type and never dispatches a coordinate. It names a ref; the browser path acts on it.
 - Policy thresholds are configuration with these defaults: `goalMet` 0.85, `stuck` 0.85, `blocked` 0.85, candidate confidence 0.70, 24 steps, 180000 ms.
-- Snapshot element cap is 240, under the System One protocol's 255-option ceiling. Element rects are CSS pixels relative to the viewport; the screenshot is a CDP viewport capture, never the desktop observe frame.
+- The default snapshot — the one the model sees — is unchanged: 80 elements, no rects. Only an `extended` snapshot, which only the decider requests, carries rects and up to 240 elements (under the System One protocol's 255-option ceiling). Rects are viewport CSS pixels; the screenshot is a CDP viewport capture, never the desktop observe frame.
 - Logs carry outcome, reason, scores and URL origin only — never page text, element names, or a full URL.
 - Public repository: no secrets, real hostnames or personal data. Seeded pages use `example.test`.
 - No CAPTCHA solving. An interstitial routes to `request_takeover`.
@@ -92,7 +92,7 @@ Not modified: `BrowserCapabilities`, `browser-emulator.ts` (it extends `FakeBrow
 - Test: `packages/adapter-kit/src/registry.test.ts`
 
 **Interfaces:**
-- Produces: `PageDecider`, `PageDeciderCapabilities`, `PageDecisionRequest`, `PageDecisionAttempt`, `PageDecision`, `PageDecisionCandidate`, `slots.pageDecider`. Every later task uses these names.
+- Produces: `PageDecider`, `PageDeciderCapabilities`, `PageDecisionRequest`, `PageDecisionAttempt`, `PageDecision`, `PageDecisionCandidate`, `PAGE_DECISION_MAX_ELEMENTS`, `PAGE_DECISION_MAX_EXCERPT_CHARS`, `slots.pageDecider`. Every later task uses these names; the two bounds are defined once here rather than repeated in each decider and the chain.
 
 The capabilities object carries only `vision`, because it is the only one anything branches on: the chain captures a screenshot only for a decider that uses one. An earlier draft also declared `pick`, `scores` and `keyless`, which were always true or never read.
 
@@ -183,6 +183,10 @@ export interface PageDecider {
     context: AdapterContext,
   ): Promise<PageDecision>;
 }
+
+/** Bounds every decision request is built within; deciders enforce them too. */
+export const PAGE_DECISION_MAX_ELEMENTS = 240;
+export const PAGE_DECISION_MAX_EXCERPT_CHARS = 4_000;
 ```
 
 - [ ] **Step 4: Add the slot and export**
@@ -678,12 +682,14 @@ git commit -m "feat(core): add the page decision policy"
 
 The page browser reports where each element is and can capture the viewport in the same coordinate space. Both are optional, so a provider on an older computer image loses the vision path and nothing else.
 
+Rects and the larger element list come only with an **`extended`** snapshot, which only the decider asks for. Every browser tool result returns its `elements` to the model, so putting rects on every snapshot — or raising the default cap from 80 — would enlarge every `browser_snapshot` for every bot, decider or not, and break the guarantee that a bot without a decider behaves exactly as today.
+
 **Files:**
 - Modify: `packages/adapter-kit/src/types.ts`, `packages/adapter-kit/src/interfaces.ts`, `infra/sandboxes/computer/rakazo-page-browser`, `packages/adapters/src/computer-browser.ts`, `packages/adapters/src/page-browser-session.ts`, `packages/adapters/src/fake-browser.ts`
 - Test: `packages/adapters/src/browser-conformance.test.ts`
 
 **Interfaces:**
-- Produces: `BrowserSnapshotNode.rect?`, `BrowserScreenshotRequest`, `BrowserScreenshotResult`, optional `BrowserProvider.screenshot`, the `{ command: "screenshot" }` page-browser command, and `FakeBrowserProvider.noScreenshot`.
+- Produces: `BrowserSnapshotNode.rect?`, `BrowserSnapshotRequest.extended?`, `BrowserScreenshotRequest`, `BrowserScreenshotResult`, optional `BrowserProvider.screenshot`, the `{ command: "screenshot" }` page-browser command, and `FakeBrowserProvider.noScreenshot`.
 
 `BrowserCapabilities` gains nothing. An earlier draft added a required `geometry` flag, which would have forced an edit to every browser provider; consumers can simply check whether an element has a `rect`.
 
@@ -694,9 +700,13 @@ The capture comes from CDP rather than the desktop frame because a desktop frame
 In `packages/adapters/src/browser-conformance.test.ts`, at the end of `assertBrowserConformance`:
 
 ```typescript
-  // Rects are optional — older computer images report none — but a rect that
-  // is present must be usable.
-  for (const element of snap.elements) {
+  // The default snapshot is what the model sees, and must not change.
+  expect(snap.elements.some((element) => element.rect)).toBe(false);
+
+  // Rects come only with an extended snapshot, and are optional there — older
+  // computer images report none — but a rect that is present must be usable.
+  const extended = await provider.snapshot(computer, { extended: true }, context);
+  for (const element of extended.elements) {
     if (!element.rect) continue;
     expect(element.rect.width).toBeGreaterThan(0);
     expect(element.rect.height).toBeGreaterThan(0);
@@ -718,7 +728,7 @@ And a case in the `describe`:
   it("reports rects and a capture offline", async () => {
     const provider = new FakeBrowserProvider({ pages: seededPages });
     await provider.navigate(computer, { url: "https://example.test/form" }, context);
-    const snap = await provider.snapshot(computer, {}, context);
+    const snap = await provider.snapshot(computer, { extended: true }, context);
     expect(snap.elements.every((element) => element.rect)).toBe(true);
     expect((await provider.screenshot(computer, {}, context)).fallback).toBeUndefined();
   });
@@ -733,11 +743,21 @@ And a case in the `describe`:
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `pnpm vitest run packages/adapters/src/browser-conformance.test.ts`
-Expected: FAIL — `provider.screenshot` is not a function, and `rect` is undefined.
+Expected: FAIL — `provider.screenshot` is not a function, and the extended snapshot carries no rects.
 
 - [ ] **Step 3: Add the types**
 
-In `packages/adapter-kit/src/types.ts`, add to `BrowserSnapshotNode`:
+In `packages/adapter-kit/src/types.ts`, add to `BrowserSnapshotRequest`:
+
+```typescript
+  /**
+   * Up to 240 elements, each with its rect, for the page decider. Off by
+   * default, so the snapshot the model sees is exactly what it was.
+   */
+  extended?: boolean;
+```
+
+Add to `BrowserSnapshotNode`:
 
 ```typescript
   /** Viewport CSS pixels, matching a viewport capture. Absent on older computer images. */
@@ -767,12 +787,12 @@ Extend the command union and result:
 ```typescript
 export type PageBrowserCommand =
   | { command: "navigate"; url: string }
-  | { command: "snapshot" }
+  | { command: "snapshot"; extended?: boolean }
   | { command: "screenshot" }
   | { command: "act"; actions: BrowserActStep[] };
 
 export type PageBrowserResult = Partial<
-  BrowserSnapshotResult & BrowserActResult & Omit<BrowserScreenshotResult, "mimeType">
+  BrowserSnapshotResult & BrowserActResult & BrowserScreenshotResult
 > & { ok: boolean };
 ```
 
@@ -798,10 +818,35 @@ In `infra/sandboxes/computer/rakazo-page-browser`, beside `visible()`:
   }
 ```
 
-In `snapshot()`'s element loop, add `rect: rectOf(el),` to the pushed object, and raise the cap:
+Give the JavaScript `snapshot` the flag, and make both the rect and the cap depend on it so the default stays exactly as today. Three line edits: `snapshot() {` becomes `snapshot(extended = false) {`; the pushed element object gains
 
 ```javascript
-        if (elements.length >= 240) break;
+          ...(extended ? { rect: rectOf(el) } : {}),
+```
+
+and the cap line becomes
+
+```javascript
+        if (elements.length >= (extended ? 240 : 80)) break;
+```
+
+In Python, `snapshot` takes and forwards the flag. Its existing caller inside `act()` (line ~609) keeps the default:
+
+```python
+def snapshot(client: CdpClient, session_id: str, extended: bool = False) -> dict[str, Any]:
+    ensure_helpers(client, session_id)
+    data = eval_json(
+        client,
+        session_id,
+        f"window.__rakazoPageBrowser.snapshot({'true' if extended else 'false'})",
+    )
+```
+
+with the rest of the function unchanged, and in `run()`'s dispatch:
+
+```python
+            elif command == "snapshot":
+                result = snapshot(client, session_id, bool(args.get("extended")))
 ```
 
 Beside the Python `snapshot` function:
@@ -835,7 +880,7 @@ In `run()`'s dispatch, beside `snapshot`:
 
 - [ ] **Step 5: The computer provider**
 
-`ComputerBrowserProvider.snapshot` already passes `live.elements` through untouched (`computer-browser.ts:112`), so rects need no change there. Add the capture after `snapshot`:
+`ComputerBrowserProvider.snapshot` already passes `live.elements` through untouched (`computer-browser.ts:112`), so its only change is forwarding the flag: replace `{ command: "snapshot" }` with `{ command: "snapshot", extended: request.extended }`. Add the capture after `snapshot`:
 
 ```typescript
   async screenshot(
@@ -866,12 +911,14 @@ In `run()`'s dispatch, beside `snapshot`:
 
 - [ ] **Step 6: Offline rects and capture**
 
-jsdom has no layout, so `page-browser-session.ts`'s `buildSnapshot` assigns stacked boxes by position. In its loop, directly before `elements.push(entry);`:
+jsdom has no layout, so the offline session assigns stacked boxes by position, and only for an extended snapshot. In `page-browser-session.ts`, `snapshot()` becomes `snapshot(extended = false)` and passes the flag to `this.buildSnapshot(extended)`, whose signature becomes `private buildSnapshot(extended = false)`. Directly before `elements.push(entry);`:
 
 ```typescript
       // Deterministic geometry: offline point mapping needs real boxes.
-      entry.rect = { x: 0, y: elements.length * 24, width: 320, height: 24 };
+      if (extended) entry.rect = { x: 0, y: elements.length * 24, width: 320, height: 24 };
 ```
+
+The session's own `this.snapshot()` calls after navigate and act keep the default. In `fake-browser.ts`, rename `snapshot`'s `_request` parameter to `request` and change its last line to `.snapshot(request.extended);`.
 
 In `packages/adapters/src/fake-browser.ts`, beside the existing `forceFallback` flag:
 
@@ -1388,11 +1435,10 @@ import type {
   PageDecision,
   PageDecisionRequest,
 } from "@rakazo/adapter-kit";
+import { PAGE_DECISION_MAX_ELEMENTS, PAGE_DECISION_MAX_EXCERPT_CHARS } from "@rakazo/adapter-kit";
 import { DEFAULT_JEV_MODEL } from "./auto-review.js";
 import { postSystemOne, systemOneNoul, systemOneRanking } from "./systemone-client.js";
 
-const MAX_ELEMENTS = 240;
-const MAX_EXCERPT_CHARS = 4_000;
 const MAX_LABEL_CHARS = 120;
 
 const EMPTY: PageDecision = { candidates: [], goalMet: 0, stuck: 0, blocked: 0 };
@@ -1442,7 +1488,7 @@ export class SystemOnePageDecider implements PageDecider {
   ): Promise<PageDecision> {
     const caller = request.signal ?? context.signal;
     if (caller.aborted) return { ...EMPTY, error: "cancelled" };
-    const elements = request.elements.slice(0, MAX_ELEMENTS);
+    const elements = request.elements.slice(0, PAGE_DECISION_MAX_ELEMENTS);
 
     const result = await postSystemOne({
       apiKey: this.options.apiKey,
@@ -1455,7 +1501,7 @@ export class SystemOnePageDecider implements PageDecider {
         goal: request.goal,
         origin: new URL(request.url).origin,
         title: request.title,
-        excerpt: request.excerpt.slice(0, MAX_EXCERPT_CHARS),
+        excerpt: request.excerpt.slice(0, PAGE_DECISION_MAX_EXCERPT_CHARS),
         history: request.history,
       },
       questions: {
@@ -1746,10 +1792,9 @@ import type {
   PageDecisionCandidate,
   PageDecisionRequest,
 } from "@rakazo/adapter-kit";
+import { PAGE_DECISION_MAX_ELEMENTS, PAGE_DECISION_MAX_EXCERPT_CHARS } from "@rakazo/adapter-kit";
 import { z } from "zod";
 
-const MAX_ELEMENTS = 240;
-const MAX_EXCERPT_CHARS = 4_000;
 const POINT_TOLERANCE_PX = 12;
 const EMPTY: PageDecision = { candidates: [], goalMet: 0, stuck: 0, blocked: 0 };
 
@@ -1775,8 +1820,6 @@ const INSTRUCTIONS = [
 
 const POINT_INSTRUCTION =
   "If no listed element fits, you may instead set point:{x,y,kind,confidence} to the screenshot pixel you would click.";
-
-const FAILURE = /^(?:I hit a problem:|Unknown model )/i;
 
 /**
  * The smallest element containing the point, else the nearest within a few
@@ -1839,7 +1882,7 @@ export class ModelPageDecider implements PageDecider {
     const caller = request.signal ?? context.signal;
     if (caller.aborted) return { ...EMPTY, error: "cancelled" };
     const signal = AbortSignal.any([caller, AbortSignal.timeout(this.options.timeoutMs ?? 20_000)]);
-    const elements = request.elements.slice(0, MAX_ELEMENTS);
+    const elements = request.elements.slice(0, PAGE_DECISION_MAX_ELEMENTS);
     const capture = this.options.sees ? request.screenshot : undefined;
     const { runId, botId, threadId } = this.options.run;
 
@@ -1860,7 +1903,7 @@ export class ModelPageDecider implements PageDecider {
             goal: request.goal,
             origin: new URL(request.url).origin,
             title: request.title,
-            excerpt: request.excerpt.slice(0, MAX_EXCERPT_CHARS),
+            excerpt: request.excerpt.slice(0, PAGE_DECISION_MAX_EXCERPT_CHARS),
             elements: elements.map(({ ref, role, name, tag }) => ({ ref, role, name, tag })),
             history: request.history,
           }),
@@ -1875,9 +1918,9 @@ export class ModelPageDecider implements PageDecider {
         { ...context, operationId: `page-decider:${runId}`, signal },
       )) {
         if (event.type === "usage" && !event.accounted) await this.options.onUsage?.(event);
-        if (event.type === "done" && event.text && !FAILURE.test(event.text.trim())) {
-          text = event.text.trim();
-        }
+        // A runtime failure arrives as prose ("I hit a problem: …"), which is
+        // never valid JSON, so the parse below rejects it without a text match.
+        if (event.type === "done" && event.text) text = event.text.trim();
       }
     } catch {
       return { ...EMPTY, error: "The page decider did not answer." };
@@ -2116,9 +2159,14 @@ export async function pageDeciderForRun(input: {
   if (!provider || !modelId) return undefined;
 
   if (provider === JEV_AUTO_REVIEW_PROVIDER) {
-    return input.typesafeKey
-      ? new SystemOnePageDecider({ apiKey: input.typesafeKey, model: modelId })
-      : undefined;
+    if (input.typesafeKey) return new SystemOnePageDecider({ apiKey: input.typesafeKey, model: modelId });
+    // The picker only offers Jev when the API has a key, so this worker lacks one.
+    getLogger().warn("page decider unavailable for this run", {
+      event: "page_decider.unavailable",
+      provider,
+      reason: "TYPESAFE_API_KEY is not set for the worker",
+    });
+    return undefined;
   }
 
   try {
@@ -2305,11 +2353,14 @@ git commit -m "feat: choose a page decider per bot"
 What the chain keeps from every review pass, and why:
 
 - **The decider rides in an options object**, never a new positional argument, so no existing call site breaks.
-- **Results keep their shape.** `browser_navigate` still answers `{ url, title }`; the chain only updates where it landed and adds fields.
+- **The decider works on `extended` snapshots; the model never sees them.** It re-reads the page with rects after each click instead of reusing the act's own (default) snapshot.
+- **Results keep their shape.** `browser_navigate` still answers `{ url, title }`; `browser_act` gets a fresh default snapshot of the page the chain ended on, so its tree and refs are never those of a page it has left.
 - **Redaction stays outside the branch**, so a chain result cannot route around `redactConnectorPayload`.
-- **`goalMetConfidence`, never `goalMet: true`.** The decider that scored it also chose the actions; the bot's model does the verifying.
-- **`steps` and `acted` say what happened**, so the planner can see the path it just took. Both are absent when nothing was done.
+- **Claims, never verdicts.** `goalMetConfidence` and `blockedConfidence` are the decider's own estimates; the bot's model verifies the first and decides whether the second warrants `request_takeover`. A takeover interrupts a person, so it is the frontier model's call.
+- **`acted` says what happened**, so the planner can see the path it just took; absent when nothing was clicked.
 - **Only clicks dispatch**, because the decider never supplies text; the policy filters for that so a `fill` at the top cannot hide a click below it.
+- **The origin is a trust boundary.** The decider reads text the page controls, so a click that lands on another origin stops the chain and hands back to the model.
+- **Nothing throws.** A failing decider, click or snapshot becomes an escalation, never a failed tool call.
 - **The decider is built lazily**, once per run and only on the first call that carries a goal, so a run that never sends one pays nothing.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2317,7 +2368,7 @@ What the chain keeps from every review pass, and why:
 Create `packages/adapters/src/page-decision-chain.test.ts`:
 
 ```typescript
-import type { AdapterContext, ComputerRef } from "@rakazo/adapter-kit";
+import type { AdapterContext, BrowserSnapshotNode, ComputerRef, PageDecider } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
 import { browserActFromTool, browserNavigateFromTool } from "./browser-tools.js";
 import { unchangedVisualStreakAfterPageBrowser } from "./computer-tools.js";
@@ -2381,7 +2432,7 @@ describe("runPageDecisionChain", () => {
       goal: "press continue",
       snapshot,
     });
-    expect(result).toMatchObject({ outcome: "done", steps: 1, acted: ["Continue"], goalMetConfidence: 0.99 });
+    expect(result).toMatchObject({ outcome: "done", acted: ["Continue"], goalMetConfidence: 0.99 });
   });
 
   it("escalates without acting when unsure", async () => {
@@ -2396,7 +2447,7 @@ describe("runPageDecisionChain", () => {
       goal: "press continue",
       snapshot,
     });
-    expect(result).toMatchObject({ outcome: "escalate", steps: 0 });
+    expect(result).toMatchObject({ outcome: "escalate", acted: [] });
   });
 
   it("hands an interstitial to takeover", async () => {
@@ -2409,7 +2460,8 @@ describe("runPageDecisionChain", () => {
       goal: "read it",
       snapshot,
     });
-    expect(result.outcome).toBe("takeover");
+    // A claim for the bot's model to act on, not a takeover in progress.
+    expect(result).toMatchObject({ outcome: "takeover", blockedConfidence: 0.95, acted: [] });
   });
 
   // Review Focus 4: an uncertain action may already have happened. Stop.
@@ -2452,12 +2504,44 @@ describe("runPageDecisionChain", () => {
     expect(result.outcome).toBe("done");
     expect(vision.requests[0]?.screenshot).toBeUndefined();
   });
+
+  // The decider reads text the page controls; landing on another origin is a
+  // trust boundary, so the bot's own model takes over there.
+  it("hands back when a click leaves the starting origin", async () => {
+    const { browser, snapshot, button } = await onForm();
+    const read = browser.snapshot.bind(browser);
+    browser.snapshot = async (...args) => ({ ...(await read(...args)), url: "https://elsewhere.test/" });
+    const click = { candidates: [{ ref: button.ref, kind: "click" as const, confidence: 0.95 }] };
+    const decider = new FakePageDecider({ decisions: [click, click] });
+    const result = await runPageDecisionChain({ browser, decider, computer, context, goal: "go", snapshot });
+    expect(result).toMatchObject({ outcome: "escalate", reason: "left_origin", acted: ["Continue"] });
+    expect(decider.requests).toHaveLength(1);
+  });
+
+  it("treats a decider that throws as an escalation", async () => {
+    const { browser, snapshot } = await onForm();
+    const throwing: PageDecider = {
+      describe: () => new FakePageDecider().describe(),
+      decide: async () => {
+        throw new Error("decider crashed");
+      },
+    };
+    const result = await runPageDecisionChain({
+      browser,
+      decider: throwing,
+      computer,
+      context,
+      goal: "go",
+      snapshot,
+    });
+    expect(result).toMatchObject({ outcome: "escalate", acted: [] });
+  });
 });
 
 describe("decisionLogEvent", () => {
   it("records scores and origin, never page content", () => {
     const event = decisionLogEvent(
-      { outcome: "done", steps: 1, acted: ["Continue"], snapshot: { url: "https://example.test/form?q=secret", title: "Signup", tree: "Email", elements: [] } },
+      { outcome: "done", acted: ["Continue"], snapshot: { url: "https://example.test/form?q=secret", title: "Signup", tree: "Email", elements: [] } },
       { candidates: [{ ref: "e2", kind: "click", confidence: 0.9 }], goalMet: 0.99, stuck: 0, blocked: 0 },
     );
     const serialized = JSON.stringify(event);
@@ -2489,9 +2573,40 @@ describe("browser tool integration", () => {
       { decider: new FakePageDecider({ decisions: [{ goalMet: 0.99 }] }) },
     );
     expect(result).toMatchObject({ goalMetConfidence: 0.99 });
-    for (const key of ["tree", "elements", "goalMet", "steps", "acted"]) {
+    for (const key of ["tree", "elements", "goalMet", "steps", "acted", "takeover"]) {
       expect(result).not.toHaveProperty(key);
     }
+  });
+
+  // The act's own tree is of the page before the chain clicked. The result must
+  // carry the page it ended on, with refs that still resolve and no rects.
+  it("returns the page the chain ended on, with live refs", async () => {
+    const { browser, button } = await onForm();
+    // Picks by name, so it survives the ref renumbering every snapshot does.
+    const continueOnce: PageDecider = {
+      describe: () => new FakePageDecider().describe(),
+      decide: async (_computer, request) => {
+        if (request.history.length > 0) return { candidates: [], goalMet: 0.99, stuck: 0, blocked: 0 };
+        const target = request.elements.find((element) => /continue/i.test(element.name))!;
+        return { candidates: [{ ref: target.ref, kind: "click", confidence: 0.95 }], goalMet: 0, stuck: 0, blocked: 0 };
+      },
+    };
+    const result = (await browserActFromTool(
+      browser,
+      computer,
+      context,
+      { actions: [{ kind: "click", ref: button.ref }], goal: "press continue" },
+      { decider: continueOnce },
+    )) as { acted: string[]; elements: BrowserSnapshotNode[] };
+
+    expect(result.acted).toEqual(["Continue"]);
+    expect(result.elements.some((element) => element.rect)).toBe(false);
+    const again = await browser.act(
+      computer,
+      { actions: [{ kind: "click", ref: result.elements[0]!.ref }] },
+      context,
+    );
+    expect(again.ok).toBe(true);
   });
 
   it("still redacts when a chain runs", async () => {
@@ -2549,6 +2664,7 @@ Create `packages/adapters/src/page-decision-chain.ts`:
 ```typescript
 import type {
   AdapterContext,
+  BrowserActResult,
   BrowserProvider,
   BrowserSnapshotResult,
   ComputerRef,
@@ -2557,11 +2673,12 @@ import type {
   PageDecisionAttempt,
   PageDecisionRequest,
 } from "@rakazo/adapter-kit";
+import { PAGE_DECISION_MAX_EXCERPT_CHARS } from "@rakazo/adapter-kit";
 import { DEFAULT_PAGE_DECISION_THRESHOLDS, decidePageAction } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
 
 const MAX_GOAL_CHARS = 400;
-const MAX_EXCERPT_CHARS = 4_000;
+const EMPTY: PageDecision = { candidates: [], goalMet: 0, stuck: 0, blocked: 0 };
 
 /** Unusable goal means no goal: the decider never runs. */
 export function normalizeGoal(value: unknown): string | undefined {
@@ -2570,30 +2687,40 @@ export function normalizeGoal(value: unknown): string | undefined {
   return trimmed ? trimmed.slice(0, MAX_GOAL_CHARS) : undefined;
 }
 
+/** A page URL's origin, or "" when it has none. */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+}
+
 export interface PageDecisionChainResult {
   outcome: "done" | "escalate" | "takeover" | "refuse";
   reason?: string;
-  steps: number;
   /** Names of the elements clicked, in order — what changed, for the model to check. */
   acted: string[];
-  /** The decider's own estimate. A claim for the model to verify, never a verdict. */
+  /** The decider's own estimates: claims for the model to verify, never verdicts. */
   goalMetConfidence?: number;
+  blockedConfidence?: number;
   /** An action may have taken effect before its result was lost. */
   uncertain?: boolean;
+  /** The last extended snapshot. Never handed to the model as-is: it carries rects. */
   snapshot: BrowserSnapshotResult;
 }
 
-/** What a decision may record: scores and origin, never page content. */
+/** What a stop may record: scores and origin, never page content. */
 export function decisionLogEvent(
-  result: Omit<PageDecisionChainResult, "acted"> & { acted?: string[] },
+  result: Pick<PageDecisionChainResult, "outcome" | "reason" | "acted" | "snapshot">,
   decision: PageDecision,
 ) {
   return {
     event: "page_decider.decision",
     outcome: result.outcome,
     reason: result.reason,
-    steps: result.steps,
-    origin: result.snapshot.url ? new URL(result.snapshot.url).origin : undefined,
+    steps: result.acted.length,
+    origin: originOf(result.snapshot.url),
     goalMet: decision.goalMet,
     stuck: decision.stuck,
     blocked: decision.blocked,
@@ -2610,7 +2737,27 @@ async function capture(
   if (!browser.screenshot) return undefined;
   try {
     const shot = await browser.screenshot(computer, { signal: context.signal }, context);
-    return shot.fallback || !shot.data ? undefined : { data: shot.data, mimeType: "image/png", scale: shot.scale };
+    return shot.fallback || !shot.data
+      ? undefined
+      : { data: shot.data, mimeType: "image/png", scale: shot.scale };
+  } catch {
+    return undefined;
+  }
+}
+
+/** An extended snapshot, or nothing when the page browser cannot take one. */
+async function look(
+  browser: BrowserProvider,
+  computer: ComputerRef,
+  context: AdapterContext,
+): Promise<BrowserSnapshotResult | undefined> {
+  try {
+    const snapshot = await browser.snapshot(
+      computer,
+      { extended: true, signal: context.signal },
+      context,
+    );
+    return snapshot.fallback || snapshot.error ? undefined : snapshot;
   } catch {
     return undefined;
   }
@@ -2619,7 +2766,8 @@ async function capture(
 /**
  * Run confident clicks back to back, stopping the moment the policy is unsure.
  * Every stop lands in behavior that existed before, so the worst case is the
- * previous loop plus one decision.
+ * previous loop plus one decision. Nothing in here throws: a failing decider or
+ * click becomes an escalation, never a failed tool call.
  */
 export async function runPageDecisionChain(input: {
   browser: BrowserProvider;
@@ -2627,39 +2775,50 @@ export async function runPageDecisionChain(input: {
   computer: ComputerRef;
   context: AdapterContext;
   goal: string;
+  /** An extended snapshot of the page the chain starts on. */
   snapshot: BrowserSnapshotResult;
   now?: () => number;
 }): Promise<PageDecisionChainResult> {
   const { browser, decider, computer, context, goal } = input;
   const clock = input.now ?? Date.now;
   const started = clock();
+  const origin = originOf(input.snapshot.url);
   const sees = decider.describe().capabilities.vision;
   const history: PageDecisionAttempt[] = [];
   const acted: string[] = [];
   let snapshot = input.snapshot;
 
   for (;;) {
-    const decision = await decider.decide(
-      computer,
-      {
-        goal,
-        elements: snapshot.elements,
-        excerpt: snapshot.tree.slice(0, MAX_EXCERPT_CHARS),
-        url: snapshot.url,
-        title: snapshot.title,
-        history,
-        screenshot: sees ? await capture(browser, computer, context) : undefined,
-        signal: context.signal,
-      },
-      context,
-    );
+    let decision: PageDecision;
+    try {
+      decision = await decider.decide(
+        computer,
+        {
+          goal,
+          elements: snapshot.elements,
+          excerpt: snapshot.tree.slice(0, PAGE_DECISION_MAX_EXCERPT_CHARS),
+          url: snapshot.url,
+          title: snapshot.title,
+          history,
+          screenshot: sees ? await capture(browser, computer, context) : undefined,
+          signal: context.signal,
+        },
+        context,
+      );
+    } catch {
+      decision = { ...EMPTY, error: "The page decider failed." };
+    }
 
     // The decider speaks refs; the policy speaks opaque targets, which is what
     // lets a desktop chain reuse it later. The adaptation is these maps.
     const outcome = decidePageAction({
       decision: {
         ...decision,
-        candidates: decision.candidates.map((c) => ({ target: c.ref, kind: c.kind, confidence: c.confidence })),
+        candidates: decision.candidates.map((c) => ({
+          target: c.ref,
+          kind: c.kind,
+          confidence: c.confidence,
+        })),
       },
       budget: { steps: acted.length, elapsedMs: clock() - started },
       history: history.map((a) => ({ target: a.ref, kind: a.kind, changed: a.changed })),
@@ -2668,36 +2827,52 @@ export async function runPageDecisionChain(input: {
       thresholds: DEFAULT_PAGE_DECISION_THRESHOLDS,
     });
 
-    const stop = (result: Omit<PageDecisionChainResult, "steps" | "acted" | "snapshot">) => {
-      const full = { ...result, steps: acted.length, acted, snapshot };
+    const stop = (result: Omit<PageDecisionChainResult, "acted" | "snapshot">) => {
+      const full = { ...result, acted, snapshot };
       getLogger().info("page decider stopped", decisionLogEvent(full, decision));
       return full;
     };
 
-    if (outcome.action === "done") return stop({ outcome: "done", goalMetConfidence: decision.goalMet });
+    if (outcome.action === "done") {
+      return stop({ outcome: "done", goalMetConfidence: decision.goalMet });
+    }
+    if (outcome.action === "takeover") {
+      // A claim, like goalMet: the bot's model looks at the page and decides
+      // whether to request_takeover. A false takeover interrupts a person.
+      return stop({ outcome: "takeover", reason: outcome.reason, blockedConfidence: decision.blocked });
+    }
     if (outcome.action !== "act") return stop({ outcome: outcome.action, reason: outcome.reason });
 
-    const name = snapshot.elements.find((element) => element.ref === outcome.target)?.name ?? "";
+    const name =
+      snapshot.elements.find((element) => element.ref === outcome.target)?.name || outcome.target;
     const before = snapshot.url + snapshot.tree;
-    const result = await browser.act(
-      computer,
-      { actions: [{ kind: "click", ref: outcome.target }], signal: context.signal },
-      context,
-    );
+    let result: BrowserActResult;
+    try {
+      result = await browser.act(
+        computer,
+        { actions: [{ kind: "click", ref: outcome.target }], signal: context.signal },
+        context,
+      );
+    } catch {
+      result = { ok: false, completed: 0, uncertain: true, url: snapshot.url, title: snapshot.title };
+    }
     if (result.uncertain) {
-      acted.push(name || outcome.target);
+      acted.push(name);
       return stop({ outcome: "escalate", reason: "uncertain", uncertain: true });
     }
     if (!result.ok || result.fallback) return stop({ outcome: "escalate", reason: "act_failed" });
+    acted.push(name);
 
-    acted.push(name || outcome.target);
-    snapshot = {
-      url: result.url,
-      title: result.title,
-      tree: result.tree ?? snapshot.tree,
-      elements: result.elements ?? snapshot.elements,
-    };
-    history.push({ ref: outcome.target, kind: "click", changed: before !== snapshot.url + snapshot.tree });
+    // Re-read with rects rather than reuse the act's own snapshot, which is the
+    // default, model-facing one.
+    const next = await look(browser, computer, context);
+    if (!next) return stop({ outcome: "escalate", reason: "snapshot_failed" });
+    history.push({ ref: outcome.target, kind: "click", changed: before !== next.url + next.tree });
+    snapshot = next;
+
+    // Leaving the origin is a trust boundary. The decider reads text the page
+    // controls, so a page could steer it elsewhere; the bot's model takes over.
+    if (originOf(next.url) !== origin) return stop({ outcome: "escalate", reason: "left_origin" });
   }
 }
 ```
@@ -2707,10 +2882,12 @@ export async function runPageDecisionChain(input: {
 In `packages/adapters/src/browser-tools.ts`, add the imports:
 
 ```typescript
-import type { PageDecider } from "@rakazo/adapter-kit";
+import type { BrowserSnapshotResult, PageDecider } from "@rakazo/adapter-kit";
 import type { PageDecisionChainResult } from "./page-decision-chain.js";
 import { normalizeGoal, runPageDecisionChain } from "./page-decision-chain.js";
 ```
+
+(`BrowserSnapshotResult` joins the file's existing adapter-kit type import if it is already there.)
 
 Append an options parameter to `browserNavigateFromTool` — appended, never inserted:
 
@@ -2731,28 +2908,30 @@ async function chainForGoal(
 ): Promise<PageDecisionChainResult | undefined> {
   const goal = normalizeGoal(args.goal);
   if (!goal || !decider) return undefined;
-  const snapshot = await browser.snapshot(computer, { signal: context.signal }, context);
+  const snapshot = await browser.snapshot(computer, { extended: true, signal: context.signal }, context);
   if (snapshot.fallback || snapshot.error) return undefined;
   return await runPageDecisionChain({ browser, decider, computer, context, goal, snapshot });
 }
 
 /**
- * The calling tool's own result, moved to where the chain landed, plus at most
- * a claim and an account. Never the snapshot: that would widen a tool contract
- * the model already relies on.
+ * The calling tool's own result, moved to where the chain landed, with the
+ * decider's claims and an account of what it clicked. `view` replaces the tree
+ * and elements on results that carry them; browser_navigate's carries neither
+ * and keeps its shape.
  */
 function withChain<T extends { fallback?: "computer_act"; error?: string }>(
   base: T,
   chain: PageDecisionChainResult,
+  view?: BrowserSnapshotResult,
 ) {
-  const account = chain.acted.length > 0 ? { steps: chain.steps, acted: chain.acted } : {};
   return formatBrowserResult({
     ...base,
     url: chain.snapshot.url,
     title: chain.snapshot.title,
-    ...account,
-    ...(chain.outcome === "takeover" ? { takeover: true, reason: chain.reason } : {}),
-    ...(chain.outcome === "done" ? { goalMetConfidence: chain.goalMetConfidence } : {}),
+    ...(view ? { tree: view.tree, elements: view.elements } : {}),
+    ...(chain.acted.length > 0 ? { acted: chain.acted } : {}),
+    ...(chain.goalMetConfidence !== undefined ? { goalMetConfidence: chain.goalMetConfidence } : {}),
+    ...(chain.blockedConfidence !== undefined ? { blockedConfidence: chain.blockedConfidence } : {}),
     ...(chain.uncertain ? { uncertain: true } : {}),
   });
 }
@@ -2769,8 +2948,16 @@ In `browserActFromTool`, replace `return redactConnectorPayload(formatBrowserRes
 
 ```typescript
     const chain = await chainForGoal(browser, computer, context, args, options.decider);
+    // Once the chain has clicked, the act's own tree is of a page it has left.
+    // A default snapshot is exactly what the model would see from browser_snapshot.
+    const view =
+      chain && chain.acted.length > 0
+        ? await browser.snapshot(computer, { signal: context.signal }, context)
+        : undefined;
     return redactConnectorPayload(
-      chain ? withChain(result, chain) : formatBrowserResult(result),
+      chain
+        ? withChain(result, chain, view && !view.fallback && !view.error ? view : undefined)
+        : formatBrowserResult(result),
       options.redactions?.() ?? [],
     );
 ```
@@ -2781,7 +2968,7 @@ In `packages/adapters/src/builtin-tools.ts`, add to both `browser_navigate`'s an
         goal: {
           type: "string",
           description:
-            "Optional. What to accomplish on this page, so simple steps run without a screenshot. The result reports the steps taken and a goalMetConfidence to check against the page.",
+            "Optional. What to accomplish on this page, so simple steps run without a screenshot. The result lists what was clicked, with confidence scores to check against the page rather than trust.",
         },
 ```
 
@@ -3038,19 +3225,21 @@ Directly after the thinking-level select that follows the model select, mirrorin
         </label>
 ```
 
-In the save patch, beside `modelProvider` / `modelId`. A saved decider that is no longer offered resolves to no change rather than being cleared:
+Beside the state, a small function maps the selection to the two columns. A saved decider that is no longer offered resolves to no change rather than being cleared:
 
 ```typescript
-        ...(deciderKey === ""
-          ? { pageDeciderProvider: null, pageDeciderModel: null }
-          : deciderKey === jevKey
-            ? { pageDeciderProvider: "jev", pageDeciderModel: "jev-latest" }
-            : (() => {
-                const option = connectedOptions.find((candidate) => candidate.key === deciderKey);
-                return option
-                  ? { pageDeciderProvider: option.provider, pageDeciderModel: option.modelId }
-                  : {};
-              })()),
+  function deciderPatch() {
+    if (deciderKey === "") return { pageDeciderProvider: null, pageDeciderModel: null };
+    if (deciderKey === jevKey) return { pageDeciderProvider: "jev", pageDeciderModel: "jev-latest" };
+    const option = connectedOptions.find((candidate) => candidate.key === deciderKey);
+    return option ? { pageDeciderProvider: option.provider, pageDeciderModel: option.modelId } : {};
+  }
+```
+
+In the save patch, beside `modelProvider` / `modelId`:
+
+```typescript
+        ...deciderPatch(),
 ```
 
 `Jev` is a product name and is not translated. The two translated strings are `Page decider` and `Off`.

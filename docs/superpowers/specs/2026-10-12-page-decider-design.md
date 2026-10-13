@@ -142,19 +142,22 @@ decidePageAction(decision, budget, thresholds)   <- pure policy, in core
         +-- act       -> BrowserProvider.act (one step)
         +-- done      -> hand back with a goal-met confidence for the model to check
         +-- escalate  -> today's path: screenshot + the bot's own model
-        +-- takeover  -> request_takeover / waiting_takeover
+        +-- takeover  -> hand back a blocked claim; the model may request_takeover
         +-- refuse    -> budget exhausted, hand back with what is known
 ```
 
-**The decider assesses; the frontier model verifies.** `goalMet` is scored by the
-same component that chose the actions, so it is self-assessment and is reported as a
-claim — `goalMetConfidence`, never `goalMet: true`. Asserting it as fact would hand
-the model a cheap model's opinion as an established result and delete the "verify"
-from plan / classify / verify, which is the step the published systems treat as
-load-bearing.
+**The decider assesses; the frontier model verifies.** `goalMet` and `blocked` are
+scored by the same component that chose the actions, so they are self-assessment and
+are reported as claims — `goalMetConfidence` and `blockedConfidence`, never
+`goalMet: true` or `takeover: true`. Asserting them as fact would hand the model a
+cheap model's opinion as an established result and delete the "verify" from plan /
+classify / verify, which is the step the published systems treat as load-bearing. For
+`blocked` it matters twice: a takeover interrupts a person, so whether to call
+`request_takeover` is the bot's model's decision, made looking at the page — which is
+also what keeps the false-takeover rate down.
 
 **A chain says what it did.** Because several steps collapse into one tool call, the
-result carries the number of steps and the names of the elements acted on. Without
+result carries `acted`, the names of the elements clicked, in order. Without
 it the planner cannot see the path it just took and may repeat work or reason from a
 stale picture of the page. The highest-scoring published system's stated insight is
 precisely this: compress the browsing into one call and return a concise description
@@ -368,6 +371,16 @@ element is, and a screenshot in the same coordinate space. Both are additive.
 `getBoundingClientRect()` and discards the result. `BrowserSnapshotNode` gains an
 optional `rect: { x, y, width, height }` in CSS pixels relative to the viewport.
 
+**Only an extended snapshot carries them.** Every browser tool result returns its
+`elements` to the model, so rects on every snapshot — or a higher default cap —
+would enlarge every `browser_snapshot` for every bot, decider or not, and break the
+guarantee that a bot without a decider behaves exactly as today. `BrowserSnapshotRequest`
+gains `extended`, which only the decider sets: rects and up to 240 elements. The
+default snapshot stays at 80 elements with no rects. The chain re-reads the page
+extended after each click rather than reusing the act's own default snapshot, and
+when the chain has clicked, `browser_act`'s result carries a fresh default snapshot
+of the page it ended on — never the pre-chain tree, whose refs would be stale.
+
 **The screenshot comes from CDP, not the desktop.** `BrowserProvider` gains an
 optional `screenshot()`, backed by a new `{ command: "screenshot" }` page-browser
 command that calls `Page.captureScreenshot` in the session the helper already holds.
@@ -388,11 +401,10 @@ a bot on an un-rebuilt image loses the accelerator rather than the browser.
 This revises two earlier decisions in this document. `BrowserProvider` does change
 after all — by one optional method, because that is where a page-browser capability
 belongs, and routing around it through an injected callback to preserve a stale
-promise would be worse design. And the element cap rises from 80 to 240: a point
-landing on element 81 cannot be named, so the fallback would fail silently on
+promise would be worse design. And the decider's element cap is 240: a point
+landing on element 81 could not be named, so the fallback would fail silently on
 exactly the dense pages it exists for. 240 matches the reference implementation and
-stays under the protocol's 255-option ceiling. The image rebuild the cap change
-needs is already required by the geometry work.
+stays under the protocol's 255-option ceiling. The model-facing cap stays 80.
 
 ### Selection: per bot
 
@@ -528,8 +540,17 @@ data the product handles, which is why a fully local configuration is first-clas
   never sent: `systemone` sends one label per element, built by a single function
   that excludes the value, and `model` sends `ref`, `role`, `name` and `tag` only.
   The in-computer helper already masks password values at the source.
-- **Rects stay in the process.** The model is never shown them; only our code maps a
-  point back to an element.
+- **Rects stay in the process.** The model is never shown them — not by the decider,
+  and not in tool results, which use the default snapshot. Only our code maps a point
+  back to an element.
+- **The origin is a trust boundary.** The decider reads text the page controls, and a
+  small model is easier to steer than the bot's own. A click that lands on another
+  origin stops the chain and hands control back to the bot's model, so a page cannot
+  walk the bot to another site through the decider. Browser tools were already exempt
+  from action approval, so the chain bypasses no approval; this bounds what the
+  weaker judge can do on its own.
+- **Nothing in the chain throws.** A failing decider, click or snapshot becomes an
+  escalation, so the accelerator can never turn a successful tool call into an error.
 - **Bounded payloads.** At most 240 elements, labels capped at 120 characters, the
   page excerpt at 4,000, and the System One response read through `readBodyCapped`.
 - **No new network surface.** `systemone` calls the same fixed public endpoint as
