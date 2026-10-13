@@ -50,6 +50,8 @@ Five input classes the spec implies, that a naive task-by-task reading would lea
 | `packages/adapters/src/fake-page-decider.ts` | In-process seeded decider for offline tests |
 | `packages/adapters/src/model-page-decider.ts` | `model` backend: asks the bot's own model a structured question |
 | `packages/adapters/src/systemone-page-decider.ts` | `systemone` backend over `/v1/systemone` |
+| `packages/adapters/src/vision-page-decider.ts` | `vision` backend: OpenAI-compatible VLM (Holo1.5-7B) |
+| `packages/adapters/src/vision-page-decider.test.ts` | vision backend tests |
 | `packages/adapters/src/systemone-client.ts` | Shared HTTP plumbing, extracted from `jev-auto-review.ts` |
 | `packages/adapters/src/page-decider-factory.ts` | Kind resolution and construction |
 | `packages/adapters/src/page-decider-conformance.test.ts` | Every adapter satisfies the contract, offline |
@@ -121,6 +123,8 @@ export interface PageDeciderCapabilities {
   pick: boolean;
   /** True when the adapter returns probabilities rather than a bare label. */
   scores: boolean;
+  /** True when the adapter needs a screenshot to decide. */
+  vision: boolean;
   /**
    * True when the adapter adds no vendor beyond the bot's configured model.
    * The `model` backend is keyless in this sense even when the bot's own model
@@ -146,6 +150,11 @@ export interface PageDecisionRequest {
   url: string;
   title: string;
   history: readonly PageDecisionAttempt[];
+  /**
+   * Supplied only when the adapter declares `vision`. A text-only decider is
+   * never handed pixels, so the cheap path stays cheap.
+   */
+  screenshot?: { data: string; mimeType: string };
   signal?: AbortSignal;
 }
 
@@ -231,17 +240,18 @@ The heart of the design. Pure, no I/O, and it owns three of the five Review Focu
 Create `packages/core/src/page-decision-policy.test.ts`:
 
 ```typescript
-import type { PageDecision, PageDecisionAttempt } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PAGE_DECISION_THRESHOLDS,
   decidePageAction,
+  type PageDecisionAttemptLike,
   type PageDecisionBudget,
+  type PageDecisionLike,
 } from "./page-decision-policy.js";
 
 const fresh: PageDecisionBudget = { steps: 0, elapsedMs: 0 };
 
-function decision(over: Partial<PageDecision> = {}): PageDecision {
+function decision(over: Partial<PageDecisionLike> = {}): PageDecisionLike {
   return {
     candidates: [{ ref: "e1", kind: "click", confidence: 0.95 }],
     goalMet: 0,
@@ -252,9 +262,9 @@ function decision(over: Partial<PageDecision> = {}): PageDecision {
 }
 
 function run(
-  over: Partial<PageDecision> = {},
+  over: Partial<PageDecisionLike> = {},
   budget: PageDecisionBudget = fresh,
-  history: readonly PageDecisionAttempt[] = [],
+  history: readonly PageDecisionAttemptLike[] = [],
   elements: readonly string[] = ["e1", "e2"],
 ) {
   return decidePageAction({
@@ -375,7 +385,7 @@ describe("decidePageAction", () => {
   });
 
   it("drops a candidate that already failed to change the page", () => {
-    const history: PageDecisionAttempt[] = [{ ref: "e1", kind: "click", changed: false }];
+    const history: PageDecisionAttemptLike[] = [{ ref: "e1", kind: "click", changed: false }];
     expect(
       run(
         {
@@ -391,19 +401,19 @@ describe("decidePageAction", () => {
   });
 
   it("keeps a candidate that previously did change the page", () => {
-    const history: PageDecisionAttempt[] = [{ ref: "e1", kind: "click", changed: true }];
+    const history: PageDecisionAttemptLike[] = [{ ref: "e1", kind: "click", changed: true }];
     expect(run({}, fresh, history)).toEqual({ action: "act", ref: "e1", kind: "click" });
   });
 
   it("escalates when repeat-filtering empties the ranking", () => {
-    const history: PageDecisionAttempt[] = [{ ref: "e1", kind: "click", changed: false }];
+    const history: PageDecisionAttemptLike[] = [{ ref: "e1", kind: "click", changed: false }];
     expect(run({}, fresh, history)).toEqual({ action: "escalate", reason: "no_candidates" });
   });
 
   // The threshold applies to whichever candidate is selected, never to one
   // the policy has already discarded.
   it("applies the confidence threshold after repeat-filtering", () => {
-    const history: PageDecisionAttempt[] = [{ ref: "e1", kind: "click", changed: false }];
+    const history: PageDecisionAttemptLike[] = [{ ref: "e1", kind: "click", changed: false }];
     expect(
       run(
         {
@@ -430,12 +440,36 @@ Expected: FAIL — cannot resolve `./page-decision-policy.js`.
 Create `packages/core/src/page-decision-policy.ts`:
 
 ```typescript
-import type {
-  BrowserActKind,
-  PageDecision,
-  PageDecisionAttempt,
-  PageDecisionCandidate,
-} from "@rakazo/adapter-kit";
+/**
+ * These shapes are declared here rather than imported from `@rakazo/adapter-kit`.
+ *
+ * `@rakazo/core` depends on `@rakazo/contracts` and nothing else in the
+ * workspace — no file under `packages/core/src` imports adapter-kit, and adding
+ * that edge for three string literals would be a new layering dependency in
+ * exchange for nothing. TypeScript is structural, so the adapter-kit types
+ * satisfy these at every call site without a conversion.
+ */
+export type PageActionKind = "click" | "fill" | "type";
+
+export interface PageDecisionCandidateLike {
+  ref: string;
+  kind: PageActionKind;
+  confidence: number;
+}
+
+export interface PageDecisionLike {
+  candidates: readonly PageDecisionCandidateLike[];
+  goalMet: number;
+  stuck: number;
+  blocked: number;
+  error?: string;
+}
+
+export interface PageDecisionAttemptLike {
+  ref: string;
+  kind: PageActionKind;
+  changed: boolean;
+}
 
 export interface PageDecisionThresholds {
   goalMet: number;
@@ -467,16 +501,16 @@ export interface PageDecisionBudget {
 }
 
 export interface PageDecisionPolicyInput {
-  decision: PageDecision;
+  decision: PageDecisionLike;
   budget: PageDecisionBudget;
-  history: readonly PageDecisionAttempt[];
+  history: readonly PageDecisionAttemptLike[];
   /** Refs present in the snapshot this decision was made against. */
   knownRefs: readonly string[];
   thresholds: PageDecisionThresholds;
 }
 
 export type PageDecisionOutcome =
-  | { action: "act"; ref: string; kind: BrowserActKind }
+  | { action: "act"; ref: string; kind: PageActionKind }
   | { action: "done" }
   | { action: "escalate"; reason: "low_confidence" | "stuck" | "no_candidates" | "error" }
   | { action: "takeover"; reason: string }
@@ -491,10 +525,10 @@ function score(value: number): number {
 }
 
 function usable(
-  candidates: readonly PageDecisionCandidate[],
-  history: readonly PageDecisionAttempt[],
+  candidates: readonly PageDecisionCandidateLike[],
+  history: readonly PageDecisionAttemptLike[],
   knownRefs: readonly string[],
-): PageDecisionCandidate[] {
+): PageDecisionCandidateLike[] {
   const refs = new Set(knownRefs);
   const inert = new Set(
     history.filter((attempt) => !attempt.changed).map((attempt) => `${attempt.kind}:${attempt.ref}`),
@@ -615,7 +649,14 @@ export async function assertPageDeciderConformance(decider: PageDecider): Promis
   const desc = decider.describe();
   expect(desc.capabilities.pick).toBe(true);
   expect(desc.capabilities.scores).toBe(true);
+  expect(typeof desc.capabilities.vision).toBe("boolean");
   expect(desc.contractVersion).toBe("1");
+
+  // A text-only adapter must never be handed pixels, and a vision adapter must
+  // not be asked to decide without them.
+  if (!desc.capabilities.vision) {
+    expect(request.screenshot).toBeUndefined();
+  }
 
   const decision = await decider.decide(computer, request, context);
 
@@ -712,7 +753,7 @@ export class FakePageDecider implements PageDecider {
       id: "fake",
       contractVersion: "1",
       adapterVersion: "0.1.0",
-      capabilities: { pick: true, scores: true, keyless: true },
+      capabilities: { pick: true, scores: true, vision: false, keyless: true },
     };
   }
 
@@ -975,7 +1016,7 @@ export class ModelPageDecider implements PageDecider {
       id: "model",
       contractVersion: "1",
       adapterVersion: "0.1.0",
-      capabilities: { pick: true, scores: true, keyless: true },
+      capabilities: { pick: true, scores: true, vision: false, keyless: true },
     };
   }
 
@@ -1316,15 +1357,29 @@ export const SYSTEMONE_PATH = "/v1/systemone";
 export const SYSTEMONE_MAX_STATE_CHARS = 20_000;
 export const SYSTEMONE_MAX_JSON_BYTES = 64_000;
 
-/** One answer per question key. Keys are chosen by the caller's question set. */
-const answerSchema = z.union([
+/**
+ * One answer per question key, keyed by the caller's question set.
+ *
+ * Field shapes come from the published HTTP contract: a `choice` answer carries
+ * a `probabilities` map over every option, and a `score` answer carries a
+ * numeric `score` with a `legend`. Discriminated on `type` rather than a plain
+ * union, so a malformed answer reports which variant failed.
+ */
+const answerSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("choice"),
     choice: z.string(),
+    probabilities: z.record(z.string(), z.number()).optional(),
     confidence: z.number().optional(),
   }),
   z.object({ type: z.literal("noul"), noul: z.number() }),
-  z.object({ type: z.literal("score"), score: z.string() }),
+  z.object({
+    type: z.literal("score"),
+    score: z.number(),
+    legend: z.record(z.string(), z.string()).optional(),
+    probabilities: z.record(z.string(), z.number()).optional(),
+    confidence: z.number().optional(),
+  }),
 ]);
 
 export const systemOneResponseSchema = z.object({
@@ -1343,13 +1398,27 @@ export function parseSystemOneAnswers(body: unknown): SystemOneAnswers | undefin
   return parsed.success ? parsed.data.answers : undefined;
 }
 
-export function systemOneChoice(
+/**
+ * Every option the endpoint scored, ranked best first.
+ *
+ * The winner alone is not enough: the policy drops a candidate that already
+ * failed to change the page and falls through to the next one, which cannot
+ * work if the adapter only ever reports one. The `probabilities` map is what
+ * makes that fallback real.
+ */
+export function systemOneRanking(
   answers: SystemOneAnswers,
   key: string,
-): { choice: string; confidence: number } | undefined {
+): Array<{ option: string; confidence: number }> {
   const answer = answers[key];
-  if (!answer || answer.type !== "choice") return undefined;
-  return { choice: answer.choice, confidence: answer.confidence ?? 0 };
+  if (!answer || answer.type !== "choice") return [];
+  const probabilities = answer.probabilities;
+  if (!probabilities || Object.keys(probabilities).length === 0) {
+    return [{ option: answer.choice, confidence: answer.confidence ?? 0 }];
+  }
+  return Object.entries(probabilities)
+    .map(([option, confidence]) => ({ option, confidence }))
+    .sort((a, b) => b.confidence - a.confidence);
 }
 
 export function systemOneNoul(answers: SystemOneAnswers, key: string): number {
@@ -1418,14 +1487,23 @@ export function statusReason(status: number): string {
 export async function postSystemOne(
   options: PostSystemOneOptions,
 ): Promise<{ answers?: SystemOneAnswers; error?: string }> {
-  const state = JSON.stringify(options.state) ?? "";
+  // The protocol accepts a string, an object or an array for `state`, so pass
+  // the caller's value through untouched: converting an object to a string here
+  // would silently change the payload the Auto Review checker already sends.
+  // Only a string is truncated, and the whole body is size-checked separately.
+  const state =
+    typeof options.state === "string" && options.state.length > SYSTEMONE_MAX_STATE_CHARS
+      ? options.state.slice(0, SYSTEMONE_MAX_STATE_CHARS)
+      : options.state;
+
   const body = JSON.stringify({
     model: options.model,
-    state: state.length > SYSTEMONE_MAX_STATE_CHARS
-      ? state.slice(0, SYSTEMONE_MAX_STATE_CHARS)
-      : state,
+    state,
     questions: options.questions,
   });
+  if (body.length > SYSTEMONE_MAX_JSON_BYTES) {
+    return { error: "The decider request was too large to send." };
+  }
 
   const url = new URL(SYSTEMONE_PATH, options.baseUrl).toString();
   let response: Response;
@@ -1476,7 +1554,7 @@ import type {
   PageDecision,
   PageDecisionRequest,
 } from "@rakazo/adapter-kit";
-import { postSystemOne, systemOneChoice, systemOneNoul } from "./systemone-client.js";
+import { postSystemOne, systemOneNoul, systemOneRanking } from "./systemone-client.js";
 
 export const DEFAULT_SYSTEMONE_MODEL = "jev-latest";
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -1535,7 +1613,7 @@ export class SystemOnePageDecider implements PageDecider {
       id: "systemone",
       contractVersion: "1",
       adapterVersion: "0.1.0",
-      capabilities: { pick: true, scores: true, keyless: !this.apiKey },
+      capabilities: { pick: true, scores: true, vision: false, keyless: !this.apiKey },
     };
   }
 
@@ -1585,14 +1663,19 @@ export class SystemOnePageDecider implements PageDecider {
 
     if (!answers) return { ...EMPTY, error: error ?? "The decider returned no decision." };
 
-    const picked = systemOneChoice(answers, "element");
-    const element = picked ? elements.find((item) => item.ref === picked.choice) : undefined;
+    // Keep the whole ranking, not just the winner, so the policy's next-best
+    // fallback has somewhere to fall. Options naming an element we did not
+    // offer are dropped rather than trusted.
+    const byRef = new Map(elements.map((element) => [element.ref, element]));
+    const candidates = systemOneRanking(answers, "element").flatMap((entry) => {
+      const element = byRef.get(entry.option);
+      return element
+        ? [{ ref: element.ref, kind: kindFor(element), confidence: entry.confidence }]
+        : [];
+    });
 
     return {
-      candidates:
-        picked && element
-          ? [{ ref: element.ref, kind: kindFor(element), confidence: picked.confidence }]
-          : [],
+      candidates,
       goalMet: systemOneNoul(answers, "goalMet"),
       stuck: systemOneNoul(answers, "stuck"),
       blocked: systemOneNoul(answers, "blocked"),
@@ -1674,6 +1757,388 @@ git commit -m "feat(adapters): add the systemone page decider over shared client
 
 ---
 
+### Task 5b: The `vision` backend
+
+The self-hosted path. Any OpenAI-compatible vision endpoint; the reference target is Holo1.5-7B (Apache 2.0, open weights, Docker-served). Used in UI-VQA mode — screenshot plus numbered element list, pick one — because `BrowserSnapshotNode` carries no geometry to map a coordinate back to an element.
+
+Reuses the prompt, response schema and parsing from Task 4 rather than restating them, so there is one definition of what a decision answer looks like regardless of which transport fetched it.
+
+**Files:**
+- Create: `packages/adapters/src/vision-page-decider.ts`
+- Modify: `packages/adapters/src/model-page-decider.ts` (export the shared pieces), `packages/adapters/src/index.ts`, `packages/adapters/src/page-decider-conformance.test.ts`
+- Test: `packages/adapters/src/vision-page-decider.test.ts`
+
+**Interfaces:**
+- Consumes: `PAGE_DECISION_SYSTEM`, `PAGE_DECISION_RESPONSE_SCHEMA`, `parsePageDecision` from Task 4; `assertDeciderBaseUrl` from Task 5.
+- Produces: `VisionPageDecider`, `VisionPageDeciderOptions`. Task 6's factory constructs it.
+
+- [ ] **Step 1: Export the shared pieces from Task 4**
+
+In `packages/adapters/src/model-page-decider.ts`, rename and export the three constants so both backends share one definition:
+
+```typescript
+export const PAGE_DECISION_SYSTEM = SYSTEM;
+export const PAGE_DECISION_RESPONSE_SCHEMA = RESPONSE_SCHEMA;
+
+/** Validate a decision answer and drop any ref that was not offered. */
+export function parsePageDecision(
+  raw: unknown,
+  offeredRefs: readonly string[],
+): PageDecision | { error: string } {
+  const parsed = answerSchema.safeParse(raw);
+  if (!parsed.success) return { error: "The decider model returned no decision." };
+  const offered = new Set(offeredRefs);
+  return {
+    candidates: parsed.data.candidates.filter((candidate) => offered.has(candidate.ref)),
+    goalMet: parsed.data.goalMet,
+    stuck: parsed.data.stuck,
+    blocked: parsed.data.blocked,
+  };
+}
+```
+
+Then rewrite `ModelPageDecider.decide`'s parsing block to call `parsePageDecision(raw, request.elements.map((e) => e.ref))` and return its result, so the two backends cannot drift.
+
+Run: `pnpm vitest run packages/adapters/src/model-page-decider.test.ts`
+Expected: PASS unchanged — this is a pure extraction.
+
+- [ ] **Step 2: Write the failing tests**
+
+Create `packages/adapters/src/vision-page-decider.test.ts`:
+
+```typescript
+import type { AdapterContext, ComputerRef } from "@rakazo/adapter-kit";
+import { describe, expect, it } from "vitest";
+import { VisionPageDecider } from "./vision-page-decider.js";
+
+const context: AdapterContext = {
+  operationId: "1",
+  traceId: "1",
+  spaceId: "w",
+  userId: "u",
+  signal: new AbortController().signal,
+};
+
+const computer: ComputerRef = { id: "c1", botId: "b1", kind: "fake", providerRef: "c1" };
+
+const request = {
+  goal: "Press continue",
+  elements: [
+    { ref: "e1", role: "textbox", name: "Email" },
+    { ref: "e2", role: "button", name: "Continue" },
+  ],
+  excerpt: "Signup",
+  url: "https://example.test/form",
+  title: "Signup",
+  history: [],
+  screenshot: { data: "aGVsbG8=", mimeType: "image/png" },
+};
+
+function completion(content: unknown, status = 200) {
+  return async () =>
+    new Response(
+      JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }),
+      { status, headers: { "Content-Type": "application/json" } },
+    );
+}
+
+const answer = {
+  candidates: [{ ref: "e2", kind: "click", confidence: 0.9 }],
+  goalMet: 0,
+  stuck: 0,
+  blocked: 0,
+};
+
+describe("VisionPageDecider", () => {
+  it("declares that it needs pixels", () => {
+    const decider = new VisionPageDecider({
+      baseUrl: "https://vision.example.test",
+      fetch: completion(answer),
+    });
+    expect(decider.describe().id).toBe("vision");
+    expect(decider.describe().capabilities.vision).toBe(true);
+  });
+
+  it("maps a well-formed completion onto a decision", async () => {
+    const decider = new VisionPageDecider({
+      baseUrl: "https://vision.example.test",
+      fetch: completion(answer),
+    });
+    const decision = await decider.decide(computer, request, context);
+    expect(decision.candidates).toEqual([{ ref: "e2", kind: "click", confidence: 0.9 }]);
+  });
+
+  it("sends the screenshot as an image part", async () => {
+    let sent = "";
+    const decider = new VisionPageDecider({
+      baseUrl: "https://vision.example.test",
+      fetch: async (_url, init) => {
+        sent = String(init?.body ?? "");
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer) } }] }),
+          { status: 200 },
+        );
+      },
+    });
+    await decider.decide(computer, request, context);
+    expect(sent).toContain("image_url");
+    expect(sent).toContain("data:image/png;base64,aGVsbG8=");
+  });
+
+  it("reports an error rather than deciding blind without a screenshot", async () => {
+    const decider = new VisionPageDecider({
+      baseUrl: "https://vision.example.test",
+      fetch: completion(answer),
+    });
+    const { screenshot, ...noPixels } = request;
+    void screenshot;
+    const decision = await decider.decide(computer, noPixels, context);
+    expect(decision.error).toBeTruthy();
+    expect(decision.candidates).toEqual([]);
+  });
+
+  it("reports an error on a non-OK status", async () => {
+    const decider = new VisionPageDecider({
+      baseUrl: "https://vision.example.test",
+      fetch: completion(answer, 503),
+    });
+    const decision = await decider.decide(computer, request, context);
+    expect(decision.error).toBeTruthy();
+  });
+
+  it("drops a ref it was never offered", async () => {
+    const decider = new VisionPageDecider({
+      baseUrl: "https://vision.example.test",
+      fetch: completion({ ...answer, candidates: [{ ref: "e9", kind: "click", confidence: 1 }] }),
+    });
+    const decision = await decider.decide(computer, request, context);
+    expect(decision.candidates).toEqual([]);
+  });
+});
+```
+
+- [ ] **Step 3: Run tests to verify they fail**
+
+Run: `pnpm vitest run packages/adapters/src/vision-page-decider.test.ts`
+Expected: FAIL — cannot resolve `./vision-page-decider.js`.
+
+- [ ] **Step 4: Write the adapter**
+
+Create `packages/adapters/src/vision-page-decider.ts`:
+
+```typescript
+import type {
+  AdapterContext,
+  AdapterDescriptor,
+  ComputerRef,
+  PageDecider,
+  PageDeciderCapabilities,
+  PageDecision,
+  PageDecisionRequest,
+} from "@rakazo/adapter-kit";
+import {
+  PAGE_DECISION_RESPONSE_SCHEMA,
+  PAGE_DECISION_SYSTEM,
+  parsePageDecision,
+} from "./model-page-decider.js";
+import { readBodyCapped } from "./web-ssrf.js";
+
+const DEFAULT_TIMEOUT_MS = 20_000;
+const MAX_JSON_BYTES = 64_000;
+const MAX_ELEMENTS = 240;
+
+export interface VisionPageDeciderOptions {
+  baseUrl: string;
+  apiKey?: string;
+  model?: string;
+  timeoutMs?: number;
+  fetch?: typeof fetch;
+}
+
+const EMPTY: PageDecision = { candidates: [], goalMet: 0, stuck: 0, blocked: 0 };
+
+/**
+ * Any OpenAI-compatible vision endpoint, which is how an open-weight GUI
+ * specialist is reached — Holo1.5-7B is the reference target.
+ *
+ * Used in UI-VQA mode (screen plus a numbered element list, pick one) rather
+ * than coordinate localization, because BrowserSnapshotNode carries no geometry
+ * to map a coordinate back to an element.
+ */
+export class VisionPageDecider implements PageDecider {
+  private readonly baseUrl: string;
+  private readonly apiKey?: string;
+  private readonly model: string;
+  private readonly timeoutMs: number;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(options: VisionPageDeciderOptions) {
+    this.baseUrl = options.baseUrl.trim();
+    if (!this.baseUrl) throw new Error("A page decider base URL is required");
+    this.apiKey = options.apiKey?.trim() || undefined;
+    this.model = options.model?.trim() || "Hcompany/Holo1.5-7B";
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.fetchImpl = options.fetch ?? fetch;
+  }
+
+  describe(): AdapterDescriptor<PageDeciderCapabilities> {
+    return {
+      id: "vision",
+      contractVersion: "1",
+      adapterVersion: "0.1.0",
+      capabilities: { pick: true, scores: true, vision: true, keyless: !this.apiKey },
+    };
+  }
+
+  async decide(
+    computer: ComputerRef,
+    request: PageDecisionRequest,
+    context: AdapterContext,
+  ): Promise<PageDecision> {
+    void computer;
+    const caller = request.signal ?? context.signal;
+    if (caller.aborted) return { ...EMPTY, error: "cancelled" };
+
+    // Deciding without the screen is guessing. Say so and let the policy escalate.
+    if (!request.screenshot) {
+      return { ...EMPTY, error: "The vision decider needs a screenshot." };
+    }
+
+    const elements = request.elements.slice(0, MAX_ELEMENTS);
+    const signal = AbortSignal.any([caller, AbortSignal.timeout(this.timeoutMs)]);
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(new URL("/v1/chat/completions", this.baseUrl).toString(), {
+        method: "POST",
+        redirect: "error",
+        signal,
+        headers: {
+          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: this.model,
+          response_format: {
+            type: "json_schema",
+            json_schema: { name: "page_decision", schema: PAGE_DECISION_RESPONSE_SCHEMA },
+          },
+          messages: [
+            { role: "system", content: PAGE_DECISION_SYSTEM },
+            {
+              role: "user",
+              content: [
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: `data:${request.screenshot.mimeType};base64,${request.screenshot.data}`,
+                  },
+                },
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    goal: request.goal,
+                    origin: new URL(request.url).origin,
+                    title: request.title,
+                    elements,
+                    history: request.history,
+                  }),
+                },
+              ],
+            },
+          ],
+        }),
+      });
+    } catch {
+      return { ...EMPTY, error: "The vision decider timed out or failed." };
+    }
+
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => undefined);
+      return { ...EMPTY, error: "The vision decider returned an error." };
+    }
+
+    let content: unknown;
+    try {
+      const bytes = await readBodyCapped(response, MAX_JSON_BYTES, signal);
+      const body = JSON.parse(new TextDecoder().decode(bytes)) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const text = body.choices?.[0]?.message?.content;
+      if (typeof text !== "string") {
+        return { ...EMPTY, error: "The vision decider returned no decision." };
+      }
+      content = JSON.parse(text);
+    } catch {
+      return { ...EMPTY, error: "The vision decider returned no decision." };
+    }
+
+    const parsed = parsePageDecision(
+      content,
+      elements.map((element) => element.ref),
+    );
+    return "error" in parsed ? { ...EMPTY, error: parsed.error } : parsed;
+  }
+}
+```
+
+- [ ] **Step 5: Run tests and add to conformance**
+
+Run: `pnpm vitest run packages/adapters/src/vision-page-decider.test.ts`
+Expected: PASS, all six.
+
+In `packages/adapters/src/page-decider-conformance.test.ts` add the import and a case. Note the conformance request has no `screenshot`, so this adapter is exercised through a wrapper that supplies one — which is exactly the caller's job in Task 9:
+
+```typescript
+import { VisionPageDecider } from "./vision-page-decider.js";
+```
+
+```typescript
+it("holds for vision (offline, stubbed completion)", async () => {
+  const inner = new VisionPageDecider({
+    baseUrl: "https://vision.example.test",
+    fetch: async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  candidates: [{ ref: "e2", kind: "click", confidence: 0.9 }],
+                  goalMet: 0,
+                  stuck: 0,
+                  blocked: 0,
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+  });
+  // A vision adapter declares vision:true, so the caller owes it a screenshot.
+  await assertPageDeciderConformance({
+    describe: () => inner.describe(),
+    decide: (c, req, ctx) =>
+      inner.decide(c, { ...req, screenshot: { data: "aGk=", mimeType: "image/png" } }, ctx),
+  });
+});
+```
+
+- [ ] **Step 6: Export, check and commit**
+
+Add `export * from "./vision-page-decider.js";` to `packages/adapters/src/index.ts`.
+
+Run: `pnpm --filter @rakazo/adapters check && pnpm lint`
+
+```bash
+git add packages/adapters/src/vision-page-decider.ts packages/adapters/src/vision-page-decider.test.ts packages/adapters/src/model-page-decider.ts packages/adapters/src/page-decider-conformance.test.ts packages/adapters/src/index.ts
+git commit -m "feat(adapters): add the vision page decider for self-hosted GUI models"
+```
+
+---
+
 ### Task 6: Factory and deployment default
 
 **Files:**
@@ -1732,6 +2197,19 @@ describe("createPageDecider", () => {
     expect(() => createPageDecider("systemone", { generate })).toThrow(/base URL/i);
   });
 
+  it("builds the vision decider from a base URL", () => {
+    const decider = createPageDecider("vision", {
+      generate,
+      baseUrl: "https://vision.example.test",
+    });
+    expect(decider.describe().id).toBe("vision");
+    expect(decider.describe().capabilities.vision).toBe(true);
+  });
+
+  it("refuses vision without a base URL", () => {
+    expect(() => createPageDecider("vision", { generate })).toThrow(/base URL/i);
+  });
+
   it("names an unknown kind in its error", () => {
     expect(() => createPageDecider("nope", { generate })).toThrow(/nope/);
   });
@@ -1752,6 +2230,7 @@ import type { PageDecider } from "@rakazo/adapter-kit";
 import { FakePageDecider } from "./fake-page-decider.js";
 import { ModelPageDecider, type StructuredGenerate } from "./model-page-decider.js";
 import { SystemOnePageDecider } from "./systemone-page-decider.js";
+import { VisionPageDecider } from "./vision-page-decider.js";
 
 export const PAGE_DECIDER_KIND_ENV = "RAKAZO_PAGE_DECIDER";
 
@@ -1787,6 +2266,15 @@ export function createPageDecider(
     case "systemone":
       if (!options?.baseUrl) throw new Error("The systemone page decider requires a base URL");
       return new SystemOnePageDecider({
+        baseUrl: options.baseUrl,
+        apiKey: options.apiKey,
+        model: options.model,
+        timeoutMs: options.timeoutMs,
+        fetch: options.fetch,
+      });
+    case "vision":
+      if (!options?.baseUrl) throw new Error("The vision page decider requires a base URL");
+      return new VisionPageDecider({
         baseUrl: options.baseUrl,
         apiKey: options.apiKey,
         model: options.model,
@@ -2128,7 +2616,7 @@ export async function resolveDeciderConnection(input: {
   if (input.choice.provider === "model" || input.choice.provider === "fake") {
     return { provider: input.choice.provider, model: input.choice.model };
   }
-  if (!input.baseUrl) throw new Error("The systemone page decider requires a base URL");
+  if (!input.baseUrl) throw new Error(`The ${input.choice.provider} page decider requires a base URL`);
   const url = await assertDeciderBaseUrl(
     input.baseUrl,
     { allowPrivate: input.allowPrivate },
@@ -2430,6 +2918,15 @@ export interface PageDecisionChainInput {
   thresholds?: PageDecisionThresholds;
   now?: () => number;
   log?: (event: PageDecisionLogEvent) => void;
+  /**
+   * Called once per step, and only when the decider declares `vision`.
+   *
+   * `BrowserProvider` has no screenshot method — pixels come from the
+   * computer's observe path — so the source is injected rather than reached
+   * for here. A text-only decider never triggers it, which is what keeps the
+   * cheap path free of a screen capture.
+   */
+  screenshot?: () => Promise<{ data: string; mimeType: string } | undefined>;
 }
 
 export interface PageDecisionChainResult {
@@ -2451,12 +2948,14 @@ export async function runPageDecisionChain(
 ): Promise<PageDecisionChainResult> {
   const thresholds = input.thresholds ?? DEFAULT_PAGE_DECISION_THRESHOLDS;
   const clock = input.now ?? (() => Date.now());
+  const needsPixels = input.decider.describe().capabilities.vision;
   const started = clock();
   const history: PageDecisionAttempt[] = [];
   let snapshot = input.snapshot;
   let steps = 0;
 
   for (;;) {
+    const screenshot = needsPixels ? await input.screenshot?.() : undefined;
     const decision = await input.decider.decide(
       input.computer,
       {
@@ -2466,6 +2965,7 @@ export async function runPageDecisionChain(
         url: snapshot.url,
         title: snapshot.title,
         history,
+        screenshot,
         signal: input.context.signal,
       },
       input.context,
@@ -2579,48 +3079,103 @@ Leave both `required` arrays unchanged — `goal` is optional, and its absence m
 
 - [ ] **Step 6: Consult the chain from the browser tools**
 
-In `packages/adapters/src/browser-tools.ts`, extend `browserNavigateFromTool` and `browserActFromTool` to take an optional `decider?: PageDecider` parameter after `browser`. In each, after the existing navigate or act succeeds, run:
+**Pass the decider through `options`, never as a new positional argument.** Both tool functions are called positionally. `browserActFromTool` already takes an `options` object as its fifth parameter (`browser-tools.ts:75`), so `decider` joins it; `browserNavigateFromTool` has no options parameter yet, so one is **appended** last. Inserting a parameter after `browser` would break every existing call site.
 
 ```typescript
+export interface BrowserToolDeciderOptions {
+  decider?: PageDecider;
+  /** Supplied by the executor, which owns the computer's observe path. */
+  deciderScreenshot?: () => Promise<{ data: string; mimeType: string } | undefined>;
+}
+
+// browserNavigateFromTool: append, never insert.
+export async function browserNavigateFromTool(
+  browser: BrowserProvider,
+  computer: ComputerRef,
+  context: AdapterContext,
+  args: Record<string, unknown>,
+  options: BrowserToolDeciderOptions = {},
+) { /* … */ }
+
+// browserActFromTool: extend the options type it already has.
+options: {
+  resolveSecretFill?: ResolveSecretFill;
+  redactions?: () => string[];
+  decider?: PageDecider;
+} = {},
+```
+
+Add one shared helper, so neither tool grows a second copy of this logic:
+
+```typescript
+/**
+ * Run confident steps when the model supplied a goal. Returns undefined when
+ * the decider should not run at all, which is the signal to return exactly
+ * what the tool returned before this feature existed.
+ */
+async function chainForGoal(
+  browser: BrowserProvider,
+  computer: ComputerRef,
+  context: AdapterContext,
+  args: Record<string, unknown>,
+  options: BrowserToolDeciderOptions,
+): Promise<PageDecisionChainResult | undefined> {
   const goal = normalizeGoal(args.goal);
-  if (!goal || !decider) return formatBrowserResult(result);
-
+  if (!goal || !options.decider) return undefined;
   const snapshot = await browser.snapshot(computer, { signal: context.signal }, context);
-  if (snapshot.fallback || snapshot.error) return formatBrowserResult(result);
-
-  const chain = await runPageDecisionChain({
+  if (snapshot.fallback || snapshot.error) return undefined;
+  return await runPageDecisionChain({
     browser,
-    decider,
+    decider: options.decider,
     computer,
     context,
     goal,
     snapshot,
+    screenshot: options.deciderScreenshot,
   });
-  return formatChainResult(chain);
-```
+}
 
-Add `formatChainResult` to the same file:
-
-```typescript
 /**
- * Render a chain result as a browser tool result. An escalate outcome returns
- * exactly what the tool returned before this feature existed, which is what
- * makes the decider removable without behavior change.
+ * Render a chain result in the shape the calling tool already returns.
+ *
+ * This deliberately does not return the snapshot: `browser_navigate` answers
+ * with `{url, title}` today, and widening that to a full tree would change a
+ * tool contract the model already relies on. The chain only updates where we
+ * landed and adds at most one flag.
  */
-function formatChainResult(chain: PageDecisionChainResult) {
-  const base = formatBrowserResult(chain.snapshot);
+function formatChainResult<T extends { fallback?: "computer_act"; error?: string }>(
+  base: T,
+  chain: PageDecisionChainResult,
+) {
+  const landed = { ...base, url: chain.snapshot.url, title: chain.snapshot.title };
   if (chain.outcome === "takeover") {
-    return { ...base, takeover: true, reason: chain.reason };
+    return formatBrowserResult({ ...landed, takeover: true, reason: chain.reason });
   }
-  if (chain.outcome === "done") {
-    return { ...base, goalMet: true };
-  }
-  // escalate and refuse: hand the page back and let the model decide, as before.
-  return chain.uncertain ? { ...base, uncertain: true } : base;
+  if (chain.outcome === "done") return formatBrowserResult({ ...landed, goalMet: true });
+  if (chain.uncertain) return formatBrowserResult({ ...landed, uncertain: true });
+  // escalate and refuse hand the page back untouched, as before.
+  return formatBrowserResult(landed);
 }
 ```
 
-Import the chain's names at the top of the file, types separately:
+In `browserNavigateFromTool`, replace `return formatBrowserResult(result);` (line 41) with:
+
+```typescript
+    const chain = await chainForGoal(browser, computer, context, args, options);
+    return chain ? formatChainResult(result, chain) : formatBrowserResult(result);
+```
+
+In `browserActFromTool`, replace `return redactConnectorPayload(formatBrowserResult(result), options.redactions?.() ?? []);` (line 92) with:
+
+```typescript
+    const chain = await chainForGoal(browser, computer, context, args, options);
+    const payload = chain ? formatChainResult(result, chain) : formatBrowserResult(result);
+    return redactConnectorPayload(payload, options.redactions?.() ?? []);
+```
+
+**Redaction must stay outside the branch.** `browserActFromTool` redacts its payload today; routing a chain result around `redactConnectorPayload` would be a silent regression in the one path that handles saved logins.
+
+Add the imports at the top of the file, types separately per the global constraints:
 
 ```typescript
 import type { PageDecider } from "@rakazo/adapter-kit";
@@ -2628,12 +3183,80 @@ import type { PageDecisionChainResult } from "./page-decision-chain.js";
 import { normalizeGoal, runPageDecisionChain } from "./page-decision-chain.js";
 ```
 
-- [ ] **Step 7: Run the browser suites for regressions**
+- [ ] **Step 7: Pin the two contracts this step could silently break**
+
+Append to `packages/adapters/src/page-decision-chain.test.ts`:
+
+```typescript
+describe("browser tool integration", () => {
+  // browser_navigate answers with {url,title} today. A chain that ran must not
+  // widen that into a snapshot, or the model's expectations change under it.
+  it("keeps browser_navigate's result shape when a chain runs", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    const result = await browserNavigateFromTool(
+      browser,
+      computer,
+      context,
+      { url: "https://example.test/form", goal: "press continue" },
+      { decider: new FakePageDecider({ decisions: [{ goalMet: 0.99 }] }) },
+    );
+    expect(Object.keys(result).sort()).toEqual(["goalMet", "title", "url"]);
+    expect(result).not.toHaveProperty("tree");
+    expect(result).not.toHaveProperty("elements");
+  });
+
+  it("returns exactly the old shape when no goal is supplied", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    const withDecider = await browserNavigateFromTool(
+      browser,
+      computer,
+      context,
+      { url: "https://example.test/form" },
+      { decider: new FakePageDecider({ decisions: [{ goalMet: 0.99 }] }) },
+    );
+    const without = await browserNavigateFromTool(browser, computer, context, {
+      url: "https://example.test/form",
+    });
+    expect(withDecider).toEqual(without);
+  });
+
+  // The act path redacts saved-login values. A chain result must not go around it.
+  it("still redacts the payload when a chain runs", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    await browser.navigate(computer, { url: "https://example.test/form" }, context);
+    const snapshot = await browser.snapshot(computer, {}, context);
+    const button = snapshot.elements.find((el) => el.name.toLowerCase().includes("continue"))!;
+
+    const result = await browserActFromTool(
+      browser,
+      computer,
+      context,
+      { actions: [{ kind: "click", ref: button.ref }], goal: "press continue" },
+      {
+        decider: new FakePageDecider({ decisions: [{ goalMet: 0.99 }] }),
+        redactions: () => ["example.test"],
+      },
+    );
+    expect(JSON.stringify(result)).not.toContain("example.test");
+  });
+});
+```
+
+Add to that file's imports:
+
+```typescript
+import { browserActFromTool, browserNavigateFromTool } from "./browser-tools.js";
+```
+
+Run: `pnpm vitest run packages/adapters/src/page-decision-chain.test.ts`
+Expected: PASS. The second test is the important one — it asserts the decider is genuinely removable.
+
+- [ ] **Step 8: Run the browser suites for regressions**
 
 Run: `pnpm vitest run packages/adapters/src/browser-tools.test.ts packages/adapters/src/browser-conformance.test.ts packages/adapters/src/page-browser-login-fill.test.ts`
 Expected: PASS with no edits to those files. No existing call passes a `goal`, so every existing path must be byte-identical in behavior.
 
-- [ ] **Step 8: Export, check and commit**
+- [ ] **Step 9: Export, check and commit**
 
 Add `export * from "./page-decision-chain.js";` to `packages/adapters/src/index.ts`.
 
@@ -2721,7 +3344,7 @@ import { PAGE_DECIDER_FIXTURES, replayPageDeciderCase } from "./page-decider-rep
 
 describe("page decider replay", () => {
   // "Both, equally": the same assertions must hold whichever backend answers.
-  for (const backend of ["fake", "model", "systemone"] as const) {
+  for (const backend of ["fake", "model", "systemone", "vision"] as const) {
     describe(`on the ${backend} backend`, () => {
       for (const fixture of PAGE_DECIDER_FIXTURES) {
         it(`matches ${fixture.name}`, async () => {
@@ -2762,6 +3385,7 @@ import {
   type PageDecisionChainResult,
   runPageDecisionChain,
   SystemOnePageDecider,
+  VisionPageDecider,
 } from "@rakazo/adapters";
 
 export interface PageDeciderFixture {
@@ -2778,7 +3402,7 @@ export interface PageDeciderFixture {
   expect: { outcome: PageDecisionChainResult["outcome"]; maxSteps: number };
 }
 
-export type PageDeciderBackend = "fake" | "model" | "systemone";
+export type PageDeciderBackend = "fake" | "model" | "systemone" | "vision";
 
 const FIXTURE_DIR = fileURLToPath(new URL("./__fixtures__/page-decider/", import.meta.url));
 
@@ -2840,17 +3464,38 @@ function deciderFor(
     return new ModelPageDecider({ generate: async () => next() });
   }
 
+  if (backend === "vision") {
+    return new VisionPageDecider({
+      baseUrl: "https://vision.example.test",
+      fetch: async () =>
+        new Response(
+          JSON.stringify({ choices: [{ message: { content: JSON.stringify(next()) } }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    });
+  }
+
   return new SystemOnePageDecider({
     baseUrl: "https://decider.example.test",
     apiKey: "test-key",
     fetch: async () => {
       const decision = next();
-      const top = decision.candidates[0];
+      // Report the full ranking, as the real endpoint does, so the replay
+      // exercises the same candidate path production will take.
       return new Response(
         JSON.stringify({
           answers: {
-            ...(top
-              ? { element: { type: "choice", choice: top.ref, confidence: top.confidence } }
+            ...(decision.candidates.length > 0
+              ? {
+                  element: {
+                    type: "choice",
+                    choice: decision.candidates[0]!.ref,
+                    confidence: decision.candidates[0]!.confidence,
+                    probabilities: Object.fromEntries(
+                      decision.candidates.map((c) => [c.ref, c.confidence]),
+                    ),
+                  },
+                }
               : {}),
             goalMet: { type: "noul", noul: decision.goalMet },
             stuck: { type: "noul", noul: decision.stuck },
@@ -2892,6 +3537,8 @@ export async function replayPageDeciderCase(
     context,
     goal: fixture.goal,
     snapshot,
+    // Only the vision backend asks for this; the others never trigger it.
+    screenshot: async () => ({ data: "aGk=", mimeType: "image/png" }),
   });
   return { ...result, deciderCalls };
 }
@@ -2982,21 +3629,21 @@ git commit -m "test: replay the page decider across both configurations"
 The only user-facing addition. Progressively disclosed: it renders only once a bot has a computer that can run the page browser.
 
 **Files:**
-- Locate first: run `grep -rn "thinkingLevel" apps/web/src --include="*.tsx" | head` to find the bot settings form that already edits `modelProvider` / `modelId` / `thinkingLevel`. Modify that component and its sibling test.
-- Test: the web test file beside that component.
+- Modify: `apps/web/src/pages/ModelSettingsOverlay.tsx` — the overlay that already edits `modelProvider` / `modelId` / `thinkingLevel`.
+- Test: `apps/web/src/pages/shell/bot-settings.test.tsx`.
+- Read first: `apps/web/src/pages/shell/bot-panel.tsx`, which renders the overlay, to see how the bot and its computer reach it.
 
 **Interfaces:**
 - Consumes: the two `Bot` columns from Task 7.
 - Produces: no new exported API; a form control bound to `pageDeciderProvider` / `pageDeciderModel`.
 
-- [ ] **Step 1: Locate the existing control**
+- [ ] **Step 1: Read the existing control**
 
-Run: `grep -rn "thinkingLevel" apps/web/src --include="*.tsx" | head`
-Then read the component that renders the model picker. Note the exact `packages/ui-web` components it uses — reuse those, do not introduce new ones.
+Read `apps/web/src/pages/ModelSettingsOverlay.tsx` and note the exact `packages/ui-web` components its model picker uses — reuse those, do not introduce new ones. Then read `apps/web/src/pages/shell/bot-panel.tsx` to see how the bot and its computer reach the overlay, which is what the disclosure condition reads.
 
 - [ ] **Step 2: Write the failing test**
 
-In the test file beside that component, add:
+In `apps/web/src/pages/shell/bot-settings.test.tsx`, add (matching that file's existing render helper and prop shapes rather than the placeholders below):
 
 ```typescript
 it("hides the decider picker for a bot with no page browser", () => {
@@ -3019,7 +3666,7 @@ Adjust the component name, props and render helper to match what Step 1 found.
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `pnpm vitest run <that test file>`
+Run: `pnpm vitest run apps/web/src/pages/shell/bot-settings.test.tsx`
 Expected: FAIL — no element matching `/decider/i`.
 
 - [ ] **Step 4: Add the control**
@@ -3033,7 +3680,7 @@ Add a select beside the existing model picker, using the same `packages/ui-web` 
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `pnpm vitest run <that test file>`
+Run: `pnpm vitest run apps/web/src/pages/shell/bot-settings.test.tsx`
 Expected: PASS, all three.
 
 - [ ] **Step 6: Add the screen to the web E2E so CI captures it**
@@ -3046,7 +3693,7 @@ Run: `pnpm lint && pnpm test && pnpm check`
 Expected: clean.
 
 ```bash
-git add <component> <test> <e2e test>
+git add apps/web/src/pages/ModelSettingsOverlay.tsx apps/web/src/pages/shell/bot-settings.test.tsx
 git commit -m "feat(web): choose a page decider per bot"
 ```
 
