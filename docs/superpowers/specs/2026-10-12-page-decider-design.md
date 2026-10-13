@@ -269,10 +269,55 @@ Two real adapters plus a fake, mirroring the existing browser provider trio.
   response validation are shared rather than duplicated.
 - **`fake`** — in-process, seeded decisions, for offline conformance and replay.
 
-Resolution follows `resolveBrowserProviderKind`: a single configured kind, defaulting
-to `model` so that an unconfigured deployment is a working deployment. Per AGENTS.md,
-the self-hosted and hosted `systemone` paths differ only by connection configuration;
-no model-specific environment variable is added for either.
+### Selection: per bot, per run
+
+The decider is selected the same way the bot's main model is selected, because
+anything else would make it the one model in the product that an operator cannot
+route. A deployment must be able to run one bot entirely on its own hardware and
+another against a hosted endpoint, and to override that for a single run.
+
+Rakazo already stores `modelProvider` / `modelId` on `Bot`, on `Run`, and on
+`SteeringMessage`. The decider mirrors the first two:
+
+| Table | Columns | Meaning |
+|---|---|---|
+| `Bot` | `pageDeciderProvider`, `pageDeciderModel` (both nullable) | this bot's default |
+| `Run` | `pageDeciderProvider`, `pageDeciderModel` (both nullable) | override for one run |
+
+Resolution precedence, highest first: the run's columns, then the bot's columns, then
+the deployment default from configuration, then `model`. Null at every level means
+`model`, so an unconfigured deployment is still a working deployment and the
+environment variable is only a default — never the only way to choose.
+
+The connection itself resolves through the hook `AgentRunRequest` already exposes:
+
+```ts
+/** Resolve an explicitly requested helper model within the active user and space scope. */
+resolveModel?: (provider: string, modelId: string) => Promise<AgentRunModel>;
+```
+
+That gives the decider the same user-and-space credential scoping as the main model,
+with no second secret path to secure. Hosted and self-hosted `systemone` endpoints
+are two connection entries differing by `baseUrl` — a field `AgentRunModel` already
+carries, and the mechanism the existing `openai-compatible` provider already uses.
+Per AGENTS.md, no provider- or model-specific environment variable is added for
+either; the generic connection expresses the difference.
+
+### Settings surface
+
+Choosing the decider is a real control, and it is the only user-facing addition in
+this design.
+
+It is shown progressively, not persistently. Most people will never set it, so it
+does not become a second model dropdown sitting next to the first. It appears beside
+the existing model choice, and only once a bot has a computer capable of the page
+browser contract — before that it has nothing to configure and is not rendered.
+
+The control is a connection picker with the same shape as the model picker, with no
+explanatory body copy: the choice is between named connections the operator has
+already configured, and a default option meaning "use this bot's own model." Any
+wording lands in the PR description per AGENTS.md, quoted, with the case for why the
+label cannot be shorter.
 
 ### Integration point
 
@@ -303,10 +348,15 @@ The decider receives the text and element names of a page the bot is logged into
 That is among the most sensitive data the product handles, and it is the reason both
 configurations are first-class.
 
-- **Consent.** Decider requests are covered by the existing AI data-sharing consent
-  path (`packages/adapters/src/ai-consent.ts`). A deployment that has not consented
-  to sharing page content with a hosted service resolves to `model` or a self-hosted
-  `systemone` endpoint.
+- **Consent gates the selection, not just the request.** Decider requests go through
+  the existing AI data-sharing consent path
+  (`packages/adapters/src/ai-consent.ts`). Because the decider is now selectable per
+  bot and per run, consent is checked at resolution: selecting a hosted endpoint in a
+  space that has not consented to sharing page content externally fails the
+  selection with a clear reason rather than silently falling back, and a run-level
+  override cannot escalate a bot past its space's consent. Falling back silently
+  would mean a bot the operator believed was private had quietly stopped being
+  private, which is the one failure this design must not have.
 - **No secrets, structurally.** The decider never produces or receives typed text,
   so credential values cannot reach it through the action path. Element `value`
   fields for password-type inputs are dropped before the request is built; the
@@ -334,12 +384,20 @@ Deterministic and offline by default, and identical across both configurations.
    `model` backend through the existing model emulator and against a seeded
    `systemone` emulator. The same assertions must pass on both. This is the suite
    the accuracy floor is measured on, and it is where "both, equally" is enforced.
-4. **Calibration harness** — a script, not a test, that replays labeled states and
+4. **Resolution precedence tests** — run columns beat bot columns beat the
+   deployment default beats `model`, with null at each level falling through rather
+   than erroring. Includes the case that protects the privacy promise: a bot pinned
+   to a self-hosted decider must not be silently upgraded to a hosted one by a
+   deployment default, and a run override must be scoped to the same user and space
+   as the credential it resolves.
+5. **Calibration harness** — a script, not a test, that replays labeled states and
    reports a confusion matrix per threshold, so thresholds are set from data.
    Follows the `test:evals` precedent.
 
 The desktop Playwright suite is not run locally for this work, per AGENTS.md; CI's
-virtual-display job covers it.
+virtual-display job covers it. The settings picker gets a web test that opens the
+screen, so the CI E2E screenshot can be linked on the PR as AGENTS.md requires for
+UI changes.
 
 ## Fork and upstream workflow
 
@@ -358,6 +416,13 @@ edits to shared files are each one or two lines, and they are the complete list:
 | `packages/adapters/src/browser-tools.ts` | the decider consultation |
 | `packages/adapters/src/builtin-tools.ts` | one optional `goal` field on two tool schemas |
 | `packages/adapters/src/executor.ts` | one `deps.pageDecider` default beside `deps.browser` |
+| `packages/db/prisma/schema.prisma` | two nullable columns on `Bot`, two on `Run` |
+| bot settings UI | one progressively-disclosed connection picker |
+
+The schema change is additive and nullable, so a merge that brings in upstream
+migrations orders cleanly alongside it. The settings picker is the only edit that
+touches a file upstream is also likely to be changing, and it is the one to keep
+smallest.
 
 **Remote topology.** `origin` currently points at the upstream repository. Create a
 fork, then:
@@ -395,5 +460,8 @@ Stated explicitly, so scope does not drift during implementation.
 - **No vision model swap.** Which model sees screenshots stays a connection setting.
   Operators wanting a fully local vision path already have
   `pi-local-provider.ts` and `RAKAZO_LOCAL_VISION_MODELS`.
-- **No UI and no new user-facing copy.** The acceleration is invisible; takeover
-  already has its own surface and its own wording.
+- **No UI beyond the decider picker.** The acceleration itself is invisible: no
+  status chrome, no progress text, no explanation of which brain made which
+  decision. Takeover already has its own surface and wording. The one addition is
+  the progressively-disclosed connection picker described above, and it is the only
+  place this design adds user-facing words.
