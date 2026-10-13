@@ -1,7 +1,13 @@
 > [!NOTE]
-> **This is a fork of [Rakazo](https://github.com/elie222/rakazo)** that focuses on browser and
-> computer use. It tracks upstream and merges its changes regularly; everything below this note
-> is upstream's README.
+> **Rakazo Ultrafast is a fork of [Rakazo](https://github.com/elie222/rakazo)** that focuses on
+> browser and computer use. It tracks upstream and merges its changes regularly. Everything below
+> this note is upstream's README, except that:
+>
+> - Desktop apps (macOS, Linux) are published on this repository's
+>   [Releases](https://github.com/init-lunacy/rakazo-ultrafast/releases) as "Rakazo Ultrafast".
+>   They install alongside the official app and update from this repository.
+> - Server images are `ghcr.io/init-lunacy/rakazo-ultrafast/{app,updater,computer}`.
+> - This fork publishes no mobile builds.
 >
 > **Added so far: a page decider.** A bot can hand simple browser steps to a fast "page decider"
 > instead of its main model. The decider answers four questions about the current page: which

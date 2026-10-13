@@ -1,5 +1,5 @@
-/** The repository a stock Rakazo deployment tracks. */
-export const OFFICIAL_REPO_URL = "https://github.com/elie222/rakazo";
+/** The repository a stock deployment of this fork tracks. Upstream is `elie222/rakazo`. */
+export const OFFICIAL_REPO_URL = "https://github.com/init-lunacy/rakazo-ultrafast";
 export const DEFAULT_UPDATE_BRANCH = "main";
 export const DEFAULT_UPDATE_REMOTE = "origin";
 
@@ -80,7 +80,7 @@ function normalizeRepoPath(raw: string): string | null {
   return segments.join("/");
 }
 
-/** `github.com/elie222/rakazo` for every spelling of the same remote, for comparison only. */
+/** `github.com/init-lunacy/rakazo-ultrafast` for every spelling of the same remote, for comparison only. */
 export function repoIdentity(url: string): string | null {
   const normalized = normalizeRepoUrl(url);
   if ("error" in normalized) return null;

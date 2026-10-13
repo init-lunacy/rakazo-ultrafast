@@ -601,10 +601,13 @@ describe("managed env assignments", () => {
 describe("sidecar boundary validation", () => {
   it("normalizes a request the API already validated", () => {
     expect(
-      validateUpdateRequest({ repoUrl: "https://github.com/elie222/rakazo.git", branch: " main " }),
+      validateUpdateRequest({
+        repoUrl: "https://github.com/init-lunacy/rakazo-ultrafast.git",
+        branch: " main ",
+      }),
     ).toEqual({
       request: {
-        repoUrl: "https://github.com/elie222/rakazo.git",
+        repoUrl: "https://github.com/init-lunacy/rakazo-ultrafast.git",
         branch: "main",
         official: true,
       },
