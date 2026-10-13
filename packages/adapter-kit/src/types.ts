@@ -850,6 +850,11 @@ export interface BrowserNavigateResult {
 
 export interface BrowserSnapshotRequest {
   signal?: AbortSignal;
+  /**
+   * Up to 240 elements, each with its rect, for the page decider. Off by
+   * default, so the snapshot the model sees is exactly what it was.
+   */
+  extended?: boolean;
 }
 
 export interface BrowserSnapshotNode {
@@ -859,6 +864,8 @@ export interface BrowserSnapshotNode {
   name: string;
   value?: string;
   tag?: string;
+  /** Viewport CSS pixels, matching a viewport capture. Absent on older computer images. */
+  rect?: { x: number; y: number; width: number; height: number };
 }
 
 export interface BrowserSnapshotResult {
@@ -903,12 +910,29 @@ export interface BrowserActResult {
 }
 
 /** A sandbox must route these commands through its owned screen, never generic host execution. */
+export interface BrowserScreenshotRequest {
+  signal?: AbortSignal;
+}
+
+export interface BrowserScreenshotResult {
+  /** Base64 PNG, no data: prefix. Empty when `fallback` is set. */
+  data: string;
+  mimeType: "image/png";
+  /** Image pixels per CSS pixel — the device pixel ratio. */
+  scale: number;
+  fallback?: "computer_act";
+  error?: string;
+}
+
 export type PageBrowserCommand =
   | { command: "navigate"; url: string }
-  | { command: "snapshot" }
+  | { command: "snapshot"; extended?: boolean }
+  | { command: "screenshot" }
   | { command: "act"; actions: BrowserActStep[] };
 
-export type PageBrowserResult = Partial<BrowserSnapshotResult & BrowserActResult> & { ok: boolean };
+export type PageBrowserResult = Partial<
+  BrowserSnapshotResult & BrowserActResult & BrowserScreenshotResult
+> & { ok: boolean };
 
 /** Vendor-neutral status for a remote cloud coding agent. */
 export type CloudAgentStatus = "running" | "finished" | "failed" | "cancelled";

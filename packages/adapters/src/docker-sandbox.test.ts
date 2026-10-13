@@ -452,6 +452,33 @@ describe("Docker page browser", () => {
   });
 });
 
+describe("Docker page capture", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // A viewport PNG is routinely larger than any snapshot, so only the capture
+  // gets the larger response cap.
+  it("accepts a capture larger than the snapshot response cap", async () => {
+    const data = "A".repeat(700 * 1024);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ ok: true, data, scale: 1 })),
+    );
+    const provider = new DockerSandboxProvider("http://supervisor.test", "test-token");
+    const computer = {
+      id: "computer",
+      botId: "team-home",
+      kind: "docker" as const,
+      providerRef: "computer",
+    };
+    await expect(
+      provider.pageBrowser(computer, { command: "screenshot" }, context),
+    ).resolves.toMatchObject({ ok: true, data });
+    await expect(provider.pageBrowser(computer, { command: "snapshot" }, context)).rejects.toThrow(
+      /exceeds/,
+    );
+  });
+});
+
 describe("Docker sandbox stopped containers", () => {
   const computer = {
     id: "computer",

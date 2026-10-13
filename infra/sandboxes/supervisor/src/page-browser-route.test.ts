@@ -89,6 +89,45 @@ it("resolves the owned display and refuses an older fence before running the hel
   expect(mock.exec).not.toHaveBeenCalled();
 });
 
+async function browser(body: unknown) {
+  return supervisorApp.request("/computers/computer-capture/browser", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+      "content-type": "application/json",
+      "x-rakazo-bot-id": "home",
+      "x-rakazo-space-id": "space",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+it("forwards an extended snapshot to the helper", async () => {
+  expect(await (await browser({ command: "snapshot", extended: true })).json()).toMatchObject({
+    ok: true,
+  });
+  expect(mock.stdin.join("")).toBe(`${JSON.stringify({ command: "snapshot", extended: true })}\n`);
+});
+
+// A viewport PNG is routinely larger than any snapshot, so only the capture
+// gets the larger output cap.
+it("returns a page capture larger than the snapshot output cap", async () => {
+  const data = "A".repeat(700 * 1024);
+  mock.exec.mockImplementation(async () => ({
+    start: async () =>
+      Duplex.from({
+        readable: Readable.from([Buffer.from(JSON.stringify({ ok: true, data, scale: 1 }))]),
+        writable: new Writable({ write: (_chunk, _encoding, callback) => callback() }),
+      }),
+    inspect: async () => ({ ExitCode: 0 }),
+  }));
+  expect(await (await browser({ command: "screenshot" })).json()).toEqual({
+    ok: true,
+    data,
+    scale: 1,
+  });
+});
+
 it("rejects another computer identity before any command executes", async () => {
   expect(
     await (await snapshot("computer-identity", "first", "run:1", "foreign-home")).json(),

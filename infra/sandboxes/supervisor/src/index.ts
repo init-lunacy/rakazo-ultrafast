@@ -445,6 +445,9 @@ app.post("/computers/:id/exec", async (c) => {
   });
 });
 
+/** A viewport PNG, base64 encoded. Every other page-browser reply stays under 512 KiB. */
+const PAGE_CAPTURE_MAX_BYTES = 4 * 1024 * 1024;
+
 app.post("/computers/:id/browser", async (c) => {
   // Read eagerly so the Node HTTP adapter observes disconnects during screen setup too.
   const signal = c.req.raw.signal;
@@ -463,7 +466,8 @@ app.post("/computers/:id/browser", async (c) => {
             return /^https?:$/.test(url.protocol) && !url.username && !url.password;
           }),
       }),
-      z.object({ command: z.literal("snapshot") }),
+      z.object({ command: z.literal("snapshot"), extended: z.boolean().optional() }),
+      z.object({ command: z.literal("screenshot") }),
       z.object({
         command: z.literal("act"),
         actions: z
@@ -518,7 +522,8 @@ app.post("/computers/:id/browser", async (c) => {
       },
     );
     // A nonzero exit or malformed output cannot establish which mutations ran.
-    if (result.code !== 0 || Buffer.byteLength(result.stdout) > 512 * 1024) {
+    const maxBytes = body.command === "screenshot" ? PAGE_CAPTURE_MAX_BYTES : 512 * 1024;
+    if (result.code !== 0 || Buffer.byteLength(result.stdout) > maxBytes) {
       throw new Error("Page browser unavailable or interrupted");
     }
     return c.json(JSON.parse(result.stdout));

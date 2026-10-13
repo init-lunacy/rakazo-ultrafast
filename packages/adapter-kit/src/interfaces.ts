@@ -18,6 +18,8 @@ import type {
   BrowserCapabilities,
   BrowserNavigateRequest,
   BrowserNavigateResult,
+  BrowserScreenshotRequest,
+  BrowserScreenshotResult,
   BrowserSnapshotRequest,
   BrowserSnapshotResult,
   CloudAgentCapabilities,
@@ -465,6 +467,12 @@ export interface BrowserProvider {
     request: BrowserActRequest,
     context: AdapterContext,
   ): Promise<BrowserActResult>;
+  /** A viewport capture in the same space as snapshot rects. Optional: older images lack it. */
+  screenshot?(
+    computer: ComputerRef,
+    request: BrowserScreenshotRequest,
+    context: AdapterContext,
+  ): Promise<BrowserScreenshotResult>;
 }
 
 /**

@@ -5,6 +5,8 @@ import type {
   BrowserNavigateRequest,
   BrowserNavigateResult,
   BrowserProvider,
+  BrowserScreenshotRequest,
+  BrowserScreenshotResult,
   BrowserSnapshotNode,
   BrowserSnapshotRequest,
   BrowserSnapshotResult,
@@ -98,7 +100,11 @@ export class ComputerBrowserProvider implements BrowserProvider {
     if (this.canUseInProcess(computer)) {
       return this.fake.snapshot(computer, request, context);
     }
-    const live = await this.runLive(computer, { command: "snapshot" }, context);
+    const live = await this.runLive(
+      computer,
+      { command: "snapshot", extended: request.extended },
+      context,
+    );
     if (live?.ok !== true || live.fallback === "computer_act") {
       return {
         url: "",
@@ -115,6 +121,31 @@ export class ComputerBrowserProvider implements BrowserProvider {
       title: typeof live.title === "string" ? live.title : "",
       tree: typeof live.tree === "string" ? live.tree : formatTree(elements),
       elements,
+    };
+  }
+
+  async screenshot(
+    computer: ComputerRef,
+    request: BrowserScreenshotRequest,
+    context: AdapterContext,
+  ): Promise<BrowserScreenshotResult> {
+    if (this.canUseInProcess(computer)) {
+      return this.fake.screenshot(computer, request, context);
+    }
+    const live = await this.runLive(computer, { command: "screenshot" }, context);
+    if (live?.ok !== true || live.fallback === "computer_act" || !live.data) {
+      return {
+        data: "",
+        mimeType: "image/png",
+        scale: 1,
+        fallback: "computer_act",
+        error: live?.error || DETACHED_MESSAGE,
+      };
+    }
+    return {
+      data: live.data,
+      mimeType: "image/png",
+      scale: typeof live.scale === "number" && live.scale > 0 ? live.scale : 1,
     };
   }
 
@@ -175,7 +206,9 @@ export class ComputerBrowserProvider implements BrowserProvider {
               uncertain: false,
             };
       if (result?.ok === true) {
-        if (typeof result.url !== "string" || typeof result.title !== "string") {
+        if (request.command === "screenshot") {
+          if (typeof result.data !== "string") throw new Error("Incomplete page capture");
+        } else if (typeof result.url !== "string" || typeof result.title !== "string") {
           throw new Error("Incomplete page browser response");
         }
         if (

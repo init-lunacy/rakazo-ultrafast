@@ -5,6 +5,8 @@ import type {
   BrowserNavigateRequest,
   BrowserNavigateResult,
   BrowserProvider,
+  BrowserScreenshotRequest,
+  BrowserScreenshotResult,
   BrowserSnapshotRequest,
   BrowserSnapshotResult,
   ComputerRef,
@@ -32,6 +34,8 @@ export class FakeBrowserProvider implements BrowserProvider {
   actError?: Error;
   /** When set, every method returns computer_act fallback (fallback-path tests). */
   forceFallback?: string;
+  /** Models a computer image that predates the viewport capture. */
+  noScreenshot?: boolean;
 
   constructor(options: FakeBrowserProviderOptions = {}) {
     this.pages = options.pages ?? {};
@@ -93,7 +97,7 @@ export class FakeBrowserProvider implements BrowserProvider {
 
   async snapshot(
     computer: ComputerRef,
-    _request: BrowserSnapshotRequest,
+    request: BrowserSnapshotRequest,
     context: AdapterContext,
   ): Promise<BrowserSnapshotResult> {
     if (this.forceFallback) {
@@ -107,7 +111,34 @@ export class FakeBrowserProvider implements BrowserProvider {
       };
     }
     if (this.snapshotError) throw this.snapshotError;
-    return this.sessions.get(pageBrowserSessionKey(computer, context)).snapshot();
+    return this.sessions.get(pageBrowserSessionKey(computer, context)).snapshot(request.extended);
+  }
+
+  // Declares the interface's parameters: callers pass all three, and a
+  // zero-parameter method would reject that call.
+  async screenshot(
+    _computer?: ComputerRef,
+    _request?: BrowserScreenshotRequest,
+    _context?: AdapterContext,
+  ): Promise<BrowserScreenshotResult> {
+    const unavailable = this.noScreenshot
+      ? "This computer has no page capture."
+      : this.forceFallback;
+    if (unavailable) {
+      return {
+        data: "",
+        mimeType: "image/png",
+        scale: 1,
+        fallback: "computer_act",
+        error: unavailable,
+      };
+    }
+    return {
+      // 1x1 transparent PNG.
+      data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==",
+      mimeType: "image/png",
+      scale: 1,
+    };
   }
 
   async act(

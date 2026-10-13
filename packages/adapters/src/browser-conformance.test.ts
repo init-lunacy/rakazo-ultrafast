@@ -67,6 +67,27 @@ async function assertBrowserConformance(provider: BrowserProvider) {
   expect(filled.ok).toBe(true);
   expect(filled.completed).toBe(2);
   expect(filled.fallback).toBeUndefined();
+
+  // The default snapshot is what the model sees, and must not change.
+  expect(snap.elements.some((element) => element.rect)).toBe(false);
+
+  // Rects come only with an extended snapshot, and are optional there — older
+  // computer images report none — but a rect that is present must be usable.
+  const extended = await provider.snapshot(computer, { extended: true }, context);
+  for (const element of extended.elements) {
+    if (!element.rect) continue;
+    expect(element.rect.width).toBeGreaterThan(0);
+    expect(element.rect.height).toBeGreaterThan(0);
+  }
+
+  if (provider.screenshot) {
+    const shot = await provider.screenshot(computer, {}, context);
+    if (!shot.fallback) {
+      expect(shot.data.length).toBeGreaterThan(0);
+      expect(shot.mimeType).toBe("image/png");
+      expect(shot.scale).toBeGreaterThan(0);
+    }
+  }
 }
 
 describe("browser provider conformance", () => {
@@ -86,5 +107,19 @@ describe("browser provider conformance", () => {
     const result = await provider.navigate(computer, { url: "https://example.test/form" }, context);
     expect(result.fallback).toBe("computer_act");
     expect(result.error).toMatch(/unavailable/i);
+  });
+
+  it("reports rects and a capture offline", async () => {
+    const provider = new FakeBrowserProvider({ pages: seededPages });
+    await provider.navigate(computer, { url: "https://example.test/form" }, context);
+    const snap = await provider.snapshot(computer, { extended: true }, context);
+    expect(snap.elements.every((element) => element.rect)).toBe(true);
+    expect((await provider.screenshot(computer, {}, context)).fallback).toBeUndefined();
+  });
+
+  it("reports no capture when the computer image predates it", async () => {
+    const provider = new FakeBrowserProvider({ pages: seededPages });
+    provider.noScreenshot = true;
+    expect((await provider.screenshot(computer, {}, context)).fallback).toBe("computer_act");
   });
 });

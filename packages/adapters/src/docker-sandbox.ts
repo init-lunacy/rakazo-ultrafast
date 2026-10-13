@@ -33,6 +33,8 @@ export const MAX_SANDBOX_SUCCESS_RESPONSE_BYTES = 16 * 1024 * 1024;
 export const SCREEN_RELEASE_TIMEOUT_MS = 8_000;
 const SANDBOX_ERROR_RESPONSE_TIMEOUT_MS = 1_000;
 const SANDBOX_SUCCESS_RESPONSE_TIMEOUT_MS = 30_000;
+/** A viewport PNG, base64 encoded. Every other page-browser reply stays under 512 KiB. */
+const PAGE_CAPTURE_MAX_BYTES = 4 * 1024 * 1024;
 
 async function safeBody(res: Response, signal?: AbortSignal): Promise<string> {
   const declared = Number(res.headers.get("content-length") ?? 0);
@@ -241,7 +243,11 @@ export class DockerSandboxProvider implements SandboxProvider {
       signal: context.signal,
     });
     if (!res.ok) throw new Error(`page browser failed: ${res.status}`);
-    return readSandboxJson<PageBrowserResult>(res, context.signal, 512 * 1024);
+    return readSandboxJson<PageBrowserResult>(
+      res,
+      context.signal,
+      request.command === "screenshot" ? PAGE_CAPTURE_MAX_BYTES : 512 * 1024,
+    );
   }
 
   async connectScreen(

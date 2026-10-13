@@ -45,7 +45,17 @@ test("live page helper preserves identity, masks passwords, and reports partial 
     }
     const page = context.pages()[0]!;
     await page.goto(`http://127.0.0.1:${address.port}`);
+    // Only the decider's extended snapshot carries rects, and its capture is the
+    // viewport those rects are measured in.
+    const extended = await command("snapshot", { extended: true });
+    const box = extended.elements.find((element: { name: string }) => element.name === "Name").rect;
+    expect(box.width).toBeGreaterThan(0);
+    expect(box.height).toBeGreaterThan(0);
+    const capture = await command("screenshot");
+    expect(capture).toMatchObject({ ok: true, scale: expect.any(Number) });
+    expect(Buffer.from(capture.data, "base64").subarray(1, 4).toString()).toBe("PNG");
     const snapshot = await command("snapshot");
+    expect(snapshot.elements.some((element: { rect?: unknown }) => element.rect)).toBe(false);
     expect(snapshot.ok).toBe(true);
     expect(snapshot.title).toBe("Fixture");
     expect(snapshot.tree).toContain("Readable article content");

@@ -65,8 +65,8 @@ export class PageBrowserSession {
     return { url: this.url, title: this.title };
   }
 
-  snapshot(): BrowserSnapshotResult {
-    const { elements, tree } = this.buildSnapshot();
+  snapshot(extended = false): BrowserSnapshotResult {
+    const { elements, tree } = this.buildSnapshot(extended);
     return {
       url: this.url,
       title: this.title,
@@ -193,7 +193,7 @@ export class PageBrowserSession {
     throw new Error(`Unsupported browser action ${action.kind}`);
   }
 
-  private buildSnapshot(): { elements: BrowserSnapshotNode[]; tree: string } {
+  private buildSnapshot(extended = false): { elements: BrowserSnapshotNode[]; tree: string } {
     this.refs.clear();
     const win = this.dom.window;
     const elements: BrowserSnapshotNode[] = [];
@@ -210,6 +210,8 @@ export class PageBrowserSession {
       const tag = node.tagName.toLowerCase();
       const entry: BrowserSnapshotNode = { ref, role, name, tag };
       if (value !== undefined) entry.value = value;
+      // Deterministic geometry: offline point mapping needs real boxes.
+      if (extended) entry.rect = { x: 0, y: elements.length * 24, width: 320, height: 24 };
       elements.push(entry);
       const valuePart = value !== undefined ? ` value=${JSON.stringify(value)}` : "";
       lines.push(`- ${role} ${JSON.stringify(name)} [${ref}]${valuePart}`);

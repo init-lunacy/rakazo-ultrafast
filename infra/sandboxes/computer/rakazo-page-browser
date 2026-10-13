@@ -359,6 +359,10 @@ EVAL_HELPERS = r"""
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   }
+  function rectOf(el) {
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) };
+  }
   function roleOf(el) {
     const explicit = el.getAttribute("role");
     if (explicit) return explicit;
@@ -415,7 +419,7 @@ EVAL_HELPERS = r"""
       .join("\n");
   }
   window.__rakazoPageBrowser = {
-    snapshot() {
+    snapshot(extended = false) {
       refMap.clear();
       const elements = [];
       for (const el of document.querySelectorAll("body *")) {
@@ -430,8 +434,9 @@ EVAL_HELPERS = r"""
             : ["checkbox", "radio"].includes(el.type) ? (el.checked ? "checked" : "unchecked")
             : "value" in el ? String(el.value ?? "").slice(0, 2000) : undefined,
           tag: el.tagName.toLowerCase(),
+          ...(extended ? { rect: rectOf(el) } : {}),
         });
-        if (elements.length >= 80) break;
+        if (elements.length >= (extended ? 240 : 80)) break;
       }
       return {
         url: location.href,
@@ -564,12 +569,35 @@ def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
     raise RuntimeError("Navigation did not settle; inspect the screen before continuing")
 
 
-def snapshot(client: CdpClient, session_id: str) -> dict[str, Any]:
+def snapshot(client: CdpClient, session_id: str, extended: bool = False) -> dict[str, Any]:
     ensure_helpers(client, session_id)
-    data = eval_json(client, session_id, "window.__rakazoPageBrowser.snapshot()")
+    data = eval_json(
+        client,
+        session_id,
+        f"window.__rakazoPageBrowser.snapshot({'true' if extended else 'false'})",
+    )
     if not isinstance(data, dict):
         raise RuntimeError("snapshot returned non-object")
     return {"ok": True, **data}
+
+
+def screenshot(client: CdpClient, session_id: str) -> dict[str, Any]:
+    # The viewport capture shares getBoundingClientRect's space. It is in device
+    # pixels, so report devicePixelRatio — not visualViewport.scale, which is
+    # pinch-zoom — as the one conversion a consumer needs.
+    ensure_helpers(client, session_id)
+    ratio = eval_json(client, session_id, "window.devicePixelRatio")
+    shot = client.call(
+        "Page.captureScreenshot",
+        {"format": "png", "captureBeyondViewport": False},
+        session_id=session_id,
+        timeout_s=15.0,
+    )
+    return {
+        "ok": True,
+        "data": shot.get("data") or "",
+        "scale": ratio if isinstance(ratio, (int, float)) and ratio > 0 else 1,
+    }
 
 
 def act(client: CdpClient, session_id: str, actions: list[dict[str, Any]]) -> dict[str, Any]:
@@ -666,7 +694,9 @@ def run(argv: list[str]) -> int:
             if command == "navigate":
                 result = navigate(client, session_id, str(args.get("url") or ""))
             elif command == "snapshot":
-                result = snapshot(client, session_id)
+                result = snapshot(client, session_id, bool(args.get("extended")))
+            elif command == "screenshot":
+                result = screenshot(client, session_id)
             elif command == "act":
                 actions = args.get("actions")
                 if not isinstance(actions, list):

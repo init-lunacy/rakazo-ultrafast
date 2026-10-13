@@ -90,6 +90,24 @@ class PageBrowserTest(unittest.TestCase):
                 ])
             ensure.assert_not_called()
 
+    def test_snapshot_is_extended_only_on_request(self):
+        with patch.object(helper, "ensure_helpers"), \
+                patch.object(helper, "eval_json", return_value={"elements": []}) as evaluate:
+            helper.snapshot(Mock(), "session")
+            helper.snapshot(Mock(), "session", True)
+        self.assertEqual(
+            [call.args[2] for call in evaluate.call_args_list],
+            ["window.__rakazoPageBrowser.snapshot(false)", "window.__rakazoPageBrowser.snapshot(true)"],
+        )
+
+    def test_screenshot_reports_the_device_pixel_ratio(self):
+        client = Mock()
+        client.call.return_value = {"data": "iVBORw0KGgo="}
+        with patch.object(helper, "ensure_helpers"), patch.object(helper, "eval_json", side_effect=[2, None]):
+            self.assertEqual(helper.screenshot(client, "session"), {"ok": True, "data": "iVBORw0KGgo=", "scale": 2})
+            self.assertEqual(helper.screenshot(client, "session")["scale"], 1)
+        self.assertEqual(client.call.call_args.args[0], "Page.captureScreenshot")
+
     def test_reads_arguments_from_one_stdin_line_only(self):
         payload = b'{"actions": []}\nrest'
         with patch.object(helper.os, "read", side_effect=[payload[i:i + 1] for i in range(len(payload))]) as read:

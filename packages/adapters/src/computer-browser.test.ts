@@ -117,6 +117,29 @@ describe("computer browser provider", () => {
     });
   });
 
+  it("forwards an extended snapshot and returns a live viewport capture", async () => {
+    const liveDriver = vi.fn(async (_c, request, _ctx) =>
+      request.command === "screenshot"
+        ? { ok: true, data: "iVBORw0KGgo=", scale: 2 }
+        : { ok: true, url: "https://example.test/live", title: "Live", tree: "", elements: [] },
+    );
+    const provider = new ComputerBrowserProvider({ pages, liveDriver });
+    const computer: ComputerRef = {
+      id: "team-1",
+      botId: "home-key",
+      kind: "docker",
+      providerRef: "team-1",
+    };
+    const context = { ...baseContext, botId: "bot-a" };
+    await provider.snapshot(computer, { extended: true }, context);
+    expect(liveDriver.mock.calls[0]?.[1]).toEqual({ command: "snapshot", extended: true });
+    expect(await provider.screenshot(computer, {}, context)).toEqual({
+      data: "iVBORw0KGgo=",
+      mimeType: "image/png",
+      scale: 2,
+    });
+  });
+
   it("returns computer_act when the live driver reports failure", async () => {
     const provider = new ComputerBrowserProvider({
       pages,
