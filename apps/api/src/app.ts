@@ -559,6 +559,7 @@ export async function createApp(
     },
     env: {
       ticketBoardEnabled,
+      jevAvailable: env.jevAvailable,
       agentRuntime: env.agentRuntime,
       defaultProvider: env.defaultProvider,
       defaultModel: env.defaultModel,

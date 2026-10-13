@@ -98,6 +98,10 @@ test("custom connections persist reasoning support and bot thinking", async ({
   await thinking.selectOption("low");
   await thinking.scrollIntoViewIfNeeded();
   await captureScreenshot(page, testInfo, "openai-compatible-thinking");
+  const decider = settings.getByRole("combobox", { name: "Page decider", exact: true });
+  await expect(decider).toHaveValue("");
+  await decider.scrollIntoViewIfNeeded();
+  await captureScreenshot(page, testInfo, "page-decider");
   const saved = page.waitForResponse(
     (response) => response.url().includes("/rpc/bots/update") && response.ok(),
   );

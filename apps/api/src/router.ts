@@ -584,6 +584,7 @@ export interface RouterDeps {
   billing?: BillingService;
   env: {
     ticketBoardEnabled?: boolean;
+    jevAvailable?: boolean;
     agentRuntime: string;
     teamChatJudgeProvider?: string;
     teamChatJudgeModel?: string;
@@ -6331,6 +6332,7 @@ async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
   ]);
   return {
     ticketBoardEnabled: deps.env.ticketBoardEnabled === true,
+    jevAvailable: deps.env.jevAvailable === true,
     userId: actor.userId,
     email: user.email,
     name: user.name,

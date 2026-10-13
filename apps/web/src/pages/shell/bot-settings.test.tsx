@@ -63,6 +63,7 @@ vi.mock("../KnowledgeSection", () => ({ KnowledgeSection: () => null }));
 vi.mock("./avatar-studio-popover", () => ({ AvatarStudioPopover: () => null }));
 vi.mock("./bot-credentials", () => ({ BotCredentialsSection: () => null }));
 
+import { rpc } from "../../lib/rpc";
 import { BotSettings } from "./bot-panel";
 
 const bot = {
@@ -120,7 +121,11 @@ afterEach(() => {
   container.remove();
 });
 
-type SavePatch = { disabledBuiltinTools?: string[] };
+type SavePatch = {
+  disabledBuiltinTools?: string[];
+  pageDeciderProvider?: string | null;
+  pageDeciderModel?: string | null;
+};
 
 function setField(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
@@ -425,5 +430,78 @@ describe("BotSettings disabled tools", () => {
     await flush();
     expect(container.textContent).toContain("Network failed");
     expect(container.textContent).not.toContain("Unknown tool");
+  });
+});
+
+describe("BotSettings page decider", () => {
+  const decider = () => container.querySelector<HTMLSelectElement>('[id$="-page-decider"]');
+  const option = (label: string) =>
+    [...(decider()?.options ?? [])].find((candidate) => candidate.textContent === label);
+
+  async function save() {
+    const button = [...container.querySelectorAll("button")].find(
+      (candidate) => candidate.textContent === "Save",
+    );
+    if (!button) throw new Error("Missing save button");
+    await act(async () => {
+      button.click();
+    });
+    await flush();
+  }
+
+  it("sits inside Advanced and is off by default", async () => {
+    await renderSettings(vi.fn(async () => undefined));
+    expect(decider()?.closest("details")).not.toBeNull();
+    expect(decider()?.value).toBe("");
+  });
+
+  it("hides Jev when the deployment cannot run it", async () => {
+    await renderSettings(vi.fn(async () => undefined));
+    expect(option("Jev")).toBeUndefined();
+  });
+
+  it("offers Jev when the deployment can run it", async () => {
+    vi.mocked(rpc.me).mockResolvedValueOnce({ jevAvailable: true } as never);
+    await renderSettings(vi.fn(async () => undefined));
+    expect(option("Jev")).toBeDefined();
+  });
+
+  it("saves the chosen decider, and clears it when turned off", async () => {
+    vi.mocked(rpc.me).mockResolvedValueOnce({ jevAvailable: true } as never);
+    const onSave = vi.fn<(patch: SavePatch) => Promise<void>>(async () => undefined);
+    await renderSettings(onSave);
+
+    await act(async () => {
+      decider()!.value = option("Jev")!.value;
+      decider()!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await save();
+    expect(onSave.mock.calls[0]?.[0]).toMatchObject({
+      pageDeciderProvider: "jev",
+      pageDeciderModel: "jev-latest",
+    });
+
+    await act(async () => {
+      decider()!.value = "";
+      decider()!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await save();
+    expect(onSave.mock.calls[1]?.[0]).toMatchObject({
+      pageDeciderProvider: null,
+      pageDeciderModel: null,
+    });
+  });
+
+  // A decider chosen earlier stays visible even if it is no longer offered.
+  it("keeps showing a saved decider that is no longer offered", async () => {
+    await renderSettings(
+      vi.fn(async () => undefined),
+      {
+        ...bot,
+        pageDeciderProvider: "jev",
+        pageDeciderModel: "jev-latest",
+      },
+    );
+    expect(decider()?.selectedOptions[0]?.textContent).toBe("Jev");
   });
 });

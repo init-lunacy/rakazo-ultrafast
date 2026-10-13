@@ -139,6 +139,7 @@ function account(provider: string, modelId: string) {
     avatarStyle: "robot" as const,
     billingEnabled: false,
     ticketBoardEnabled: false,
+    jevAvailable: false,
   };
 }
 

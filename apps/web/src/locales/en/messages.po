@@ -3179,6 +3179,10 @@ msgstr "OAuth connection failed"
 msgid "OAuth expired"
 msgstr "OAuth expired"
 
+#: src/pages/shell/bot-panel.tsx
+msgid "Off"
+msgstr "Off"
+
 #. placeholder {0}: call.botName
 #: src/components/call/CallCard.tsx
 msgid "On a call with {0}"
@@ -3303,6 +3307,10 @@ msgstr "Other model…"
 #: src/pages/Board.tsx
 msgid "Owner"
 msgstr "Owner"
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Page decider"
+msgstr "Page decider"
 
 #: src/pages/RoutineEditor.tsx
 msgid "PagerDuty incident"

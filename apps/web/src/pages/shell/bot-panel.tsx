@@ -249,6 +249,12 @@ export function BotSettings({
     bot.modelProvider && bot.modelId ? modelOptionKey(bot.modelProvider, bot.modelId) : "",
   );
   const [thinkingLevel, setThinkingLevel] = useState(bot.thinkingLevel ?? "");
+  const jevKey = modelOptionKey("jev", "jev-latest");
+  const [deciderKey, setDeciderKey] = useState(
+    bot.pageDeciderProvider && bot.pageDeciderModel
+      ? modelOptionKey(bot.pageDeciderProvider, bot.pageDeciderModel)
+      : "",
+  );
   const [disabledBuiltinTools, setDisabledBuiltinTools] = useState<string[]>(
     bot.disabledBuiltinTools ?? [],
   );
@@ -301,6 +307,14 @@ export function BotSettings({
   }, []);
 
   const connectedOptions = connectedModelChoices(credentials, catalog);
+  /** A saved decider that is no longer offered resolves to no change rather than being cleared. */
+  function deciderPatch() {
+    if (deciderKey === "") return { pageDeciderProvider: null, pageDeciderModel: null };
+    if (deciderKey === jevKey)
+      return { pageDeciderProvider: "jev", pageDeciderModel: "jev-latest" };
+    const option = connectedOptions.find((candidate) => candidate.key === deciderKey);
+    return option ? { pageDeciderProvider: option.provider, pageDeciderModel: option.modelId } : {};
+  }
   const storedModel = modelKey ? parseModelOptionKey(modelKey) : null;
   const selectedModel = storedModel
     ? {
@@ -374,6 +388,7 @@ export function BotSettings({
         voiceId: voiceId || null,
         modelProvider: selected?.provider ?? null,
         modelId: selected?.modelId ?? null,
+        ...deciderPatch(),
         ...(modelMetaReady
           ? {
               thinkingLevel: thinkingOptions.length
@@ -617,6 +632,32 @@ export function BotSettings({
             </NativeSelect>
           </label>
         ) : null}
+        <label htmlFor={`${ids}-page-decider`} className={fieldLabelClass}>
+          <Trans>Page decider</Trans>
+          <NativeSelect
+            id={`${ids}-page-decider`}
+            className="mt-2 w-full"
+            value={deciderKey}
+            onChange={(event) => setDeciderKey(event.target.value)}
+          >
+            <NativeSelectOption value="">{t`Off`}</NativeSelectOption>
+            {me?.jevAvailable || deciderKey === jevKey ? (
+              <NativeSelectOption value={jevKey}>Jev</NativeSelectOption>
+            ) : null}
+            {deciderKey &&
+            deciderKey !== jevKey &&
+            !connectedOptions.some((option) => option.key === deciderKey) ? (
+              <NativeSelectOption value={deciderKey}>
+                {bot.pageDeciderModel ?? deciderKey}
+              </NativeSelectOption>
+            ) : null}
+            {connectedOptions.map((option) => (
+              <NativeSelectOption key={option.key} value={option.key}>
+                {option.label}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        </label>
         {memoryProviderConfigured ? (
           <div className="mt-4 text-[14px] text-muted-foreground">
             <Trans>Memory scope</Trans>

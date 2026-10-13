@@ -3179,6 +3179,10 @@ msgstr "Échec de la connexion OAuth"
 msgid "OAuth expired"
 msgstr "OAuth expiré"
 
+#: src/pages/shell/bot-panel.tsx
+msgid "Off"
+msgstr ""
+
 #. placeholder {0}: call.botName
 #: src/components/call/CallCard.tsx
 msgid "On a call with {0}"
@@ -3302,6 +3306,10 @@ msgstr "Autre modèle…"
 
 #: src/pages/Board.tsx
 msgid "Owner"
+msgstr ""
+
+#: src/pages/shell/bot-panel.tsx
+msgid "Page decider"
 msgstr ""
 
 #: src/pages/RoutineEditor.tsx

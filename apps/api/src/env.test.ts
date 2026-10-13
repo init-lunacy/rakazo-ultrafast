@@ -13,6 +13,11 @@ describe("loadEnv", () => {
       expect(loadEnv({ ...base, TICKET_BOARD_ENABLED: value }).ticketBoardEnabled).toBe(false);
     expect(loadEnv({ ...base, TICKET_BOARD_ENABLED: "true" }).ticketBoardEnabled).toBe(true);
   });
+  it("offers the Jev page decider only when the deployment has its key", () => {
+    expect(loadEnv(base).jevAvailable).toBe(false);
+    expect(loadEnv({ ...base, TYPESAFE_API_KEY: "  " }).jevAvailable).toBe(false);
+    expect(loadEnv({ ...base, TYPESAFE_API_KEY: "test-key" }).jevAvailable).toBe(true);
+  });
   it("defaults the product path to Pi, Docker, and Graphile Worker", () => {
     const env = loadEnv(base);
     expect(env.agentRuntime).toBe("pi");

@@ -1358,6 +1358,8 @@ export type ServerUpdateRequest = z.infer<typeof ServerUpdateRequestSchema>;
 
 export const MeSchema = z.object({
   ticketBoardEnabled: z.boolean(),
+  /** Whether this deployment can run the Jev page decider. */
+  jevAvailable: z.boolean(),
   userId: Id,
   email: z.string().email(),
   name: z.string(),
