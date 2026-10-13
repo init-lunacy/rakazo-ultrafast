@@ -6,33 +6,17 @@ import type {
   AutoReviewRequest,
   AutoReviewResult,
 } from "@rakazo/adapter-kit";
-import { z } from "zod";
 import {
   autoReviewMinConfidence,
   autoReviewTimeoutMs,
   DEFAULT_JEV_MODEL,
   sanitizeAutoReviewReason,
 } from "./auto-review.js";
-import { readBodyCapped } from "./web-ssrf.js";
+import { postSystemOne } from "./systemone-client.js";
 
-const JEV_URL = "https://api.typesafe.ai/v1/systemone";
-const MAX_JSON_BYTES = 64_000;
 const MAX_TASK_CHARS = 400;
 const MAX_BOT_CHARS = 240;
 const MAX_ARGS_CHARS = 1_200;
-
-const choiceAnswerSchema = z.object({
-  type: z.literal("choice"),
-  choice: z.string(),
-  confidence: z.number().min(0).max(1).optional(),
-});
-
-const jevResponseSchema = z.object({
-  model: z.string().optional(),
-  answers: z.object({
-    decision: choiceAnswerSchema,
-  }),
-});
 
 export interface JevAutoReviewOptions {
   apiKey: string;
@@ -95,65 +79,48 @@ export class JevAutoReviewProvider implements AutoReviewProvider {
   async review(request: AutoReviewRequest, context: AdapterContext): Promise<AutoReviewResult> {
     const modelLabel = `jev/${this.model}`;
     const boundedSignal = AbortSignal.any([context.signal, AbortSignal.timeout(this.timeoutMs)]);
-    let response: Response;
-    try {
-      response = await this.fetchImpl(JEV_URL, {
-        method: "POST",
-        redirect: "error",
-        signal: boundedSignal,
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          Accept: "application/json",
-          "Content-Type": "application/json",
+    const result = await postSystemOne({
+      apiKey: this.apiKey,
+      model: this.model,
+      signal: boundedSignal,
+      fetchImpl: this.fetchImpl,
+      state: {
+        toolName: request.toolName,
+        connectorKind: request.connectorKind,
+        args: boundArgs(request.args),
+        userTask: truncate(request.userTask, MAX_TASK_CHARS),
+        botDescription: truncate(request.botDescription, MAX_BOT_CHARS),
+        matchingRules: request.matchingRules.map((rule) => ({
+          effect: rule.effect,
+          matchKind: rule.matchKind,
+          matchValue: rule.matchValue,
+        })),
+      },
+      questions: {
+        decision: {
+          type: "choice",
+          instructions: "Should this bot tool call auto-pass or ask the user to approve?",
+          criteria: {
+            pass: "Clearly fits the user task and looks low risk",
+            ask: "Unexpected, high risk, or outside the task. Ask the user",
+          },
         },
-        body: JSON.stringify({
-          model: this.model,
-          state: {
-            toolName: request.toolName,
-            connectorKind: request.connectorKind,
-            args: boundArgs(request.args),
-            userTask: truncate(request.userTask, MAX_TASK_CHARS),
-            botDescription: truncate(request.botDescription, MAX_BOT_CHARS),
-            matchingRules: request.matchingRules.map((rule) => ({
-              effect: rule.effect,
-              matchKind: rule.matchKind,
-              matchValue: rule.matchValue,
-            })),
-          },
-          questions: {
-            decision: {
-              type: "choice",
-              instructions: "Should this bot tool call auto-pass or ask the user to approve?",
-              criteria: {
-                pass: "Clearly fits the user task and looks low risk",
-                ask: "Unexpected, high risk, or outside the task. Ask the user",
-              },
-            },
-          },
-        }),
-      });
-    } catch {
-      return errorResult(modelLabel, "Checker timed out or failed.");
+      },
+    });
+    if (!result.ok) {
+      if (result.failure === "status") {
+        return errorResult(modelLabel, reasonForStatus(result.status));
+      }
+      return errorResult(
+        modelLabel,
+        result.failure === "transport"
+          ? "Checker timed out or failed."
+          : "Checker returned no decision.",
+      );
     }
-
-    if (!response.ok) {
-      void response.body?.cancel().catch(() => undefined);
-      return errorResult(modelLabel, reasonForStatus(response.status));
-    }
-
-    let parsed: unknown;
-    try {
-      const bytes = await readBodyCapped(response, MAX_JSON_BYTES, boundedSignal);
-      parsed = JSON.parse(new TextDecoder().decode(bytes));
-    } catch {
-      return errorResult(modelLabel, "Checker returned no decision.");
-    }
-
-    const body = jevResponseSchema.safeParse(parsed);
-    if (!body.success) return errorResult(modelLabel, "Checker returned no decision.");
-
-    const answer = body.data.answers.decision;
-    const model = body.data.model ? `jev/${body.data.model}` : modelLabel;
+    const answer = result.answers.decision;
+    if (answer?.type !== "choice") return errorResult(modelLabel, "Checker returned no decision.");
+    const model = result.model ? `jev/${result.model}` : modelLabel;
     if (answer.choice === "ask") {
       return { decision: "ask", model };
     }

@@ -109,6 +109,22 @@ describe("JevAutoReviewProvider", () => {
     });
   });
 
+  // A confidence outside 0..1 is malformed, so it can never clear the floor.
+  it("maps an out-of-range confidence to error, never to pass", async () => {
+    const provider = new JevAutoReviewProvider({
+      apiKey: "ts-key",
+      fetch: async () =>
+        jsonResponse({
+          model: "jev-latest",
+          answers: { decision: { type: "choice", choice: "pass", confidence: 1.4 } },
+        }),
+    });
+    await expect(provider.review(request, context)).resolves.toMatchObject({
+      decision: "error",
+      reason: "Checker returned no decision.",
+    });
+  });
+
   it("maps invalid answers to error", async () => {
     const provider = new JevAutoReviewProvider({
       apiKey: "ts-key",

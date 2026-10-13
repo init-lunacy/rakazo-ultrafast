@@ -125,6 +125,8 @@ export * from "./skill-tools.js";
 export * from "./smtp-email.js";
 export * from "./stripe-billing.js";
 export { SupermemoryMemoryProvider } from "./supermemory-memory-provider.js";
+export * from "./systemone-client.js";
+export * from "./systemone-page-decider.js";
 export * from "./task-catalog.js";
 export * from "./teaching-session.js";
 export * from "./team-chat-messaging.js";

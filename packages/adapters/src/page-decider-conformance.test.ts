@@ -1,6 +1,7 @@
 import type { AdapterContext, ComputerRef, PageDecider } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
 import { FakePageDecider } from "./fake-page-decider.js";
+import { SystemOnePageDecider } from "./systemone-page-decider.js";
 
 const context: AdapterContext = {
   operationId: "1",
@@ -60,6 +61,30 @@ describe("page decider conformance", () => {
     );
   });
 
+  it("holds for systemone", async () => {
+    await assertConformance(
+      new SystemOnePageDecider({
+        apiKey: "test-key",
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              answers: {
+                element: {
+                  type: "choice",
+                  choice: "e2",
+                  confidence: 0.9,
+                  probabilities: { e2: 0.9 },
+                },
+                goalMet: { type: "noul", noul: 0 },
+                stuck: { type: "noul", noul: 0 },
+                blocked: { type: "noul", noul: 0 },
+              },
+            }),
+            { status: 200 },
+          ),
+      }),
+    );
+  });
   it("reports a seeded error without throwing", async () => {
     const decision = await new FakePageDecider({ error: "seeded" }).decide(
       computer,
