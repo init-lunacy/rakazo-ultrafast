@@ -246,6 +246,63 @@ describe("runPageDecisionChain", () => {
     expect(decider.requests[0]?.excerpt).not.toContain("fake-");
   });
 
+  // Refs are renumbered on every snapshot, so "did not change the page" has to
+  // be judged, and remembered, by what the element is rather than by its ref.
+  it("stops clicking an element that does nothing", async () => {
+    const browser = new FakeBrowserProvider({
+      pages: {
+        "https://example.test/noop": {
+          title: "Noop",
+          html: `<!doctype html><html><head><title>Noop</title></head><body>
+            <button>Noop</button>
+          </body></html>`,
+        },
+      },
+    });
+    await browser.navigate(computer, { url: "https://example.test/noop" }, context);
+    const snapshot = await browser.snapshot(computer, { extended: true }, context);
+    const pickNoop: PageDecider = {
+      describe: () => new FakePageDecider().describe(),
+      decide: async (_computer, request) => {
+        const target = request.elements.find((element) => element.name === "Noop")!;
+        return {
+          candidates: [{ ref: target.ref, kind: "click", confidence: 0.95 }],
+          goalMet: 0,
+          stuck: 0,
+          blocked: 0,
+        };
+      },
+    };
+    const result = await runPageDecisionChain({
+      browser,
+      decider: pickNoop,
+      computer,
+      context,
+      goal: "go",
+      snapshot,
+    });
+    expect(result).toMatchObject({ outcome: "escalate", reason: "no_candidates", acted: ["Noop"] });
+  });
+
+  // An accessible name is page-controlled and can end in ` value=`.
+  it("never shows the decider a value, whatever the element is named", async () => {
+    const browser = new FakeBrowserProvider({
+      pages: {
+        "https://example.test/card": {
+          title: "Card",
+          html: `<!doctype html><html><head><title>Card</title></head><body>
+            <input aria-label='Card value=' value="4111 1111 1111 1111" />
+          </body></html>`,
+        },
+      },
+    });
+    await browser.navigate(computer, { url: "https://example.test/card" }, context);
+    const snapshot = await browser.snapshot(computer, { extended: true }, context);
+    const decider = new FakePageDecider({ decisions: [{ goalMet: 0.99 }] });
+    await runPageDecisionChain({ browser, decider, computer, context, goal: "pay", snapshot });
+    expect(JSON.stringify(decider.requests[0])).not.toContain("4111");
+  });
+
   it("treats a decider that throws as an escalation", async () => {
     const { browser, snapshot } = await onForm();
     const throwing: PageDecider = {
@@ -407,6 +464,44 @@ describe("browser tool integration", () => {
       { decider, redactions: () => ["Signup"] },
     );
     expect(JSON.stringify(decider.requests[0])).not.toContain("Signup");
+  });
+
+  // Reading the page for the decider renumbers every ref, so even a chain that
+  // clicked nothing must hand back refs that still resolve.
+  it("returns live refs when the chain clicked nothing", async () => {
+    const { browser, button } = await onForm();
+    const result = (await browserActFromTool(
+      browser,
+      computer,
+      context,
+      { actions: [{ kind: "click", ref: button.ref }], goal: "press continue" },
+      { decider: new FakePageDecider({ decisions: [{ candidates: [] }] }) },
+    )) as { elements: BrowserSnapshotNode[] };
+    const again = await browser.act(
+      computer,
+      { actions: [{ kind: "click", ref: result.elements[0]!.ref }] },
+      context,
+    );
+    expect(again.ok).toBe(true);
+  });
+
+  // A click whose result was lost may have happened; the model must not replay it.
+  it("warns against replaying a chain click that may have happened", async () => {
+    const { browser, button } = await onForm();
+    const act = browser.act.bind(browser);
+    let calls = 0;
+    browser.act = async (...args) => {
+      const result = await act(...args);
+      return calls++ === 0 ? result : { ...result, uncertain: true };
+    };
+    const result = await browserActFromTool(
+      browser,
+      computer,
+      context,
+      { actions: [{ kind: "click", ref: button.ref }], goal: "press continue" },
+      { decider: continueOnce },
+    );
+    expect(result).toMatchObject({ uncertain: true, note: expect.stringMatching(/replay/i) });
   });
 
   it("still redacts when a chain runs", async () => {

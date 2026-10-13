@@ -101,12 +101,10 @@ export async function browserActFromTool(
     }
     const result = await browser.act(computer, { actions, signal: context.signal }, context);
     const chain = await chainForGoal(browser, computer, context, args, options, result);
-    // Once the chain has clicked, the act's own tree is of a page it has left.
-    // A default snapshot is exactly what the model would see from browser_snapshot.
-    const view =
-      chain && chain.acted.length > 0
-        ? await readPage(browser, computer, context, false)
-        : undefined;
+    // Reading the page for the decider renumbered every ref, and a click left the
+    // page, so the act's own tree is stale once a chain ran. A default snapshot is
+    // exactly what the model would see from browser_snapshot.
+    const view = chain ? await readPage(browser, computer, context, false) : undefined;
     return redactConnectorPayload(
       chain ? withChain(result, chain, view) : formatBrowserResult(result),
       options.redactions?.() ?? [],
@@ -153,10 +151,10 @@ async function chainForGoal(
 
 /**
  * The calling tool's own result, moved to where the chain landed, with the
- * decider's claims and an account of what it clicked. Once the chain has
- * clicked, the tool's own tree is of a page it left: `view` replaces it, and
- * without one it is dropped rather than mislabelled. browser_navigate's result
- * carries no tree and keeps its shape.
+ * decider's claims and an account of what it clicked. The tool's own tree is
+ * stale once a chain ran: `view` replaces it, and without one it is dropped
+ * rather than left with dead refs. browser_navigate's result carries no tree
+ * and keeps its shape.
  */
 function withChain<
   T extends {
@@ -166,14 +164,12 @@ function withChain<
     elements?: BrowserSnapshotNode[];
   },
 >(base: T, chain: PageDecisionChainResult, view?: BrowserSnapshotResult) {
-  const { tree, elements, ...rest } = base;
-  const page = chain.acted.length > 0 ? view : { tree, elements };
+  const { tree: _tree, elements: _elements, ...rest } = base;
   return formatBrowserResult({
     ...rest,
     url: chain.snapshot.url,
     title: chain.snapshot.title,
-    ...(page?.tree !== undefined ? { tree: page.tree } : {}),
-    ...(page?.elements !== undefined ? { elements: page.elements } : {}),
+    ...(view ? { tree: view.tree, elements: view.elements } : {}),
     ...(chain.acted.length > 0 ? { acted: chain.acted } : {}),
     ...(chain.goalMetConfidence !== undefined
       ? { goalMetConfidence: chain.goalMetConfidence }
@@ -181,7 +177,12 @@ function withChain<
     ...(chain.blockedConfidence !== undefined
       ? { blockedConfidence: chain.blockedConfidence }
       : {}),
-    ...(chain.uncertain ? { uncertain: true } : {}),
+    ...(chain.uncertain
+      ? {
+          uncertain: true,
+          note: "The last click in acted may or may not have taken effect. Inspect the page before continuing; do not replay it.",
+        }
+      : {}),
   });
 }
 export function parseBrowserActions(value: unknown): BrowserActInput[] {

@@ -2,6 +2,7 @@ import type {
   AdapterContext,
   BrowserActResult,
   BrowserProvider,
+  BrowserSnapshotNode,
   BrowserSnapshotResult,
   ComputerRef,
   PageDecider,
@@ -16,8 +17,6 @@ import { redactConnectorPayload } from "./connector-safety.js";
 
 const MAX_GOAL_CHARS = 400;
 const EMPTY: PageDecision = { candidates: [], goalMet: 0, stuck: 0, blocked: 0 };
-/** The JSON-quoted ` value="…"` an element line in a snapshot tree ends with. */
-const TREE_VALUE = / value="(?:[^"\\]|\\.)*"/g;
 
 /** Unusable goal means no goal: the decider never runs. */
 export function normalizeGoal(value: unknown): string | undefined {
@@ -67,6 +66,35 @@ export function decisionLogEvent(
   };
 }
 
+/** The ` value="…"` an element line in a snapshot tree ends with, or "". */
+function valueSuffix(element: BrowserSnapshotNode): string {
+  return element.value !== undefined && element.value !== ""
+    ? ` value=${JSON.stringify(element.value)}`
+    : "";
+}
+
+/**
+ * The tree with every element's ref, and optionally its value, cut out. Cut by
+ * exact text built from the snapshot's own elements, never by pattern: names are
+ * page-controlled, and a name ending in ` value=` would steer a pattern.
+ */
+function treeWithout(snapshot: BrowserSnapshotResult, keepValues: boolean): string {
+  let tree = snapshot.tree;
+  for (const element of snapshot.elements) {
+    const value = valueSuffix(element);
+    tree = tree.split(`[${element.ref}]${value}`).join(keepValues ? value : "");
+  }
+  return tree;
+}
+
+/**
+ * What an element is, independent of its ref. Refs are renumbered on every
+ * snapshot, so attempts are remembered by this and mapped back to current refs.
+ */
+function identityOf(element: BrowserSnapshotNode): string {
+  return JSON.stringify([element.role, element.name, element.tag ?? ""]);
+}
+
 /**
  * What the decider is shown of a page: no more than the model gets. Element
  * values never leave, since one can hold a typed secret and the decider has no
@@ -79,7 +107,7 @@ function pageForDecider(
   const page = redactConnectorPayload(
     {
       elements: snapshot.elements.map(({ value: _value, ...element }) => element),
-      excerpt: snapshot.tree.replace(TREE_VALUE, ""),
+      excerpt: treeWithout(snapshot, false),
       url: snapshot.url,
       title: snapshot.title,
     },
@@ -151,11 +179,17 @@ export async function runPageDecisionChain(input: {
   const started = clock();
   const origin = originOf(input.snapshot.url);
   const sees = decider.describe().capabilities.vision;
-  const history: PageDecisionAttempt[] = [];
+  const history: Array<{ identity: string; kind: "click"; changed: boolean }> = [];
   const acted: string[] = [];
   let snapshot = input.snapshot;
 
   for (;;) {
+    // Past attempts on this page's current refs; an element that is gone drops out.
+    const attempts: PageDecisionAttempt[] = history.flatMap((attempt) =>
+      snapshot.elements
+        .filter((element) => identityOf(element) === attempt.identity)
+        .map((element) => ({ ref: element.ref, kind: attempt.kind, changed: attempt.changed })),
+    );
     let decision: PageDecision;
     try {
       decision = await decider.decide(
@@ -163,7 +197,7 @@ export async function runPageDecisionChain(input: {
         {
           goal,
           ...pageForDecider(snapshot, input.redactions?.() ?? []),
-          history,
+          history: attempts,
           screenshot: sees ? await capture(browser, computer, context) : undefined,
           signal: context.signal,
         },
@@ -185,7 +219,7 @@ export async function runPageDecisionChain(input: {
         })),
       },
       budget: { steps: acted.length, elapsedMs: clock() - started },
-      history: history.map((a) => ({ target: a.ref, kind: a.kind, changed: a.changed })),
+      history: attempts.map((a) => ({ target: a.ref, kind: a.kind, changed: a.changed })),
       knownTargets: snapshot.elements.map((element) => element.ref),
       dispatchableKinds: ["click"],
       thresholds: DEFAULT_PAGE_DECISION_THRESHOLDS,
@@ -211,9 +245,10 @@ export async function runPageDecisionChain(input: {
     }
     if (outcome.action !== "act") return stop({ outcome: outcome.action, reason: outcome.reason });
 
-    const name =
-      snapshot.elements.find((element) => element.ref === outcome.target)?.name || outcome.target;
-    const before = snapshot.url + snapshot.tree;
+    const target = snapshot.elements.find((element) => element.ref === outcome.target);
+    const name = target?.name || outcome.target;
+    // Ref-free, so a re-read of an unchanged page compares equal.
+    const before = snapshot.url + treeWithout(snapshot, true);
     let result: BrowserActResult;
     try {
       result = await browser.act(
@@ -241,7 +276,13 @@ export async function runPageDecisionChain(input: {
     // default, model-facing one.
     const next = await readPage(browser, computer, context, true);
     if (!next) return stop({ outcome: "escalate", reason: "snapshot_failed" });
-    history.push({ ref: outcome.target, kind: "click", changed: before !== next.url + next.tree });
+    if (target) {
+      history.push({
+        identity: identityOf(target),
+        kind: "click",
+        changed: before !== next.url + treeWithout(next, true),
+      });
+    }
     snapshot = next;
 
     // Leaving the origin is a trust boundary. The decider reads text the page
