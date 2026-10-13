@@ -1,6 +1,7 @@
 import type { AdapterContext, ComputerRef, PageDecider } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
 import { FakePageDecider } from "./fake-page-decider.js";
+import { ModelPageDecider } from "./model-page-decider.js";
 import { SystemOnePageDecider } from "./systemone-page-decider.js";
 
 const context: AdapterContext = {
@@ -82,6 +83,35 @@ describe("page decider conformance", () => {
             }),
             { status: 200 },
           ),
+      }),
+    );
+  });
+  it("holds for model", async () => {
+    await assertConformance(
+      new ModelPageDecider({
+        runtime: {
+          describe: () => ({
+            id: "test",
+            contractVersion: "1",
+            adapterVersion: "0",
+            capabilities: { streaming: true, compaction: false, tools: false, scripted: true },
+          }),
+          async *run() {
+            yield {
+              type: "done",
+              text: JSON.stringify({
+                candidates: [{ ref: "e2", kind: "click", confidence: 0.9 }],
+                goalMet: 0,
+                stuck: 0,
+                blocked: 0,
+              }),
+            };
+          },
+          abort: async () => {},
+        },
+        model: { provider: "local", id: "m" },
+        sees: false,
+        run: { runId: "r1", botId: "b1", threadId: "t1" },
       }),
     );
   });

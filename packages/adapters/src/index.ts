@@ -87,6 +87,7 @@ export * from "./messaging-delivery.js";
 export * from "./messaging-platforms.js";
 export * from "./messaging-team-chat-emulator.js";
 export * from "./model-connect.js";
+export * from "./model-page-decider.js";
 export * from "./model-selection.js";
 export * from "./model-vision.js";
 export * from "./none-sandbox.js";
