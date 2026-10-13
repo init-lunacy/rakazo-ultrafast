@@ -3,10 +3,15 @@ import type {
   BrowserActKind,
   BrowserActStep,
   BrowserProvider,
+  BrowserSnapshotNode,
+  BrowserSnapshotResult,
   ComputerRef,
+  PageDecider,
 } from "@rakazo/adapter-kit";
 import type { LoginField } from "./bot-secrets.js";
 import { redactConnectorPayload } from "./connector-safety.js";
+import type { PageDecisionChainResult } from "./page-decision-chain.js";
+import { normalizeGoal, readPage, runPageDecisionChain } from "./page-decision-chain.js";
 
 const MAX_BROWSER_ACTIONS = 24;
 
@@ -27,6 +32,7 @@ export async function browserNavigateFromTool(
   computer: ComputerRef,
   context: AdapterContext,
   args: Record<string, unknown>,
+  options: { decider?: PageDecider } = {},
 ) {
   const url = String(args.url ?? "").trim();
   try {
@@ -38,7 +44,8 @@ export async function browserNavigateFromTool(
       };
     }
     const result = await browser.navigate(computer, { url, signal: context.signal }, context);
-    return formatBrowserResult(result);
+    const chain = await chainForGoal(browser, computer, context, args, options.decider, result);
+    return chain ? withChain(result, chain) : formatBrowserResult(result);
   } catch (error) {
     context.signal.throwIfAborted();
     return {
@@ -72,7 +79,11 @@ export async function browserActFromTool(
   computer: ComputerRef,
   context: AdapterContext,
   args: Record<string, unknown>,
-  options: { resolveSecretFill?: ResolveSecretFill; redactions?: () => string[] } = {},
+  options: {
+    resolveSecretFill?: ResolveSecretFill;
+    redactions?: () => string[];
+    decider?: PageDecider;
+  } = {},
 ) {
   try {
     const actions: BrowserActStep[] = [];
@@ -89,7 +100,17 @@ export async function browserActFromTool(
       actions.push({ kind: "fill", ref: step.ref, text: resolved.text, origin: resolved.origin });
     }
     const result = await browser.act(computer, { actions, signal: context.signal }, context);
-    return redactConnectorPayload(formatBrowserResult(result), options.redactions?.() ?? []);
+    const chain = await chainForGoal(browser, computer, context, args, options.decider, result);
+    // Once the chain has clicked, the act's own tree is of a page it has left.
+    // A default snapshot is exactly what the model would see from browser_snapshot.
+    const view =
+      chain && chain.acted.length > 0
+        ? await readPage(browser, computer, context, false)
+        : undefined;
+    return redactConnectorPayload(
+      chain ? withChain(result, chain, view) : formatBrowserResult(result),
+      options.redactions?.() ?? [],
+    );
   } catch (error) {
     context.signal.throwIfAborted();
     return {
@@ -101,6 +122,60 @@ export async function browserActFromTool(
   }
 }
 
+/**
+ * Runs the chain when a goal and a decider are both present and the tool's own
+ * step succeeded; otherwise undefined. A failed or uncertain step may have
+ * half-happened, so nothing acts on top of it.
+ */
+async function chainForGoal(
+  browser: BrowserProvider,
+  computer: ComputerRef,
+  context: AdapterContext,
+  args: Record<string, unknown>,
+  decider: PageDecider | undefined,
+  step: { ok?: boolean; uncertain?: boolean; fallback?: "computer_act"; error?: string },
+): Promise<PageDecisionChainResult | undefined> {
+  const goal = normalizeGoal(args.goal);
+  if (!goal || !decider) return undefined;
+  if (step.ok === false || step.uncertain || step.fallback || step.error) return undefined;
+  const snapshot = await readPage(browser, computer, context, true);
+  if (!snapshot) return undefined;
+  return await runPageDecisionChain({ browser, decider, computer, context, goal, snapshot });
+}
+
+/**
+ * The calling tool's own result, moved to where the chain landed, with the
+ * decider's claims and an account of what it clicked. Once the chain has
+ * clicked, the tool's own tree is of a page it left: `view` replaces it, and
+ * without one it is dropped rather than mislabelled. browser_navigate's result
+ * carries no tree and keeps its shape.
+ */
+function withChain<
+  T extends {
+    fallback?: "computer_act";
+    error?: string;
+    tree?: string;
+    elements?: BrowserSnapshotNode[];
+  },
+>(base: T, chain: PageDecisionChainResult, view?: BrowserSnapshotResult) {
+  const { tree, elements, ...rest } = base;
+  const page = chain.acted.length > 0 ? view : { tree, elements };
+  return formatBrowserResult({
+    ...rest,
+    url: chain.snapshot.url,
+    title: chain.snapshot.title,
+    ...(page?.tree !== undefined ? { tree: page.tree } : {}),
+    ...(page?.elements !== undefined ? { elements: page.elements } : {}),
+    ...(chain.acted.length > 0 ? { acted: chain.acted } : {}),
+    ...(chain.goalMetConfidence !== undefined
+      ? { goalMetConfidence: chain.goalMetConfidence }
+      : {}),
+    ...(chain.blockedConfidence !== undefined
+      ? { blockedConfidence: chain.blockedConfidence }
+      : {}),
+    ...(chain.uncertain ? { uncertain: true } : {}),
+  });
+}
 export function parseBrowserActions(value: unknown): BrowserActInput[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error("browser_act requires at least one action");

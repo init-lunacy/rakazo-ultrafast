@@ -143,6 +143,13 @@ const scheduleCreateInputSchema = {
   ],
 };
 
+/** Lets a bot's page decider run simple steps; ignored when the bot has none. */
+const browserGoalProperty = {
+  type: "string",
+  description:
+    "Optional. What to accomplish on this page, so simple steps run without a screenshot. The result lists what was clicked, with confidence scores to check against the page rather than trust.",
+};
+
 export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "computer_observe",
@@ -210,6 +217,7 @@ export const builtinAgentTools: ConnectorTool[] = [
       type: "object",
       properties: {
         url: { type: "string", description: "http(s) URL to open." },
+        goal: browserGoalProperty,
       },
       required: ["url"],
     },
@@ -246,6 +254,7 @@ export const builtinAgentTools: ConnectorTool[] = [
             required: ["kind", "ref"],
           },
         },
+        goal: browserGoalProperty,
       },
       required: ["actions"],
     },

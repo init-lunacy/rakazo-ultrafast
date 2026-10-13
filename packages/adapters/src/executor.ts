@@ -22,6 +22,7 @@ import type {
   ModelCredentialRetireReason,
   NotificationMessage,
   NotificationProvider,
+  PageDecider,
   SandboxProvider,
   SecretStore,
   SemanticMemoryProvider,
@@ -164,6 +165,7 @@ import {
   redactToolArgsForReview,
   resolveAutoReviewChecker,
   resolveAutoReviewProviderKind,
+  typesafeApiKey,
 } from "./auto-review.js";
 import { createAutoReviewProvider } from "./auto-review-factory.js";
 import { attachedImageArtifactIds, resolveUpdateBotAvatar } from "./bot-avatar.js";
@@ -279,6 +281,8 @@ import {
   modelAcceptsImageInput,
   modelIdSupportsImages,
 } from "./model-vision.js";
+import { pageDeciderForRun } from "./page-decider-for-run.js";
+import { normalizeGoal } from "./page-decision-chain.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
 import { codexLiveListsModel } from "./pi-codex-catalog.js";
 import { toOAuthCredential } from "./pi-credentials.js";
@@ -3419,6 +3423,29 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }),
           loadBotCommandEnvironment(deps.prisma, deps.secretStore, run),
         ]);
+        // Built on the first browser call that carries a goal, at most once per
+        // run, so a run that never sends one resolves nothing.
+        let pageDecider: Promise<PageDecider | undefined> | undefined;
+        const pageDeciderOnce = () =>
+          (pageDecider ??= pageDeciderForRun({
+            provider: bot.pageDeciderProvider,
+            modelId: bot.pageDeciderModel,
+            resolveModel: (provider, modelId) =>
+              resolveConnectedModel(run, provider, modelId, (values) => runSecrets.push(...values)),
+            runtime: deps.runtime,
+            run: { runId, botId: bot.id, threadId: thread.id },
+            typesafeKey: typesafeApiKey(),
+            onUsage: (event) =>
+              recordUsage(deps.prisma, event, {
+                spaceId: run.spaceId,
+                userId: run.userId,
+                botId: bot.id,
+                parentRunId: runId,
+                runId,
+                operationId: `page-decider:${runId}`,
+                operationKind: "setup",
+              }),
+          }));
         const historySearchBeforeSeq =
           contextStrategy !== "current" && run.sourceMessageId
             ? (messages.find((message) => message.id === run.sourceMessageId)?.seq ??
@@ -5208,11 +5235,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 : name === "browser_snapshot"
                   ? browserSnapshotFromTool
                   : null;
+            // Resolved only when this call carries a goal.
+            const decider = normalizeGoal(args.goal) ? await pageDeciderOnce() : undefined;
             return computerScreenToolResult(async () => {
               const result = tool
-                ? redactConnectorPayload(await tool(browser, computer, context, args), redactions())
+                ? redactConnectorPayload(
+                    await (name === "browser_navigate"
+                      ? browserNavigateFromTool(browser, computer, context, args, { decider })
+                      : tool(browser, computer, context, args)),
+                    redactions(),
+                  )
                 : await browserActFromTool(browser, computer, context, args, {
                     redactions,
+                    decider,
                     resolveSecretFill: async (step) => {
                       const resolved = await resolveLoginFill({
                         prisma: deps.prisma,
