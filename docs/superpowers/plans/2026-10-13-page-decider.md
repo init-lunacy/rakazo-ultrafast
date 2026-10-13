@@ -3298,6 +3298,43 @@ describe("normalizeGoal", () => {
 });
 
 describe("runPageDecisionChain", () => {
+  it("tells the model what it did, so the planner is not left blind", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    await browser.navigate(computer, { url: "https://example.test/form" }, context);
+    const snapshot = await browser.snapshot(computer, {}, context);
+    const button = snapshot.elements.find((el) => el.name.toLowerCase().includes("continue"))!;
+
+    const result = await browserActFromTool(
+      browser,
+      computer,
+      context,
+      { actions: [{ kind: "click", ref: button.ref }], goal: "press continue" },
+      {
+        decider: new FakePageDecider({
+          decisions: [
+            { candidates: [{ ref: button.ref, kind: "click", confidence: 0.95 }] },
+            { goalMet: 0.95 },
+          ],
+        }),
+      },
+    );
+    expect(result).toMatchObject({ steps: 1 });
+    expect((result as { acted: string[] }).acted[0]).toMatch(/continue/i);
+  });
+
+  it("adds no account when the chain acted zero times", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    const result = await browserNavigateFromTool(
+      browser,
+      computer,
+      context,
+      { url: "https://example.test/form", goal: "press continue" },
+      { decider: new FakePageDecider({ decisions: [{ candidates: [] }] }) },
+    );
+    expect(result).not.toHaveProperty("steps");
+    expect(result).not.toHaveProperty("acted");
+  });
+
   it("acts while confident and reports the steps it took", async () => {
     const browser = new FakeBrowserProvider({ pages });
     await browser.navigate(computer, { url: "https://example.test/form" }, context);
@@ -3320,6 +3357,8 @@ describe("runPageDecisionChain", () => {
 
     expect(result.outcome).toBe("done");
     expect(result.steps).toBe(1);
+    expect(result.acted).toEqual(["Continue"]);
+    expect(result.goalMetConfidence).toBe(0.99);
   });
 
   it("escalates without acting when the decider is unsure", async () => {
@@ -3433,8 +3472,10 @@ describe("runPageDecisionChain", () => {
     expect(serialized).toContain("0.99");
     expect(serialized).toContain("https://example.test");
     expect(serialized).not.toContain("/form");
+    // The account goes to the model; element names must never reach the log.
     expect(serialized).not.toContain("Continue");
     expect(serialized).not.toContain("press continue");
+    expect(serialized).not.toContain("acted");
   });
 
   // Review Focus 4, chain half: an action whose result is uncertain may already
@@ -3564,6 +3605,24 @@ export interface PageDecisionChainResult {
   outcome: "done" | "escalate" | "takeover" | "refuse";
   reason?: string;
   steps: number;
+  /**
+   * The decider's own probability that the goal is met.
+   *
+   * Reported as a claim, never as a verdict. The decider that scored this is
+   * the same one that chose the actions, so it is self-assessment; the
+   * frontier model does the verifying, which is the "verify" the published
+   * plan/classify/verify pattern calls for.
+   */
+  goalMetConfidence?: number;
+  /**
+   * Names of the elements acted on, in order.
+   *
+   * The chain compresses several steps into one tool call, so without this the
+   * model cannot see what happened and may repeat work or act on a stale
+   * picture of the page. The highest-scoring published system returns exactly
+   * this: a concise description of what changed.
+   */
+  acted: string[];
   /** True when an action may have taken effect but its result was lost. */
   uncertain?: boolean;
   snapshot: BrowserSnapshotResult;
@@ -3582,6 +3641,7 @@ export async function runPageDecisionChain(
   const needsPixels = input.decider.describe().capabilities.vision;
   const started = clock();
   const history: PageDecisionAttempt[] = [];
+  const acted: string[] = [];
   let snapshot = input.snapshot;
   let steps = 0;
 
@@ -3631,49 +3691,54 @@ export async function runPageDecisionChain(
 
     if (outcome.action === "done") {
       record("done");
-      return { outcome: "done", steps, snapshot };
+      return { outcome: "done", steps, acted, goalMetConfidence: decision.goalMet, snapshot };
     }
     if (outcome.action === "takeover") {
       record("takeover", outcome.reason);
-      return { outcome: "takeover", reason: outcome.reason, steps, snapshot };
+      return { outcome: "takeover", reason: outcome.reason, steps, acted, snapshot };
     }
     if (outcome.action === "refuse") {
       record("refuse", outcome.reason);
-      return { outcome: "refuse", reason: outcome.reason, steps, snapshot };
+      return { outcome: "refuse", reason: outcome.reason, steps, acted, snapshot };
     }
     if (outcome.action === "escalate") {
       record("escalate", outcome.reason);
-      return { outcome: "escalate", reason: outcome.reason, steps, snapshot };
+      return { outcome: "escalate", reason: outcome.reason, steps, acted, snapshot };
     }
 
     const before = snapshot.url + snapshot.tree;
-    const acted = await input.browser.act(
+    const chosenName =
+      snapshot.elements.find((element) => element.ref === outcome.ref)?.name ?? "";
+    const result = await input.browser.act(
       input.computer,
       { actions: [{ kind: "click", ref: outcome.ref }], signal: input.context.signal },
       input.context,
     );
     steps += 1;
 
-    if (acted.uncertain) {
+    if (result.uncertain) {
       record("escalate", "uncertain");
-      return { outcome: "escalate", reason: "uncertain", steps, uncertain: true, snapshot };
+      return { outcome: "escalate", reason: "uncertain", steps, acted, uncertain: true, snapshot };
     }
-    if (!acted.ok || acted.fallback) {
+    if (!result.ok || result.fallback) {
       record("escalate", "act_failed");
-      return { outcome: "escalate", reason: "act_failed", steps, snapshot };
+      return { outcome: "escalate", reason: "act_failed", steps, acted, snapshot };
     }
 
     snapshot = {
-      url: acted.url,
-      title: acted.title,
-      tree: acted.tree ?? snapshot.tree,
-      elements: acted.elements ?? snapshot.elements,
+      url: result.url,
+      title: result.title,
+      tree: result.tree ?? snapshot.tree,
+      elements: result.elements ?? snapshot.elements,
     };
     history.push({
       ref: outcome.ref,
       kind: "click",
       changed: before !== snapshot.url + snapshot.tree,
     });
+    // Captured from the pre-act snapshot's element, which is the one the
+    // decider chose. Names go to the model, never to the log.
+    acted.push(chosenName || outcome.ref);
   }
 }
 ```
@@ -3691,7 +3756,7 @@ In `packages/adapters/src/builtin-tools.ts`, in `browser_navigate`'s `inputSchem
         goal: {
           type: "string",
           description:
-            "Optional. What to accomplish on this page, so simple steps run without a screenshot.",
+            "Optional. What to accomplish on this page, so simple steps run without a screenshot. The result reports what was done and a goalMetConfidence to check against the page, not a guarantee.",
         },
 ```
 
@@ -3775,13 +3840,30 @@ function formatChainResult<T extends { fallback?: "computer_act"; error?: string
   chain: PageDecisionChainResult,
 ) {
   const landed = { ...base, url: chain.snapshot.url, title: chain.snapshot.title };
+
+  // What changed, so the model can verify rather than take our word for it.
+  // Empty when the chain acted zero times, which keeps a no-op chain's result
+  // byte-identical to the pre-decider one.
+  const account = chain.steps > 0 ? { steps: chain.steps, acted: chain.acted } : {};
+
   if (chain.outcome === "takeover") {
-    return formatBrowserResult({ ...landed, takeover: true, reason: chain.reason });
+    return formatBrowserResult({ ...landed, ...account, takeover: true, reason: chain.reason });
   }
-  if (chain.outcome === "done") return formatBrowserResult({ ...landed, goalMet: true });
-  if (chain.uncertain) return formatBrowserResult({ ...landed, uncertain: true });
-  // escalate and refuse hand the page back untouched, as before.
-  return formatBrowserResult(landed);
+  if (chain.outcome === "done") {
+    // A confidence, never `goalMet: true`. The decider that scored this also
+    // chose the actions, so asserting it as fact would hand the model a cheap
+    // model's opinion as an established result and remove the verify step.
+    return formatBrowserResult({
+      ...landed,
+      ...account,
+      goalMetConfidence: chain.goalMetConfidence,
+    });
+  }
+  if (chain.uncertain) {
+    return formatBrowserResult({ ...landed, ...account, uncertain: true });
+  }
+  // escalate and refuse hand the page back, as before.
+  return formatBrowserResult({ ...landed, ...account });
 }
 ```
 
@@ -3831,7 +3913,9 @@ describe("browser tool integration", () => {
     // `fallback: undefined`, which would show up in Object.keys.
     expect(result).not.toHaveProperty("tree");
     expect(result).not.toHaveProperty("elements");
-    expect(result).toMatchObject({ goalMet: true });
+    // A claim, not a verdict: the model must be able to disagree with it.
+    expect(result).toMatchObject({ goalMetConfidence: 0.99 });
+    expect(result).not.toHaveProperty("goalMet");
   });
 
   it("returns exactly the old shape when no goal is supplied", async () => {

@@ -146,6 +146,22 @@ decidePageAction(decision, budget, thresholds)   <- pure policy, in core
         +-- refuse    -> budget exhausted, hand back with what is known
 ```
 
+**The decider assesses; the frontier model verifies.** `goalMet` is scored by the
+same component that chose the actions, so it is self-assessment and is reported as a
+claim — `goalMetConfidence`, never `goalMet: true`. Asserting it as fact would hand
+the model a cheap model's opinion as an established result and delete the "verify"
+from plan / classify / verify, which is the step the published systems treat as
+load-bearing.
+
+**A chain says what it did.** Because several steps collapse into one tool call, the
+result carries the number of steps and the names of the elements acted on. Without
+it the planner cannot see the path it just took and may repeat work or reason from a
+stale picture of the page. The highest-scoring published system's stated insight is
+precisely this: compress the browsing into one call and return a concise description
+of what changed. Those fields are absent when the chain acted zero times, so a no-op
+chain is byte-identical to the pre-decider result. Element names go to the model and
+never to the log.
+
 The decider is strictly an accelerator. Every outcome except `act` and `done` lands
 in behavior that exists today. Removing the slot restores the current loop exactly.
 
