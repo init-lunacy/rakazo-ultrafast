@@ -59,12 +59,38 @@ single-task figures there are ~4s and $0.0016 for a three-step Wikipedia
 navigation. A separate reported comparison on a flight search dropped browser calls
 from ~1,092 to ~101.
 
-**Do not go text-only.** On WebVoyager, a multimodal agent scores 59.1% against
-40.1% for the same agent given accessibility-tree text alone. The strongest reported
-systems parse structure *and* reason visually. The reference implementation puts no
-screenshot in the decider's state at all — which is why it is fast, and also why
-adopting it wholesale would regress rakazo's harder cases. Structure drives the
-common path; pixels stay for planning, verification, and the escalation path.
+**The role split is what the benchmarks reward; the perception modality is not.**
+An earlier draft of this spec justified keeping screenshots with WebVoyager's
+multimodal 59.1% against accessibility-tree-only 40.1%. That figure is from the
+original 2024 paper and the model generation of its time, and it does not support
+the conclusion today. The current leaderboard:
+
+| System | Score | Perception |
+|---|---|---|
+| browser-control (Claude Fable 5) | 99.19% | vision |
+| Alumnium (Sonnet 4.6 orchestrating GPT-5 nano) | 98.5% | primarily accessibility trees |
+| Surfer 2 (o3 + Sonnet 4.5 + GPT-4.1 + Holo1.5) | 97.1% | purely visual, no DOM |
+| Magnitude (Sonnet 4) | 93.9% | modular agentic |
+| Surfer-H + Holo1 | 92.2% | Holo1-7B policy, GPT-4o validation |
+
+Both extremes clear 97%, so modality is not the deciding variable. What the top
+systems share is this design's shape: multi-model orchestration with specialized
+roles — a capable planner, a small fast specialist for per-step localization, and a
+separate verification pass. Alumnium is a large model driving a tiny one. Surfer 2
+uses Holo1.5-7B purely as a localizer beside large planners. That is the role this
+spec gives the decider.
+
+Vision therefore stays in the loop because a capable model reasoning over pixels is
+proven, not because structure-only is disqualified.
+
+**No benchmark exists for the typed-decision pick.** Everything published for the
+Jev-style browser loop is single-task anecdote and one vendor's call-count
+comparison. There is no WebVoyager or Online-Mind2Web figure for it. Every
+benchmarked localizer in the table above is a *vision* model; Jev is text-only.
+The success criteria above are therefore hypotheses the replay suite tests, not
+results anyone has reproduced — which is the reason the decider is built as a
+removable accelerator with a structural accuracy floor rather than as a new
+default path.
 
 **Do not copy the thresholds.** Confidence scores from any model are not calibrated
 to our prevalence or our cost ratio. The act / hold / escalate / refuse policy
@@ -134,6 +160,8 @@ export interface PageDeciderCapabilities {
   pick: boolean;
   /** True when the adapter returns probabilities rather than a bare label. */
   scores: boolean;
+  /** True when the adapter needs a screenshot to decide. */
+  vision: boolean;
   /**
    * True when the adapter adds no vendor beyond the bot's configured model.
    * The `model` backend is keyless in this sense even when the bot's own model
@@ -159,6 +187,11 @@ export interface PageDecisionRequest {
   url: string;
   title: string;
   history: readonly PageDecisionAttempt[];
+  /**
+   * Supplied only when the adapter declares `vision`. A text-only decider is
+   * never handed pixels, so the cheap path stays cheap.
+   */
+  screenshot?: { data: string; mimeType: string };
   signal?: AbortSignal;
 }
 
@@ -195,9 +228,14 @@ export interface PageDecider {
 - **The decider never produces text to type.** It returns a ref and a kind. For
   `fill` and `type`, the text comes from the bot's model, as it does today, or from
   `fill_secret`. This keeps one source of truth for typed content and keeps the
-  decider out of the credential path entirely.
-- **The decider never receives a screenshot.** Its state is structural. Pixels are
-  the escalation path's job.
+  decider out of the credential path entirely. This exclusion is absolute and is
+  what keeps the decider out of the credential path no matter which backend runs.
+- **A text-only decider never receives a screenshot.** The caller supplies
+  `screenshot` only when the adapter declares `vision`, so the `systemone` path
+  stays structural and fast while a vision localizer gets what it needs.
+- **The decider never returns coordinates.** It names one of the refs it was given.
+  `BrowserSnapshotNode` carries no geometry, so a coordinate could not be mapped to
+  an element anyway; see the non-goal on geometry.
 
 ### Policy, in code
 
@@ -252,7 +290,7 @@ Defaults, recorded as starting points requiring calibration:
 
 ### Backends
 
-Two real adapters plus a fake, mirroring the existing browser provider trio.
+Three real adapters plus a fake.
 
 - **`model`** — asks the bot's existing model one structured question through the
   machinery already used for structured tool schemas. Requires no vendor and no key,
@@ -260,13 +298,32 @@ Two real adapters plus a fake, mirroring the existing browser provider trio.
   conformance baseline and a correct fallback, **not** speed: it will not be
   meaningfully faster than today's loop for the pick itself. It earns its place by
   making the seam real and by letting the whole suite run with no external service.
-- **`systemone`** — any `/v1/systemone` endpoint, which covers both TypeSafe's hosted
-  Jev and a self-hosted drop-in, distinguished only by base URL and key. One adapter,
-  not two, because the wire protocol is identical; this is the "one source of truth"
-  rule applied. Questions map onto the protocol's `choice` (element pick) and `noul`
-  (goal met, stuck, blocked) types, evaluated in a single parallel pass. The existing
-  `jev-auto-review.ts` client is refactored so its request plumbing, body capping and
-  response validation are shared rather than duplicated.
+- **`systemone`** — any `/v1/systemone` endpoint, distinguished only by base URL and
+  key. One adapter, not two, because the wire protocol is identical; this is the "one
+  source of truth" rule applied. Questions map onto the protocol's `choice` (element
+  pick) and `noul` (goal met, stuck, blocked) types, evaluated in a single parallel
+  pass. A `choice` answer carries a `probabilities` map over every option, so the
+  adapter returns a fully ranked candidate list rather than only the winner — without
+  it, the policy's next-best fallback would be dead code on the real adapter. The
+  protocol accepts up to 255 options, which is what bounds the element cap. The
+  existing `jev-auto-review.ts` client is refactored so its request plumbing, body
+  capping and response validation are shared rather than duplicated. Text-only:
+  declares `vision: false`.
+- **`vision`** — any OpenAI-compatible vision endpoint, which is how an open-weight
+  GUI specialist is reached. The reference target is **Holo1.5-7B** (Apache 2.0, open
+  weights, Docker-served, the localizer inside a 97.1% WebVoyager system). Declares
+  `vision: true`, so the caller supplies a screenshot alongside the element list.
+
+  It is used in its UI-VQA mode — "given this screen and these numbered elements,
+  which one advances the goal" — rather than its coordinate-localization mode,
+  because `BrowserSnapshotNode` carries no geometry to map a coordinate back to an
+  element. That is a deliberate narrowing of a model trained for both.
+
+  This is the self-hosted path. It replaces the text-only drop-in an earlier draft
+  named, which scored 63.9 against Jev's 90.4 on the vendor's own intelligence
+  benchmark and had no published browser result at all. Holo1.5-7B needs no new
+  transport either: an OpenAI-compatible vision endpoint is already reachable through
+  `pi-local-provider.ts` and declared vision-capable with `RAKAZO_LOCAL_VISION_MODELS`.
 - **`fake`** — in-process, seeded decisions, for offline conformance and replay.
 
 ### Selection: per bot, per run
@@ -357,6 +414,12 @@ configurations are first-class.
   override cannot escalate a bot past its space's consent. Falling back silently
   would mean a bot the operator believed was private had quietly stopped being
   private, which is the one failure this design must not have.
+- **A screenshot raises the stakes, so only a vision adapter gets one.** The caller
+  supplies `screenshot` only when the adapter declares `vision`, and a screenshot of
+  a logged-in page is treated as external data sharing exactly as page text is: the
+  same consent gate, checked at selection. Since the `vision` backend's reference
+  target is a model running on the operator's own hardware, the accurate
+  configuration and the private one are the same configuration here.
 - **No secrets, structurally.** The decider never produces or receives typed text,
   so credential values cannot reach it through the action path. Element `value`
   fields for password-type inputs are dropped before the request is built; the
@@ -453,6 +516,13 @@ Stated explicitly, so scope does not drift during implementation.
   so raising it requires rebuilding the computer image. It is a plausible constraint
   on dense pages and a likely follow-up, measured first on the replay suite rather
   than changed on assumption.
+- **No element geometry, and so no coordinate localization.** `BrowserSnapshotNode`
+  carries `ref`, `role`, `name`, `value` and `tag` — no box. Adding geometry would
+  let a vision localizer work the way Surfer 2 uses Holo1.5, by pointing at pixels
+  rather than picking from a list, and it is the most promising follow-up here. It is
+  out of scope because the geometry would have to come from the in-computer helper,
+  which means a computer-image rebuild, and because the UI-VQA framing is enough to
+  find out whether the role split pays off at all.
 - **No change to `BrowserProvider`.** The existing contract and its adapters are
   untouched.
 - **No new browser engine.** `ComputerBrowserProvider` remains the default; this is
