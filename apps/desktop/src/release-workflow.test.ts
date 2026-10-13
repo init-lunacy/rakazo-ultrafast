@@ -62,9 +62,7 @@ describe("desktop release workflow", () => {
     expect(workflow).toContain(
       `include: ${expression("fromJSON(needs.validate.outputs.platforms)")}`,
     );
-    expect(workflow).toContain(
-      `include='[{"os":"macos-26","artifact":"macos"},{"os":"ubuntu-24.04","artifact":"linux"}]'`,
-    );
+    expect(workflow).toContain(`include='[{"os":"ubuntu-24.04","artifact":"linux"}]'`);
     expect(workflow).toMatch(
       /if \[\[ "\$WINDOWS_SIGNING" == "true" \]\]; then\n\s+include=.*\{"os":"windows-2022","artifact":"windows"\}/,
     );
@@ -72,6 +70,21 @@ describe("desktop release workflow", () => {
     expect(workflow).toContain(`WINDOWS_BUILT: ${expression("needs.validate.outputs.windows")}`);
     expect(workflow).toContain('if [[ "$WINDOWS_BUILT" == "true" ]]; then');
     expect(workflow).toContain("feeds+=(release-artifacts/latest.yml)");
+  });
+
+  // This fork has no Apple Developer account, so an unsigned macOS app is never
+  // built and a release without the certificate ships Linux alone.
+  it("builds macOS only when a signing certificate is configured", () => {
+    expect(workflow).toContain(
+      `MACOS_SIGNING: ${expression("secrets.DESKTOP_MAC_CSC_LINK != ''")}`,
+    );
+    expect(workflow).toMatch(
+      /if \[\[ "\$MACOS_SIGNING" == "true" \]\]; then\n\s+include=.*\{"os":"macos-26","artifact":"macos"\}/,
+    );
+    expect(workflow.split("macos-26")).toHaveLength(2);
+    expect(workflow).toContain(`MACOS_BUILT: ${expression("needs.validate.outputs.macos")}`);
+    expect(workflow).toContain('if [[ "$MACOS_BUILT" == "true" ]]; then');
+    expect(workflow).toContain("feeds+=(release-artifacts/latest-mac.yml)");
   });
 
   it("pins every platform update feed to the official GitHub owner and repo", () => {

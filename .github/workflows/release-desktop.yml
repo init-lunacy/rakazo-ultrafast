@@ -24,6 +24,7 @@ jobs:
       sha: ${{ steps.release.outputs.sha }}
       platforms: ${{ steps.platforms.outputs.include }}
       windows: ${{ steps.platforms.outputs.windows }}
+      macos: ${{ steps.platforms.outputs.macos }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -88,17 +89,23 @@ jobs:
       - name: Choose release platforms
         id: platforms
         env:
-          # Windows builds only when an Authenticode certificate is configured; macOS and Linux always build.
+          # Linux always builds. macOS and Windows build only when their signing certificates are
+          # configured: this fork has no Apple Developer account, and an unsigned app is never shipped.
+          MACOS_SIGNING: ${{ secrets.DESKTOP_MAC_CSC_LINK != '' }}
           WINDOWS_SIGNING: ${{ secrets.DESKTOP_WIN_CSC_LINK != '' }}
         shell: bash
         run: |
           set -euo pipefail
-          include='[{"os":"macos-26","artifact":"macos"},{"os":"ubuntu-24.04","artifact":"linux"}]'
+          include='[{"os":"ubuntu-24.04","artifact":"linux"}]'
+          if [[ "$MACOS_SIGNING" == "true" ]]; then
+            include="$(jq -c '. + [{"os":"macos-26","artifact":"macos"}]' <<<"$include")"
+          fi
           if [[ "$WINDOWS_SIGNING" == "true" ]]; then
             include="$(jq -c '. + [{"os":"windows-2022","artifact":"windows"}]' <<<"$include")"
           fi
           echo "include=$include" >> "$GITHUB_OUTPUT"
           echo "windows=$WINDOWS_SIGNING" >> "$GITHUB_OUTPUT"
+          echo "macos=$MACOS_SIGNING" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build signed ${{ matrix.artifact }} artifacts
@@ -285,6 +292,7 @@ jobs:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
           WINDOWS_BUILT: ${{ needs.validate.outputs.windows }}
+          MACOS_BUILT: ${{ needs.validate.outputs.macos }}
         shell: bash
         run: |
           set -euo pipefail
@@ -294,15 +302,15 @@ jobs:
             exit 1
           fi
 
-          test -f release-artifacts/latest-mac.yml
           test -f release-artifacts/latest-linux.yml
-          compgen -G 'release-artifacts/*.dmg' >/dev/null
-          compgen -G 'release-artifacts/*.zip' >/dev/null
           compgen -G 'release-artifacts/*.AppImage' >/dev/null
-          feeds=(
-            release-artifacts/latest-mac.yml
-            release-artifacts/latest-linux.yml
-          )
+          feeds=(release-artifacts/latest-linux.yml)
+          if [[ "$MACOS_BUILT" == "true" ]]; then
+            test -f release-artifacts/latest-mac.yml
+            compgen -G 'release-artifacts/*.dmg' >/dev/null
+            compgen -G 'release-artifacts/*.zip' >/dev/null
+            feeds+=(release-artifacts/latest-mac.yml)
+          fi
           if [[ "$WINDOWS_BUILT" == "true" ]]; then
             test -f release-artifacts/latest.yml
             compgen -G 'release-artifacts/*.exe' >/dev/null
