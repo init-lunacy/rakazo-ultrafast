@@ -103,6 +103,21 @@ export function toolRequiresApproval(
   return false;
 }
 
+/**
+ * Whether a built-in tool would run with no one asked: no unattended gate, no
+ * default approval and no rule requiring it. A caller that performs a tool's
+ * effect on its own, such as the page decider clicking, honors the same gate.
+ */
+export function builtinToolRunsUnasked(
+  toolName: string,
+  trigger: string,
+  rules: ActionApprovalRule[],
+): boolean {
+  if (unattendedTriggerToolRequiresApproval(trigger, toolName, false)) return false;
+  if (toolRequiresApproval(toolName, false)) return false;
+  return resolveActionApproval({ toolName, rules }) === "allow";
+}
+
 /** Security-boundary changes cannot be auto-reviewed or permanently allowed. */
 export function toolRequiresExplicitApproval(toolName: string): boolean {
   return EXPLICIT_APPROVAL_BUILTIN_TOOLS.has(toolName);

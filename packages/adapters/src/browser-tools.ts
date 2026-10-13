@@ -32,7 +32,7 @@ export async function browserNavigateFromTool(
   computer: ComputerRef,
   context: AdapterContext,
   args: Record<string, unknown>,
-  options: { decider?: PageDecider } = {},
+  options: { decider?: PageDecider; redactions?: () => string[] } = {},
 ) {
   const url = String(args.url ?? "").trim();
   try {
@@ -44,7 +44,7 @@ export async function browserNavigateFromTool(
       };
     }
     const result = await browser.navigate(computer, { url, signal: context.signal }, context);
-    const chain = await chainForGoal(browser, computer, context, args, options.decider, result);
+    const chain = await chainForGoal(browser, computer, context, args, options, result);
     return chain ? withChain(result, chain) : formatBrowserResult(result);
   } catch (error) {
     context.signal.throwIfAborted();
@@ -100,7 +100,7 @@ export async function browserActFromTool(
       actions.push({ kind: "fill", ref: step.ref, text: resolved.text, origin: resolved.origin });
     }
     const result = await browser.act(computer, { actions, signal: context.signal }, context);
-    const chain = await chainForGoal(browser, computer, context, args, options.decider, result);
+    const chain = await chainForGoal(browser, computer, context, args, options, result);
     // Once the chain has clicked, the act's own tree is of a page it has left.
     // A default snapshot is exactly what the model would see from browser_snapshot.
     const view =
@@ -132,7 +132,7 @@ async function chainForGoal(
   computer: ComputerRef,
   context: AdapterContext,
   args: Record<string, unknown>,
-  decider: PageDecider | undefined,
+  { decider, redactions }: { decider?: PageDecider; redactions?: () => string[] },
   step: { ok?: boolean; uncertain?: boolean; fallback?: "computer_act"; error?: string },
 ): Promise<PageDecisionChainResult | undefined> {
   const goal = normalizeGoal(args.goal);
@@ -140,7 +140,15 @@ async function chainForGoal(
   if (step.ok === false || step.uncertain || step.fallback || step.error) return undefined;
   const snapshot = await readPage(browser, computer, context, true);
   if (!snapshot) return undefined;
-  return await runPageDecisionChain({ browser, decider, computer, context, goal, snapshot });
+  return await runPageDecisionChain({
+    browser,
+    decider,
+    computer,
+    context,
+    goal,
+    snapshot,
+    redactions,
+  });
 }
 
 /**

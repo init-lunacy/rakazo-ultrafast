@@ -60,6 +60,7 @@ import {
   assertTransition,
   blocksToAgentHistoryText,
   botMessageAllowsSilence,
+  builtinToolRunsUnasked,
   CALL_CLIENT_NONCE_PREFIX,
   callIdFromClientNonce,
   connectorKindFromToolName,
@@ -5235,13 +5236,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 : name === "browser_snapshot"
                   ? browserSnapshotFromTool
                   : null;
-            // Resolved only when this call carries a goal.
-            const decider = normalizeGoal(args.goal) ? await pageDeciderOnce() : undefined;
+            // Resolved only when this call carries a goal. The chain's clicks are
+            // browser_act actions no one approved, so it runs only where the model's
+            // own browser_act would run without asking anyone.
+            const decider =
+              normalizeGoal(args.goal) &&
+              builtinToolRunsUnasked("browser_act", run.trigger, await loadApprovalRules())
+                ? await pageDeciderOnce()
+                : undefined;
             return computerScreenToolResult(async () => {
               const result = tool
                 ? redactConnectorPayload(
                     await (name === "browser_navigate"
-                      ? browserNavigateFromTool(browser, computer, context, args, { decider })
+                      ? browserNavigateFromTool(browser, computer, context, args, {
+                          decider,
+                          redactions,
+                        })
                       : tool(browser, computer, context, args)),
                     redactions(),
                   )

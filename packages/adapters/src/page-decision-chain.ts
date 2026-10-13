@@ -12,9 +12,12 @@ import type {
 import { PAGE_DECISION_MAX_EXCERPT_CHARS } from "@rakazo/adapter-kit";
 import { DEFAULT_PAGE_DECISION_THRESHOLDS, decidePageAction } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
+import { redactConnectorPayload } from "./connector-safety.js";
 
 const MAX_GOAL_CHARS = 400;
 const EMPTY: PageDecision = { candidates: [], goalMet: 0, stuck: 0, blocked: 0 };
+/** The JSON-quoted ` value="…"` an element line in a snapshot tree ends with. */
+const TREE_VALUE = / value="(?:[^"\\]|\\.)*"/g;
 
 /** Unusable goal means no goal: the decider never runs. */
 export function normalizeGoal(value: unknown): string | undefined {
@@ -62,6 +65,24 @@ export function decisionLogEvent(
     blocked: decision.blocked,
     topConfidence: decision.candidates[0]?.confidence ?? null,
   };
+}
+
+/**
+ * What the decider is shown of a page: no more than the model gets. Element
+ * values never leave, since one can hold a typed secret and the decider has no
+ * use for it, and the run's secrets are scrubbed as they are from the model's copy.
+ */
+function pageForDecider(
+  snapshot: BrowserSnapshotResult,
+  secrets: string[],
+): Pick<PageDecisionRequest, "elements" | "excerpt" | "url" | "title"> {
+  const page = {
+    elements: snapshot.elements.map(({ value: _value, ...element }) => element),
+    excerpt: snapshot.tree.replace(TREE_VALUE, "").slice(0, PAGE_DECISION_MAX_EXCERPT_CHARS),
+    url: snapshot.url,
+    title: snapshot.title,
+  };
+  return redactConnectorPayload(page, secrets) as typeof page;
 }
 
 /** One viewport capture for a seeing decider, or nothing. Never throws. */
@@ -117,6 +138,8 @@ export async function runPageDecisionChain(input: {
   goal: string;
   /** An extended snapshot of the page the chain starts on. */
   snapshot: BrowserSnapshotResult;
+  /** The run's secrets, scrubbed from everything the decider is shown. */
+  redactions?: () => string[];
   now?: () => number;
 }): Promise<PageDecisionChainResult> {
   const { browser, decider, computer, context, goal } = input;
@@ -135,10 +158,7 @@ export async function runPageDecisionChain(input: {
         computer,
         {
           goal,
-          elements: snapshot.elements,
-          excerpt: snapshot.tree.slice(0, PAGE_DECISION_MAX_EXCERPT_CHARS),
-          url: snapshot.url,
-          title: snapshot.title,
+          ...pageForDecider(snapshot, input.redactions?.() ?? []),
           history,
           screenshot: sees ? await capture(browser, computer, context) : undefined,
           signal: context.signal,

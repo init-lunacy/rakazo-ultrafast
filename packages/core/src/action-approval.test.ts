@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   type ActionApprovalRule,
   applyJudgeDecision,
+  builtinToolRunsUnasked,
   connectorKindFromToolName,
   connectorToolRequiresApproval,
   isApprovalAskBlock,
@@ -186,6 +187,30 @@ describe("connectorKindFromToolName", () => {
     expect(
       connectorKindFromToolName("microsoft_outlook_send_email", ["microsoft", "microsoft_outlook"]),
     ).toBe("microsoft_outlook");
+  });
+});
+
+// The page decider clicks on its own, so it may only do so where the model's
+// own browser_act would have run without anyone being asked.
+describe("builtinToolRunsUnasked", () => {
+  it("runs an exempt tool unasked by default", () => {
+    expect(builtinToolRunsUnasked("browser_act", "user", [])).toBe(true);
+  });
+
+  it("asks when a rule requires approval for the tool", () => {
+    expect(
+      builtinToolRunsUnasked("browser_act", "user", [
+        { effect: "require_approval", matchKind: "tool", matchValue: "browser_act" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("asks on an unattended trigger", () => {
+    expect(builtinToolRunsUnasked("browser_act", "webhook", [])).toBe(false);
+  });
+
+  it("asks for a tool that needs approval by default", () => {
+    expect(builtinToolRunsUnasked("delete_bot", "user", [])).toBe(false);
   });
 });
 

@@ -193,6 +193,38 @@ describe("runPageDecisionChain", () => {
     expect(decider.requests).toHaveLength(1);
   });
 
+  // The decider is another recipient of the page, so it gets no more than the
+  // model does: no element values, and the run's secrets scrubbed.
+  it("never shows the decider an element value or a run secret", async () => {
+    const browser = new FakeBrowserProvider({
+      pages: {
+        "https://example.test/token": {
+          title: "Token fake-run-secret",
+          html: `<!doctype html><html><head><title>Token fake-run-secret</title></head><body>
+            <input aria-label="Token" value="fake-typed-value" />
+            <button>Copy fake-run-secret</button>
+          </body></html>`,
+        },
+      },
+    });
+    await browser.navigate(computer, { url: "https://example.test/token" }, context);
+    const snapshot = await browser.snapshot(computer, { extended: true }, context);
+    const decider = new FakePageDecider({ decisions: [{ goalMet: 0.99 }] });
+    await runPageDecisionChain({
+      browser,
+      decider,
+      computer,
+      context,
+      goal: "copy it",
+      snapshot,
+      redactions: () => ["fake-run-secret"],
+    });
+    const sent = JSON.stringify(decider.requests[0]);
+    expect(sent).toContain("Token");
+    expect(sent).not.toContain("fake-typed-value");
+    expect(sent).not.toContain("fake-run-secret");
+  });
+
   it("treats a decider that throws as an escalation", async () => {
     const { browser, snapshot } = await onForm();
     const throwing: PageDecider = {
@@ -342,6 +374,18 @@ describe("browser tool integration", () => {
     expect(result).toMatchObject({ acted: ["Continue"] });
     expect(result).not.toHaveProperty("tree");
     expect(result).not.toHaveProperty("elements");
+  });
+
+  it("scrubs the run's secrets from what browser_navigate shows the decider", async () => {
+    const decider = new FakePageDecider({ decisions: [{ goalMet: 0.99 }] });
+    await browserNavigateFromTool(
+      new FakeBrowserProvider({ pages }),
+      computer,
+      context,
+      { url: "https://example.test/form", goal: "sign up" },
+      { decider, redactions: () => ["Signup"] },
+    );
+    expect(JSON.stringify(decider.requests[0])).not.toContain("Signup");
   });
 
   it("still redacts when a chain runs", async () => {
