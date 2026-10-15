@@ -1,5 +1,5 @@
 import type { BrowserTabs } from "@rakazo/contracts";
-import { browserTabLabel } from "@rakazo/core";
+import { browserTabLabel, shownBrowserTab } from "@rakazo/core";
 
 const TAB = "tab:";
 const FOLLOW = "follow";
@@ -10,7 +10,7 @@ export function browserTabMenu(
   follow: string,
 ): Array<{ id: string; title: string; state: "on" | "off" }> {
   if (!tabs || tabs.tabs.length < 2) return [];
-  const shown = tabs.pinned ?? tabs.front;
+  const shown = shownBrowserTab(tabs);
   return [
     ...tabs.tabs.map((tab) => ({
       id: `${TAB}${tab.target}`,

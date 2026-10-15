@@ -150,8 +150,8 @@ export class BrowserTabRegistry {
     if (tab.owner && tab.owner !== agent) {
       const who =
         tab.owner === MAIN_AGENT
-          ? "the main agent"
-          : `helper '${this.labelOf(tab.owner)}' until it finishes`;
+          ? this.describe(tab.owner)
+          : `${this.describe(tab.owner)} until it finishes`;
       return {
         ok: false,
         error: `${tab.handle} belongs to ${who}. Read it with browser_snapshot, or open your own tab with browser_navigate newTab.`,
@@ -205,6 +205,11 @@ export class BrowserTabRegistry {
 
   label(agent: string, name: string): void {
     this.labels.set(agent, name);
+  }
+
+  /** How a refusal names an agent to another one. */
+  describe(agent: string): string {
+    return agent === MAIN_AGENT ? "the main agent" : `helper '${this.labelOf(agent)}'`;
   }
 
   labelOf(agent: string): string {

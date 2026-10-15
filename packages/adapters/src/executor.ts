@@ -8353,7 +8353,7 @@ export function runScopedToolExecutionId(runId: string, executionId: string): st
 }
 
 /** Decode only the exact backend Pi namespace shape, never an arbitrary provider ID. */
-export function legacyPiToolCallId(executionId: string): string | undefined {
+function piExecutionId(executionId: string): { agent: string; callId: string } | undefined {
   try {
     const value: unknown = JSON.parse(executionId);
     if (
@@ -8364,31 +8364,22 @@ export function legacyPiToolCallId(executionId: string): string | undefined {
       value[1].length > 0 &&
       typeof value[2] === "string" &&
       value[2].length > 0
-    )
-      return value[2];
+    ) {
+      return { agent: value[1], callId: value[2] };
+    }
   } catch {
     // Other runtimes keep their existing opaque execution IDs.
   }
   return undefined;
 }
 
-/** Which agent of a run made a tool call: "main", or the helper's agent ID. */
+export function legacyPiToolCallId(executionId: string): string | undefined {
+  return piExecutionId(executionId)?.callId;
+}
+
+/** Which agent of a run made a tool call: "main", or the helper's agent ID. Other runtimes have one. */
 export function piToolAgent(executionId: string): string {
-  try {
-    const value: unknown = JSON.parse(executionId);
-    if (
-      Array.isArray(value) &&
-      value.length === 3 &&
-      value[0] === "pi-tool" &&
-      typeof value[1] === "string" &&
-      value[1].length > 0
-    ) {
-      return value[1];
-    }
-  } catch {
-    // Other runtimes have one agent per run.
-  }
-  return MAIN_AGENT;
+  return piExecutionId(executionId)?.agent ?? MAIN_AGENT;
 }
 
 export async function recordEffect(

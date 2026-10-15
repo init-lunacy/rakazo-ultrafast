@@ -1,12 +1,9 @@
 import { MenuView } from "@expo/ui/community/menu";
 import type { BrowserTabs } from "@rakazo/contracts";
-import { View } from "react-native";
 import { browserTabChoice, browserTabMenu } from "../lib/computer-tabs";
 import { useI18n } from "../lib/i18n";
-import { useMobileTokens, useResolvedAppearance } from "../lib/native";
-import { iosAtLeast } from "../lib/native-controls";
-import { GlassSurface } from "./glass-surface";
-import { NativeSymbol } from "./native-symbol";
+import { useResolvedAppearance } from "../lib/native";
+import { GlassIconButton } from "./glass-icon-button";
 
 /** The bot's browser tabs as a native menu: the shown one checked, and Follow while pinned. */
 export function ComputerTabsMenu({
@@ -17,7 +14,6 @@ export function ComputerTabsMenu({
   onShow: (target: string | null) => void;
 }) {
   const { t } = useI18n();
-  const tokens = useMobileTokens();
   const colorScheme = useResolvedAppearance();
   const actions = browserTabMenu(tabs, t("Follow"));
   if (actions.length === 0) return null;
@@ -31,25 +27,14 @@ export function ComputerTabsMenu({
       }}
       title={t("Tabs")}
     >
-      {/* A plain view, as in ComputerMaintenanceActions: a Pressable would take the tap from the menu. */}
-      <GlassSurface
-        shape="circle"
-        style={{ width: 36, height: 36 }}
-        fallbackStyle={{ borderRadius: 18 }}
-      >
-        <View
-          accessibilityRole="button"
-          accessibilityLabel={t("Tabs")}
-          style={{ flex: 1, alignItems: "center", justifyContent: "center" }}
-        >
-          <NativeSymbol
-            ios="square.on.square"
-            android="copy-outline"
-            size={16}
-            color={iosAtLeast(26) ? tokens.foreground : tokens.mutedForeground}
-          />
-        </View>
-      </GlassSurface>
+      {/* No onPress: the button is the menu's trigger. */}
+      <GlassIconButton
+        accessibilityLabel={t("Tabs")}
+        ios="square.on.square"
+        android="copy-outline"
+        size={36}
+        iconSize={16}
+      />
     </MenuView>
   );
 }

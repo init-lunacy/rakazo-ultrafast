@@ -221,9 +221,9 @@ export class RunBrowserTabs {
     if (this.registry.list().length < 2) return {};
     const holder = this.screenHolder;
     if (holder && holder !== agent) {
-      const who =
-        holder === MAIN_AGENT ? "the main agent" : `helper '${this.registry.labelOf(holder)}'`;
-      return { error: `The screen is in use by ${who}. Use page tools in your own tab.` };
+      return {
+        error: `The screen is in use by ${this.registry.describe(holder)}. Use page tools in your own tab.`,
+      };
     }
     // Taken before any await, so two agents asking at once cannot both win, and no
     // follow decided from here on moves the screen.

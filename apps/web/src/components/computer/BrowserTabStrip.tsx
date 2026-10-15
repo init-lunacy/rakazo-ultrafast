@@ -1,6 +1,6 @@
 import { useLingui } from "@lingui/react/macro";
 import type { BrowserTabs } from "@rakazo/contracts";
-import { browserTabLabel } from "@rakazo/core";
+import { browserTabLabel, shownBrowserTab } from "@rakazo/core";
 import { Button, Tabs, TabsList, TabsTrigger } from "@rakazo/ui-web";
 import { useLayoutEffect, useRef, useState } from "react";
 
@@ -18,7 +18,7 @@ export function BrowserTabStrip({
   const { t } = useLingui();
   const strip = useRef<HTMLDivElement>(null);
   const [bar, setBar] = useState<{ left: number; width: number } | null>(null);
-  const shown = tabs?.pinned ?? tabs?.front ?? null;
+  const shown = shownBrowserTab(tabs);
   const visible = Boolean(tabs && tabs.tabs.length >= 2);
 
   useLayoutEffect(() => {
