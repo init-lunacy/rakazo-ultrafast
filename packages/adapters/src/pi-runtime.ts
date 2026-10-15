@@ -33,6 +33,7 @@ import { usableModelId } from "@rakazo/contracts";
 import { getLogger } from "@rakazo/logging";
 import { isToolPauseResult } from "./approval-effect.js";
 import { connectionIdArgument, credentialArgument } from "./bot-secrets.js";
+import { MAX_RUN_TABS } from "./browser-tab-registry.js";
 import { DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
 import { withCloudflareGatewayAuth } from "./cloudflare-ai-gateway.js";
 import { shortenToolResultText } from "./context-selection.js";
@@ -889,7 +890,7 @@ export function describeToolActivity(toolName: string, args: unknown): string {
   if (toolName === "computer_observe") return "Looking at the screen";
   if (toolName === "browser_navigate")
     return `Opening page: ${detail(redactActivityUrl(record.url))}`;
-  if (toolName === "browser_snapshot") return "Reading the page";
+  if (toolName === "browser_snapshot" || toolName === "browser_tabs") return "Reading the page";
   if (toolName === "browser_act") return "Using the page";
   if (toolName === "computer_act") return "Operating the computer";
   if (toolName === "run_subagent") return `Delegating to helper: ${detail(record.name)}`;
@@ -1751,8 +1752,10 @@ const DEFAULT_PAGE_STATE_RESULTS_TO_KEEP = 3;
  * them saves nothing, and counting them would push real page state out of the kept set.
  */
 const STALE_PAGE_STATE_MIN_CHARS = 1_000;
-const STALE_PAGE_STATE_NOTE =
-  "[Earlier page state trimmed to save context. Facts you still need from that page should already be in your notes or tracker; otherwise take a fresh snapshot.]";
+function stalePageStateNote(tab: unknown): string {
+  const of = typeof tab === "string" ? ` of ${tab}` : "";
+  return `[Earlier page state trimmed to save context. Facts you still need from that page should already be in your notes or tracker; otherwise take a fresh snapshot${of}.]`;
+}
 
 /**
  * Replace all but the most recent large page-state tool results with a short note. Runs on
@@ -1764,6 +1767,7 @@ export function pruneStalePageStateContext(
   keep = DEFAULT_PAGE_STATE_RESULTS_TO_KEEP,
 ): AgentMessage[] {
   let remaining = Math.max(0, Math.floor(keep));
+  const tabsKept = new Set<string>();
   let transformed: AgentMessage[] | undefined;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -1772,6 +1776,13 @@ export function pruneStalePageStateContext(
     const returnedError = (message.details as { error?: unknown } | undefined)?.error;
     if (message.isError || (returnedError !== undefined && returnedError !== null)) continue;
     if (textLength(message) < STALE_PAGE_STATE_MIN_CHARS) continue;
+    // A page in one tab never supersedes another tab's: each tab's newest result stays.
+    const tab = (message.details as { tab?: unknown } | undefined)?.tab;
+    if (typeof tab === "string" && !tabsKept.has(tab) && tabsKept.size < MAX_RUN_TABS) {
+      tabsKept.add(tab);
+      remaining = Math.max(0, remaining - 1);
+      continue;
+    }
     if (remaining > 0) {
       remaining -= 1;
       continue;
@@ -1779,7 +1790,7 @@ export function pruneStalePageStateContext(
     transformed ??= [...messages];
     transformed[index] = {
       ...message,
-      content: [{ type: "text", text: STALE_PAGE_STATE_NOTE }],
+      content: [{ type: "text", text: stalePageStateNote(tab) }],
     };
   }
   return transformed ?? messages;

@@ -209,6 +209,35 @@ describe("Pi computer tool dispatch", () => {
     expect(pruned[1]).toMatchObject({ toolCallId: "s1", toolName: "browser_snapshot" });
   });
 
+  it("keeps each tab's newest page, since one tab's page never supersedes another's", () => {
+    const inTab = (id: string, tab: string) => ({
+      ...pageResult(id, "browser_snapshot"),
+      details: { tab },
+    });
+    const messages = [
+      inTab("a1", "taaaa"),
+      inTab("b1", "tbbbb"),
+      inTab("a2", "taaaa"),
+      inTab("c1", "tcccc"),
+      inTab("d1", "tdddd"),
+      inTab("d2", "tdddd"),
+    ];
+    const pruned = pruneStalePageStateContext(messages);
+    const text = (message: (typeof pruned)[number]) =>
+      JSON.stringify("content" in message ? message.content : "");
+    const kept = pruned.filter((message) => !text(message).includes("trimmed to save context"));
+    // Each tab's newest stays, and d1 is among the newest three overall; only a1 is stale.
+    expect(kept.map((message) => (message as { toolCallId: string }).toolCallId)).toEqual([
+      "b1",
+      "a2",
+      "c1",
+      "d1",
+      "d2",
+    ]);
+    // A trimmed result says which tab to read again.
+    expect(text(pruned[0]!)).toContain("fresh snapshot of taaaa");
+  });
+
   it("neither trims nor counts small page-state results such as errors and receipts", () => {
     const messages = [
       pageResult("s1", "browser_snapshot"),

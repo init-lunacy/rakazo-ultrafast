@@ -32,6 +32,10 @@ describe("toolRequiresApproval", () => {
     expect(toolRequiresExplicitApproval("archive_bot")).toBe(false);
   });
 
+  it("treats browser_tabs as an unattended-safe page read", () => {
+    expect(builtinToolRunsUnasked("browser_tabs", "webhook", [])).toBe(true);
+  });
+
   it("does not gate read-only or local work", () => {
     for (const name of [
       "list_files",

@@ -58,6 +58,7 @@ const CUSTOMER_FALLBACK_TOOLS = new Set([
   "browser_navigate",
   "browser_snapshot",
   "browser_act",
+  "browser_tabs",
   "computer_observe",
   "computer_act",
   "web_search",
