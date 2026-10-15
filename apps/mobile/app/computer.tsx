@@ -133,7 +133,7 @@ export default function Computer() {
   const refresh = refreshController.refresh;
   const showTab = (target: string | null) => {
     if (!botId) return;
-    // A pin only changes what this viewer watches; a failed one leaves the view as it was.
+    // A pin switches the shared screen; a refused or failed one leaves it as it was.
     void rpc("computer/showBrowserTab", { botId, target })
       .then(() => refresh())
       .catch(() => undefined);

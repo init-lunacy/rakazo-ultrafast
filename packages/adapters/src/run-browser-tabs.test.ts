@@ -417,6 +417,35 @@ describe("run browser tabs", () => {
     ]);
   });
 
+  it("publishes tab addresses without their query or fragment, which can carry login codes", async () => {
+    const { browser, tabs, published } = setup(
+      new FakeBrowserProvider({
+        pages: {
+          ...pages,
+          "https://a.test/callback?code=fake-oauth-code#token=fake-token": {
+            title: "A",
+            html: "<p>signed in</p>",
+          },
+        },
+      }),
+    );
+    await tabs.support();
+    await tabs.after(
+      "helper-1",
+      await tabs.open(
+        "helper-1",
+        "https://a.test/callback?code=fake-oauth-code#token=fake-token",
+        undefined,
+      ),
+      "act",
+    );
+    const urls = published.at(-1)?.tabs.map((tab) => tab.url);
+    expect(urls).toContain("https://a.test/callback");
+    expect(JSON.stringify(published)).not.toContain("fake-oauth-code");
+    expect(JSON.stringify(published)).not.toContain("fake-token");
+    void browser;
+  });
+
   it("keeps desktop actions out of a tab the user pinned on screen", async () => {
     const { browser, tabs } = setup();
     await tabs.support();

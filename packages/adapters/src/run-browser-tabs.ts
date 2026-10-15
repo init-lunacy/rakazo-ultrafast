@@ -68,6 +68,23 @@ function tabArg(value: unknown): string | undefined | { error: string } {
     : { error: "tab must be a tab handle such as t4k2z, from a result or browser_tabs." };
 }
 
+/**
+ * A tab's address as the strip stores and shows it: no credentials, query or
+ * fragment, which can carry login codes or tokens. Agents still see the full URL.
+ */
+function publishedUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.href;
+  } catch {
+    return "";
+  }
+}
+
 /** The refs a browser_act call names. */
 function actionRefs(actions: unknown): string[] {
   if (!Array.isArray(actions)) return [];
@@ -456,7 +473,7 @@ export class RunBrowserTabs {
         .map((tab) => ({
           target: tab.target,
           title: tab.title.slice(0, 200),
-          url: tab.url.slice(0, 2048),
+          url: publishedUrl(tab.url).slice(0, 2048),
           ...(tab.owner ? { owner: this.ownerLabel(tab.owner).slice(0, 80) } : {}),
           ...(tab.purpose ? { purpose: tab.purpose } : {}),
           ...(tab.opened ? { opened: true } : {}),

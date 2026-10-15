@@ -3126,7 +3126,10 @@ export function createRouter(deps: RouterDeps) {
         if (computer?.state !== "running" || !computer.providerRef) {
           return { ok: true as const };
         }
-        // Pinning changes only what the viewer watches, so it needs no screen control.
+        // A pin switches the shared screen: never under someone who has taken control of it.
+        if (hasActiveComputerControl(computer)) {
+          throw new ORPCError("CONFLICT", { message: "Someone has control of the screen." });
+        }
         await showBrowserTab(
           { prisma: deps.prisma, sandbox: deps.sandbox, events: deps.events },
           {
