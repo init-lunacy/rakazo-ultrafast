@@ -5,7 +5,7 @@
 **Goal:** Let a bot, and the helpers it starts, each browse in their own tabs of the bot's one Chromium at the same time. Agents can list tabs, read any tab, and act only in their own. The user watches the tab that acted last, or pins one, in a tab strip.
 
 **Architecture:**
-- **The in-computer helper** gains tab addressing: a `target` on every command, plus `tabs`, `open`, `activate` and `close`. It echoes the tab it ran in, reports tabs an action opened, and reports the pin on every reply. The pin file is its only record.
+- **The in-computer helper** gains tab addressing: a `target` on every command, plus `tabs`, `open`, `activate` and `close`. It echoes the tab it ran in, reports tabs an action opened, and reports the pin on every reply. The pin file is its only record. A snapshot no longer invalidates earlier refs, so one agent reading a tab never breaks its owner's next click.
 - **One pure TypeScript registry per run**, held by the executor, decides ownership, hand-back, the cap, cleanup and the follow dwell. Helpers run inline in the parent's worker process, so that one map is already race-free. Handles are derived from tab IDs, so they survive a paused run's resume without being stored.
 - **The user's view.** The executor publishes a `computer.browser_tabs` event. The API serves the latest one on `ComputerStatus`. Web renders a strip and mobile a native menu. One RPC pins a tab.
 
@@ -39,15 +39,27 @@ Every task's requirements implicitly include these.
 - **Ownership.**
   - An owner is `"main"` or a helper's agent ID, taken from the tool call's execution ID and never from tool arguments.
   - Reading is open to any agent. Acting needs ownership, or claims an unowned tab.
+  - `browser_act` takes no tab: its refs name the tab they came from. A tab's refs accumulate across snapshots, so another agent's read never orphans them. An unnamed navigate needs the agent to have at most one tab of its own.
+  - Once a run has two tabs, one agent at a time may use desktop actions. It holds the screen until it finishes, and follow stops meanwhile.
+- **What agents read.**
+  - Helpers see only tool descriptions and tool results, never the bot's system prompt. Every rule a helper must follow is enforced in code and explained by the refusal it meets.
+  - The main agent's prompt adds only what no description can say: when to fan out, and what happens to tabs at the end. It does not tell a single-site task to open a tab.
 - **The pin file is the only source of truth for the pin.** The helper reports `pinned` on every tab-aware reply. The run's registry mirrors it, and nothing else invents a pin.
-- **Messages, verbatim** (`<h>` is a handle):
+- **Messages, verbatim** (`<h>` is a handle). Each one says what to do next.
   - `"<h> is closed. Call browser_tabs."`
-  - `"<h> belongs to helper '<label>'. Read it with browser_snapshot."`
-  - `"<h> belongs to the main agent. Read it with browser_snapshot."`
-  - `"Reuse a tab you own."`
+  - `"<h> belongs to helper '<label>' until it finishes. Read it with browser_snapshot, or open your own tab with browser_navigate newTab."`
+  - `"<h> belongs to the main agent. Read it with browser_snapshot, or open your own tab with browser_navigate newTab."`
+  - `"This run has 12 tabs open, the most it can. Navigate one of yours with tab; browser_tabs lists them."`
+  - `"You have <n> tabs: <h>, <h>. Name one with tab, or use newTab."`
+  - `"Use tab or newTab, not both."`
   - `"Open a tab with browser_navigate first."`
-  - `"Name a tab: call browser_tabs."`
-  - `"This computer needs an update for tabs."`
+  - `"Take a browser_snapshot of the tab to act in first; its refs name the tab."`
+  - `"These refs come from different tabs. Act in one tab per call."`
+  - `"The screen is in use by <the main agent | helper '<label>'>. Use page tools in your own tab."`
+  - `"The user pinned another tab on screen, so desktop actions would land in it. Use page tools in <h>, or have the user choose Follow."`
+  - `"Another agent's tab is in front, so desktop actions would land in it. Open a tab with browser_navigate first."`
+  - `"tab must be a tab handle such as t4k2z, from a result or browser_tabs."`
+  - `"This computer's browser cannot address tabs. Leave out tab and newTab."`
   - The helper's own error is `"That tab is closed."`
 - **New UI copy:**
   - **"Follow"** appears only while a tab is pinned.
@@ -55,7 +67,7 @@ Every task's requirements implicitly include these.
 
   Nothing else. Chip text is data, the activity line for `browser_tabs` reuses "Reading the page", and a failed pin shows no new error.
 - **Closing tabs.**
-  - Never close the last tab of a screen, the front tab, or the pinned tab.
+  - Never close the last tab of a screen, the front tab, the pinned tab, or the main agent's current tab. That last one is brought forward at the end, unless the user pinned another.
   - Close tabs only once the run is terminal (completed, failed or cancelled), never while it is paused.
 - **Public repo.** No secrets, real data, local paths, usernames or hostnames in commits, and no attribution lines in commit messages.
 - **Intermediate commits.** Tasks 3–7 let a target ID reach a model-facing result until Task 8 strips it. The branch ships as a whole, and that is acceptable only because of that; record it in the ledger.
@@ -66,14 +78,15 @@ These are the inputs the spec implies that a task-by-task reading could leave un
 
 1. **The main agent's first unnamed call while helpers browse.** Once a helper has asked for a tab, or while an unaddressed command is in flight, the focused tab may be a helper's. The main agent must never land there:
    - follow pauses while an unaddressed command is in flight;
-   - after that, an unnamed navigate opens a tab and an unnamed act asks for a tab.
+   - after that, an unnamed navigate opens a tab, and an act goes where its refs came from or asks for a snapshot.
 
    Task 7.
 2. **A tab closed under an agent**, by the user, the page or Chromium, while the agent still holds its handle. The agent gets the closed message, never a silent act in another tab. Tasks 2 and 7.
 3. **A paused run that resumes.** Its handles still name the same tabs. Ownership resets and is reclaimed on use. Tasks 6 and 7.
 4. **A computer image or supervisor that predates tabs**, or one that fails a probe once. An old one refuses tab arguments with the update message, and unnamed calls keep today's behavior. A one-off failure is not remembered. Tasks 3 and 7.
 5. **A pin set or cleared from the UI while the run is active.** The next published tab list reflects the computer's pin, never a stale one. Tasks 2, 4 and 7.
-6. **Run-end cleanup when every tab was opened by the run**, the front tab is unknown, a tab is pinned, or the run was cancelled. The front and pinned tabs stay, at least one tab stays, and a cancelled run still cleans up. Tasks 6 and 10.
+6. **Run-end cleanup when every tab was opened by the run**, the front tab is unknown, a tab is pinned, or the run was cancelled. The front and pinned tabs stay, the main agent's final tab stays, at least one tab stays, and a cancelled run still cleans up. Tasks 6, 7 and 10.
+7. **Agents working side by side.** The main agent reads a helper's tab while the helper is about to click; a helper falls back to desktop actions while follow would move the screen; the main agent compares four tabs at once. The helper's refs keep working, desktop clicks never land in another agent's tab, and no tab's page trims another's from context. Tasks 2, 4, 7 and 9.
 
 ## Existing code this plan builds on
 
@@ -127,17 +140,19 @@ Record here, as tasks finish, anything that differs from a step's text, in the s
 
 ### Task 1: Spike — do hidden tabs keep working?
 
-Throwaway. This decides one constant, `OPEN_IN_NEW_WINDOW`, used in Task 2. Nothing from this task is committed except a ledger line.
+Throwaway. This decides `OPEN_IN_NEW_WINDOW` for Task 2, and whether Task 2 needs its window-restore item. Nothing from this task is committed except a ledger line.
 
 Run it where agents actually browse: inside the computer image, with its window manager. Window stacking, focus and occlusion all differ under a bare X server.
 
-Expect Chromium to stop running `requestAnimationFrame` in a background *tab* whatever the flags are, so the likely outcome is `OPEN_IN_NEW_WINDOW = True`. That changes the main agent's unaddressed call: `attach_page` then has several visible windows to choose from, and relies on exactly one having focus. So the probe checks that too.
+Expect Chromium to stop running `requestAnimationFrame` in a background *tab* whatever the flags are, so the likely outcome is `OPEN_IN_NEW_WINDOW = True`. That changes the main agent's unaddressed call: `attach_page` then has several visible windows to choose from, and relies on exactly one having focus. So the probe checks that too. It also checks that opening one leaves the active window alone: a window that jumps in front would move the user's view past a pin, and land an agent's desktop clicks in another agent's tab.
 
 **Files:**
 - Create (scratchpad only, not the repo): `spike_hidden_tabs.py`
 
 **Interfaces:**
-- Produces: the value of `OPEN_IN_NEW_WINDOW` (Python `True` or `False`) for Task 2, recorded in the ledger.
+- Produces, recorded in the ledger for Task 2:
+  - the value of `OPEN_IN_NEW_WINDOW` (Python `True` or `False`);
+  - `activeWindowKept` from the chosen row.
 
 - [ ] **Step 1: Write the probe**
 
@@ -213,11 +228,16 @@ def trial(new_window: bool) -> dict:
         client.connect()
         first = [t["targetId"] for t in pb.page_targets(client)] if hasattr(pb, "page_targets") else [
             t["targetId"] for t in client.call("Target.getTargets")["targetInfos"] if t.get("type") == "page"]
+        def active_window() -> str:
+            return subprocess.run(["xdotool", "getactivewindow"], capture_output=True, text=True).stdout.strip()
+
+        active_before = active_window()
         target = client.call(
             "Target.createTarget", {"url": url, "background": True, "newWindow": new_window}
         )["targetId"]
         session = client.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
         time.sleep(3)
+        active_after = active_window()
 
         def value(expression: str):
             return client.call("Runtime.evaluate", {"expression": expression, "returnByValue": True},
@@ -229,6 +249,8 @@ def trial(new_window: bool) -> dict:
             "rafFrames": value("window.frames_"),
             "timerTicks": value("window.timers"),
             "intersections": value("window.seen"),
+            # The window in front before the open is still the one in front.
+            "activeWindowKept": bool(active_before) and active_before == active_after,
         }
         try:
             shot = client.call("Page.captureScreenshot", {"format": "png"}, session_id=session, timeout_s=8)
@@ -282,9 +304,11 @@ Then choose:
 - **Only the `newWindow: true` row passes:** `OPEN_IN_NEW_WINDOW = True`.
 - **Neither row passes:** stop and report both rows to the user. The design's fallback does not hold, and the spec needs revisiting before any other task.
 
+Then read `activeWindowKept` from the chosen row. When it is `false`, Task 2's item 9 applies; when it is `true`, Task 2 skips item 9.
+
 - [ ] **Step 4: Record the result**
 
-Add one ledger row with the chosen value and both JSON lines. Do not commit the script.
+Add one ledger row with the chosen value, the chosen row's `activeWindowKept`, and both JSON lines. Do not commit the script.
 
 ---
 
@@ -300,7 +324,7 @@ Add one ledger row with the chosen value and both JSON lines. Do not commit the 
 - Test: `apps/web/e2e/page-browser.spec.ts`
 
 **Interfaces:**
-- Consumes: `OPEN_IN_NEW_WINDOW` from Task 1.
+- Consumes: `OPEN_IN_NEW_WINDOW` and `activeWindowKept` from Task 1.
 - Produces, the helper's JSON protocol:
   - **`navigate`, `snapshot`, `screenshot`, `act`** take an optional `"target"` (a CDP target ID). Every reply carries `"target"`: the tab it ran in.
   - **`navigate` and `act`** replies also carry `"opened"`: target IDs of page tabs whose `openerId` is that tab and that did not exist before the call.
@@ -313,6 +337,7 @@ Add one ledger row with the chosen value and both JSON lines. Do not commit the 
   - **`close {"target"}` →** `{"ok": true}`, once the target is really gone (it polls for up to 2 s).
   - **The pin on every reply.** `navigate`, `snapshot`, `act`, `tabs` and `open` replies carry `"pinned"`: the live pinned target or `null`. The pin file stays the one source of truth, so a pin set from the UI is never undone by a stale copy.
   - **A failed `open`** closes the tab it created before reporting the error, so no tab leaks.
+  - **Refs survive other snapshots.** A snapshot no longer clears the page's earlier refs. It drops only those whose element has left the page. So one agent reading a tab leaves the refs its owner is about to use working.
   - **Errors** use the existing `{"ok": false, "error", "fallback": "computer_act"}` shape. A closed or unknown target fails with `"That tab is closed."`. An unaddressable tab is not "uncertain": only a dispatched `act` is.
 
 - [ ] **Step 1: Write the failing offline tests**
@@ -697,6 +722,48 @@ def open_tab(client: CdpClient, url: str) -> dict[str, Any]:
 
 7. **Set `OPEN_IN_NEW_WINDOW` to Task 1's value.**
 
+8. **Keep refs when the page is read again.** Any agent may read any tab, and today each snapshot clears the page's ref map. So the main agent reading a helper's tab would turn the helper's next click into "Stale element ref". In `EVAL_HELPERS`' `snapshot`, replace `refMap.clear();` with:
+
+```js
+      // Another agent's read of this tab must not invalidate the refs its owner holds.
+      // Refs never repeat, and resolve() already refuses an element that left the page.
+      for (const [ref, el] of refMap) if (!el.isConnected) refMap.delete(ref);
+```
+
+9. **Only when Task 1 recorded `activeWindowKept: false`:** put the active window back after opening. Otherwise skip this item and say so in the ledger.
+   - Add `import subprocess` to the helper's imports.
+   - Add above `open_tab`:
+
+```python
+def active_window() -> str | None:
+    """The X window in front. The helper runs with the screen's DISPLAY."""
+    try:
+        done = subprocess.run(["xdotool", "getactivewindow"], capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() or None
+
+
+def activate_window(window: str) -> None:
+    try:
+        subprocess.run(["xdotool", "windowactivate", window], capture_output=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        pass
+```
+
+   - In `open_tab`, take `before = active_window()` right after `check_url(url)`, and right after the `createTarget` call add `if before: activate_window(before)`, with the comment `# A new window takes focus here; give the screen back to the tab the user was watching.`
+   - Add to the Step 1 tests:
+
+```python
+    def test_open_gives_the_screen_back(self):
+        client = FakeTargets([page("A"), page("T-new", url="about:blank", title="")])
+        with patch.object(helper, "active_window", return_value="42"), \
+                patch.object(helper, "activate_window") as restore, \
+                patch.object(helper, "navigate", return_value={"ok": True, "url": "https://example.test/", "title": "Example"}):
+            helper.open_tab(client, "https://example.test/")
+        restore.assert_called_once_with("42")
+```
+
 - [ ] **Step 4: Run the offline tests**
 
 Run: `python3 infra/sandboxes/computer/test_page_browser.py`
@@ -772,6 +839,11 @@ In `apps/web/e2e/page-browser.spec.ts`:
     expect(source).toMatchObject({ ok: true, target: opened.target, title: "Popup source" });
     const back = await command("snapshot", { target: first });
     expect(back).toMatchObject({ ok: true, target: first, title: "Fixture" });
+    // Another agent reading the tab leaves the refs its owner holds working.
+    await command("snapshot", { target: first });
+    expect(
+      await command("act", { target: first, actions: [{ kind: "click", ref: ref(back, "Agree") }] }),
+    ).toMatchObject({ ok: true, completed: 1 });
 
     // A click that opens a tab reports it, attributed to the tab that opened it.
     const link = source.elements.find((element: { name: string }) => element.name === "Open");
@@ -962,7 +1034,7 @@ Run: same command. Expected: PASS, along with every existing route test.
 
 - [ ] **Step 5: Add the types**
 
-1. In `packages/adapter-kit/src/types.ts`, add the `target` and `opened` fields listed under Interfaces to the existing request and result interfaces, each with a one-line doc comment.
+1. In `packages/adapter-kit/src/types.ts`, add the `target`, `opened` and `pinned` fields listed under Interfaces to the existing request and result interfaces, each with a one-line doc comment.
 2. Add the new interfaces right after `BrowserScreenshotResult`.
 3. Replace `PageBrowserCommand` and `PageBrowserResult`:
 
@@ -1274,6 +1346,7 @@ git commit -m "feat(adapters): carry tab targets through the page browser contra
 
 **Files:**
 - Modify: `packages/adapters/src/fake-browser.ts`
+- Modify: `packages/adapters/src/page-browser-session.ts` (refs that never repeat across tabs, kept across snapshots)
 - Test: `packages/adapters/src/browser-conformance.test.ts`
 
 **Interfaces:**
@@ -1282,6 +1355,7 @@ git commit -m "feat(adapters): carry tab targets through the page browser contra
   - **The fake's four tab methods.** `FakeBrowserProvider` implements `tabs`, `openTab`, `activateTab` and `closeTab`. Each bot's computer starts with one tab, `"fake-1"`, whose session is the existing `pageBrowserSessionKey(computer, context)` session, so every existing test keeps its page.
   - **Untargeted calls** go to the front tab.
   - **A popup test seam:** set `popupOnNextAct = "<url>"`, and the next successful `act` opens that URL in a new tab whose opener is the acted tab. It is reported in `opened`.
+  - **Refs as the helper hands them out (Task 2 item 8).** Refs never repeat across tabs, and a snapshot keeps earlier refs whose element is still on the page. Task 7 routes an act by its refs, so the fake must not hand two tabs the same ref.
   - **`EmulatorBrowserProvider`** inherits all of this.
 
 - [ ] **Step 1: Write the failing conformance cases**
@@ -1358,6 +1432,22 @@ Append inside `describe("browser provider conformance", …)` in `packages/adapt
       pinned: null,
     });
   });
+
+  it("never hands two tabs the same ref, and a second read keeps the first read's refs", async () => {
+    const provider = new FakeBrowserProvider({ pages: seededPages });
+    await provider.navigate(computer, { url: "https://example.test/form" }, context);
+    await provider.openTab(computer, { url: "https://example.test/form" }, context);
+    const first = await provider.snapshot(computer, {}, context);
+    const second = await provider.snapshot(computer, { target: "fake-2" }, context);
+    const refs = (snap: { elements: Array<{ ref: string }> }) => snap.elements.map((el) => el.ref);
+    expect(refs(second).some((ref) => refs(first).includes(ref))).toBe(false);
+    // Another reader's snapshot of the same tab leaves the owner's refs working.
+    await provider.snapshot(computer, {}, context);
+    const button = first.elements.find((el) => el.name.toLowerCase().includes("continue"))!;
+    expect(
+      await provider.act(computer, { actions: [{ kind: "click", ref: button.ref }] }, context),
+    ).toMatchObject({ ok: true, completed: 1 });
+  });
 ```
 
 - [ ] **Step 2: Run them and watch them fail**
@@ -1401,9 +1491,15 @@ type FakeTabs = {
     return tabs;
   }
 
-  /** The bot's first tab keeps its original session key, so existing tests keep their page. */
+  /**
+   * The bot's first tab keeps its original session key and refs (e1, e2…), so existing
+   * tests keep their page. Other tabs prefix their refs, so no two tabs share a ref.
+   */
   private sessionFor(key: string, id: string): PageBrowserSession {
-    return this.sessions.get(id === "fake-1" ? key : `${key}#${id}`);
+    if (id === "fake-1") return this.sessions.get(key);
+    const session = this.sessions.get(`${key}#${id}`);
+    session.refPrefix = `${id}:e`;
+    return session;
   }
 
   /** The live pin, as the computer reports it on every reply. */
@@ -1587,6 +1683,18 @@ type FakeTabs = {
 
 Import the new request and result types, and `PageBrowserSession`, at the top with `import type`. `PageBrowserSessionStore` is already imported as a value.
 
+5. **Refs that name their tab.** In `packages/adapters/src/page-browser-session.ts`:
+   - Add a public field `refPrefix = "e";` next to `nextRef`, and build refs as `` `${this.refPrefix}${this.nextRef++}` ``.
+   - In `buildSnapshot`, replace `this.refs.clear();` with:
+
+```ts
+    // Another reader's snapshot must not invalidate the refs a tab's owner holds,
+    // as in the computer's helper; `load` still clears them for a new document.
+    for (const [ref, node] of this.refs) if (!node.isConnected) this.refs.delete(ref);
+```
+
+   - Item 2's `sessionFor` sets each later tab's prefix.
+
 - [ ] **Step 4: Run the conformance and provider tests**
 
 Run: `pnpm vitest run packages/adapters/src/browser-conformance.test.ts packages/adapters/src/computer-browser.test.ts packages/adapters/src/browser-tools.test.ts packages/adapters/src/page-browser-login-fill.test.ts && pnpm --filter @rakazo/adapters check`
@@ -1596,7 +1704,8 @@ Expected: PASS, and no type errors. Fake results now carry `target: "fake-1"`. U
 - [ ] **Step 5: Commit (together with Task 3)**
 
 ```bash
-git add packages/adapters/src/fake-browser.ts packages/adapters/src/browser-conformance.test.ts
+git add packages/adapters/src/fake-browser.ts packages/adapters/src/page-browser-session.ts \
+  packages/adapters/src/browser-conformance.test.ts
 git commit -m "feat(adapters): model browser tabs in the offline page browser"
 ```
 
@@ -1755,6 +1864,10 @@ export class BrowserTabRegistry {
   byTarget(target: string): RegistryTab | undefined;
   lastTabOf(agent: string): RegistryTab | undefined;
   hasOwnedTabs(): boolean;
+  ownedBy(agent: string): RegistryTab[];
+  rememberRefs(target: string, refs: readonly string[]): void;
+  /** The tab these refs came from; null when they span tabs, undefined when unknown. */
+  tabOfRefs(refs: readonly string[]): RegistryTab | null | undefined;
   claim(agent: string, tab: RegistryTab): TabUse;
   adopt(agent: string, target: string, page?: { title?: string; url?: string }, purpose?: string): RegistryTab;
   adoptOpened(from: string, targets: readonly string[]): string[];
@@ -1821,12 +1934,12 @@ describe("browser tab registry", () => {
     // Two parallel claims cannot both win: the second sees the first's owner.
     expect(registry.claim(MAIN_AGENT, tab)).toEqual({
       ok: false,
-      error: `${tab.handle} belongs to helper 'Hotels'. Read it with browser_snapshot.`,
+      error: `${tab.handle} belongs to helper 'Hotels' until it finishes. Read it with browser_snapshot, or open your own tab with browser_navigate newTab.`,
     });
     registry.handBack("helper-1");
     expect(registry.claim("helper-2", tab)).toEqual({
       ok: false,
-      error: `${tab.handle} belongs to the main agent. Read it with browser_snapshot.`,
+      error: `${tab.handle} belongs to the main agent. Read it with browser_snapshot, or open your own tab with browser_navigate newTab.`,
     });
     expect(registry.claim(MAIN_AGENT, tab)).toMatchObject({ ok: true });
   });
@@ -1859,6 +1972,34 @@ describe("browser tab registry", () => {
     expect(registry.byTarget("D")?.owner).toBeUndefined();
   });
 
+  it("hands a finished helper's tabs to the main agent, named after the helper", () => {
+    const registry = new BrowserTabRegistry();
+    registry.label("helper-1", "Hotels");
+    registry.adopt("helper-1", "A");
+    registry.adopt("helper-1", "B", undefined, "hotel search");
+    registry.handBack("helper-1");
+    expect(registry.byTarget("A")).toMatchObject({ owner: MAIN_AGENT, purpose: "Hotels" });
+    expect(registry.byTarget("B")).toMatchObject({ owner: MAIN_AGENT, purpose: "hotel search" });
+    expect(registry.ownedBy(MAIN_AGENT).map((tab) => tab.target)).toEqual(["A", "B"]);
+    expect(registry.lastTabOf("helper-1")).toBeUndefined();
+  });
+
+  it("knows which tab issued a ref, and that refs from two tabs name no one tab", () => {
+    const registry = new BrowserTabRegistry();
+    registry.sync(live("A", "B"));
+    registry.rememberRefs("A", ["e1", "e2"]);
+    registry.rememberRefs("B", ["e3"]);
+    expect(registry.tabOfRefs(["e1", "e2"])?.target).toBe("A");
+    expect(registry.tabOfRefs(["e1", "e3"])).toBeNull();
+    expect(registry.tabOfRefs(["e9"])).toBeUndefined();
+    // Another snapshot of the tab adds refs: the earlier ones still work there.
+    registry.rememberRefs("A", ["e4"]);
+    expect(registry.tabOfRefs(["e1"])?.target).toBe("A");
+    // A closed tab's refs are gone.
+    registry.forget("B");
+    expect(registry.tabOfRefs(["e3"])).toBeUndefined();
+  });
+
   it("caps the tabs one run opens, counting opens in flight and only tabs it opened", () => {
     const registry = new BrowserTabRegistry();
     registry.sync(live("user-1", "user-2"));
@@ -1870,18 +2011,20 @@ describe("browser tab registry", () => {
     expect(registry.canOpen()).toBe(true);
   });
 
-  it("closes the run's tabs at the end, keeping the front and pinned ones and never every tab", () => {
+  it("closes the run's tabs at the end, keeping the front, pinned and final ones, never every tab", () => {
     const registry = new BrowserTabRegistry();
     registry.sync(live("user"));
     registry.adopt(MAIN_AGENT, "A");
+    // The main agent's current tab is where it finished: it stays for the user.
+    registry.adopt(MAIN_AGENT, "M");
     registry.adopt("helper-1", "B");
     registry.adopt("helper-1", "C");
     registry.fronted({ front: "B", pinned: "C" });
     expect(registry.closable()).toEqual(["A"]);
 
     const allOpened = new BrowserTabRegistry();
-    allOpened.adopt(MAIN_AGENT, "A");
-    allOpened.adopt(MAIN_AGENT, "B");
+    allOpened.adopt("helper-1", "A");
+    allOpened.adopt("helper-1", "B");
     // Front unknown and every tab opened by the run: the first one stays.
     expect(allOpened.closable()).toEqual(["B"]);
   });
@@ -1964,6 +2107,8 @@ export class BrowserTabRegistry {
   private readonly tabs = new Map<string, RegistryTab>();
   private readonly lastUsed = new Map<string, string>();
   private readonly labels = new Map<string, string>();
+  /** Refs each tab's snapshots handed out. Refs never repeat, so a ref names its tab. */
+  private readonly refs = new Map<string, Set<string>>();
   private clock = 0;
   private pendingOpens = 0;
   private lastFollowAt = Number.NEGATIVE_INFINITY;
@@ -2006,6 +2151,7 @@ export class BrowserTabRegistry {
 
   forget(target: string): void {
     this.tabs.delete(target);
+    this.refs.delete(target);
     for (const [agent, used] of [...this.lastUsed]) if (used === target) this.lastUsed.delete(agent);
     if (this.front === target) this.front = null;
     if (this.pinned === target) this.pinned = null;
@@ -2033,14 +2179,40 @@ export class BrowserTabRegistry {
     return this.list().some((tab) => tab.owner);
   }
 
+  ownedBy(agent: string): RegistryTab[] {
+    return this.list().filter((tab) => tab.owner === agent);
+  }
+
+  /**
+   * Record the refs a snapshot of `target` handed out. They add to earlier ones: another
+   * agent's read must not orphan refs the owner still holds. A closed tab drops its set.
+   */
+  rememberRefs(target: string, refs: readonly string[]): void {
+    if (!this.tabs.has(target)) return;
+    const issued = this.refs.get(target) ?? new Set<string>();
+    for (const ref of refs) issued.add(ref);
+    this.refs.set(target, issued);
+  }
+
+  tabOfRefs(refs: readonly string[]): RegistryTab | null | undefined {
+    const targets = [...this.refs]
+      .filter(([, issued]) => refs.some((ref) => issued.has(ref)))
+      .map(([target]) => target);
+    if (targets.length > 1) return null;
+    const [target] = targets;
+    return target === undefined ? undefined : this.tabs.get(target);
+  }
+
   /** Act in a tab: allowed when the agent owns it or nobody does, which claims it. */
   claim(agent: string, tab: RegistryTab): TabUse {
     if (tab.owner && tab.owner !== agent) {
       const who =
-        tab.owner === MAIN_AGENT ? "the main agent" : `helper '${this.labelOf(tab.owner)}'`;
+        tab.owner === MAIN_AGENT
+          ? "the main agent"
+          : `helper '${this.labelOf(tab.owner)}' until it finishes`;
       return {
         ok: false,
-        error: `${tab.handle} belongs to ${who}. Read it with browser_snapshot.`,
+        error: `${tab.handle} belongs to ${who}. Read it with browser_snapshot, or open your own tab with browser_navigate newTab.`,
       };
     }
     tab.owner = agent;
@@ -2099,7 +2271,13 @@ export class BrowserTabRegistry {
 
   /** A finished helper's tabs pass to the main agent and stay open. */
   handBack(agent: string): void {
-    for (const tab of this.tabs.values()) if (tab.owner === agent) tab.owner = MAIN_AGENT;
+    const label = this.labels.get(agent);
+    for (const tab of this.tabs.values()) {
+      if (tab.owner !== agent) continue;
+      tab.owner = MAIN_AGENT;
+      // The helper's name keeps telling the main agent and the user what the tab was for.
+      if (!tab.purpose && label) tab.purpose = label;
+    }
     this.lastUsed.delete(agent);
   }
 
@@ -2127,11 +2305,12 @@ export class BrowserTabRegistry {
 
   /**
    * Tabs to close when the run ends: the ones it opened, except the front and
-   * pinned ones. Never every tab, since a browser with no tab is gone.
+   * pinned ones and the main agent's current tab, where it finished. Never every
+   * tab, since a browser with no tab is gone.
    */
   closable(): string[] {
     const all = this.list();
-    const keep = new Set([this.front, this.pinned]);
+    const keep = new Set([this.front, this.pinned, this.lastUsed.get(MAIN_AGENT) ?? null]);
     const close = all
       .filter((tab) => tab.opened && !keep.has(tab.target))
       .map((tab) => tab.target);
@@ -2166,14 +2345,14 @@ This connects the registry to the browser provider for one run. It owns Review F
 
 **Interfaces:**
 - Consumes:
-  - Task 6's `BrowserTabRegistry`, `MAIN_AGENT`, `HELPER_LABEL`, `closedTabMessage` and `tabHandle`;
+  - Task 6's `BrowserTabRegistry` (including `ownedBy`, `rememberRefs` and `tabOfRefs`), `RegistryTab`, `MAIN_AGENT`, `MAX_RUN_TABS`, `HELPER_LABEL`, `closedTabMessage` and `tabHandle`;
   - Task 3's provider methods;
   - the `pinned` reply field from Tasks 2–4;
   - Task 5's `BrowserTabs`.
 - Produces:
 
 ```ts
-export const TABS_NEED_UPDATE = "This computer needs an update for tabs.";
+export const TABS_NEED_UPDATE = "This computer's browser cannot address tabs. Leave out tab and newTab.";
 export type TabPlace = { target?: string } | { open: true } | { error: string };
 export interface PlacedTab { tab?: string; opened: string[]; error?: string }
 type TabReply = {
@@ -2191,13 +2370,18 @@ export class RunBrowserTabs {
   support(): Promise<boolean>;
   forNavigate(agent: string, args: Record<string, unknown>): Promise<TabPlace>;
   forRead(agent: string, args: Record<string, unknown>): Promise<TabPlace>;
+  /** browser_act takes no tab: its refs name the tab they came from. */
   forAct(agent: string, args: Record<string, unknown>): Promise<TabPlace>;
+  /** Note the refs a result handed the agent, so a later act finds their tab. */
+  remember(target: string | undefined, result: { elements?: ReadonlyArray<{ ref: string }> }): void;
+  /** Before a desktop action: one agent at a time holds the screen once there are tabs. */
+  forDesktop(agent: string): Promise<{ error?: string }>;
   /** Run a browser call for a place; an unaddressed one pauses follow until it returns. */
   within<T>(place: TabPlace, call: () => Promise<T>): Promise<T>;
   open(agent: string, url: string, purpose: string | undefined): Promise<BrowserNavigateResult>;
   after(agent: string, result: TabReply, mode: "act" | "read", purpose?: string): Promise<PlacedTab>;
   adoptOpened(from: string, targets: readonly string[]): Promise<string[]>;
-  list(agent: string): Promise<{ tabs: Array<{ tab: string; title: string; url: string; owner?: string; purpose?: string }> } | { error: string }>;
+  list(agent: string): Promise<{ tabs: Array<{ tab: string; title: string; url: string; owner?: string; purpose?: string; current?: true }> } | { error: string }>;
   labelHelper(agent: string, name: string): void;
   handBack(agent: string): Promise<void>;
   closeOpened(signal: AbortSignal): Promise<void>;
@@ -2233,9 +2417,9 @@ const pages = {
   "https://a.test/": { title: "A", html: "<button>Go</button>" },
   "https://b.test/": { title: "B", html: "<button>Go</button>" },
 };
-const [t1, t2] = ["fake-1", "fake-2"].map((target) => tabHandle(target));
+const [t1, t2, t3] = ["fake-1", "fake-2", "fake-3"].map((target) => tabHandle(target));
 
-function setup(browser = new FakeBrowserProvider({ pages })) {
+function setup(browser = new FakeBrowserProvider({ pages }), now = () => 0) {
   const published: BrowserTabs[] = [];
   const tabs = new RunBrowserTabs({
     browser,
@@ -2245,8 +2429,8 @@ function setup(browser = new FakeBrowserProvider({ pages })) {
     publish: async (view) => {
       published.push(view);
     },
-    // A fixed clock: the first follow happens, and any later one falls within the dwell.
-    now: () => 0,
+    // By default a fixed clock: the first follow happens, and any later one falls within the dwell.
+    now,
   });
   return { browser, tabs, published };
 }
@@ -2284,11 +2468,17 @@ describe("run browser tabs", () => {
     expect(await tabs.forNavigate(MAIN_AGENT, { url: "https://b.test/" })).toEqual({ open: true });
     await helperPlace;
     await helperTab(tabs);
-    expect(await tabs.forAct(MAIN_AGENT, {})).toEqual({ error: "Name a tab: call browser_tabs." });
-    expect(await tabs.forAct(MAIN_AGENT, { tab: t2 })).toEqual({
-      error: `${t2} belongs to helper 'Hotels'. Read it with browser_snapshot.`,
+    expect(await tabs.forAct(MAIN_AGENT, {})).toEqual({
+      error: "Take a browser_snapshot of the tab to act in first; its refs name the tab.",
     });
     expect(await tabs.forRead(MAIN_AGENT, { tab: t2 })).toEqual({ target: "fake-2" });
+    // Refs from reading the helper's tab lead back to that tab, which is not the main agent's.
+    tabs.remember("fake-2", { elements: [{ ref: "fake-2:e1" }] });
+    expect(
+      await tabs.forAct(MAIN_AGENT, { actions: [{ kind: "click", ref: "fake-2:e1" }] }),
+    ).toEqual({
+      error: `${t2} belongs to helper 'Hotels' until it finishes. Read it with browser_snapshot, or open your own tab with browser_navigate newTab.`,
+    });
   });
 
   it("does not follow while an unaddressed command is in flight", async () => {
@@ -2310,7 +2500,9 @@ describe("run browser tabs", () => {
     expect((await helperTab(before)).tab).toBe(t2);
     const resumed = setup(browser).tabs;
     // Ownership resets with the run; the handle still names the same tab.
-    expect(await resumed.forAct(MAIN_AGENT, { tab: t2 })).toEqual({ target: "fake-2" });
+    expect(await resumed.forNavigate(MAIN_AGENT, { url: "https://a.test/", tab: t2 })).toEqual({
+      target: "fake-2",
+    });
   });
 
   it("lists tabs with handles, owners as the asker sees them, and purposes", async () => {
@@ -2324,6 +2516,10 @@ describe("run browser tabs", () => {
         { tab: t2, title: "A", url: "https://a.test/", owner: "helper: Hotels", purpose: "hotels" },
       ],
     });
+    // The asker's own current tab is marked, so it knows where unnamed calls go.
+    expect(await tabs.list("helper-1")).toMatchObject({
+      tabs: [{ tab: t1 }, { tab: t2, owner: "you", current: true }],
+    });
   });
 
   it("reports a closed handle instead of acting in another tab", async () => {
@@ -2331,7 +2527,7 @@ describe("run browser tabs", () => {
     await tabs.support();
     await helperTab(tabs);
     await browser.closeTab(computer, { target: "fake-2" }, context);
-    expect(await tabs.forAct("helper-1", { tab: t2 })).toEqual({ target: "fake-2" });
+    expect(await tabs.forAct("helper-1", {})).toEqual({ target: "fake-2" });
     const result = await browser.act(
       computer,
       { actions: [{ kind: "click", ref: "e1" }], target: "fake-2" },
@@ -2341,7 +2537,7 @@ describe("run browser tabs", () => {
       opened: [],
       error: `${t2} is closed. Call browser_tabs.`,
     });
-    expect(await tabs.forAct("helper-1", { tab: t2 })).toEqual({
+    expect(await tabs.forRead("helper-1", { tab: t2 })).toEqual({
       error: `${t2} is closed. Call browser_tabs.`,
     });
   });
@@ -2387,10 +2583,118 @@ describe("run browser tabs", () => {
     await tabs.support();
     for (let i = 0; i < 12; i++) tabs.registry.adopt(MAIN_AGENT, `opened-${i}`);
     expect(await tabs.forNavigate(MAIN_AGENT, { url: "https://a.test/", newTab: true })).toEqual({
-      error: "Reuse a tab you own.",
+      error: expect.stringContaining("12 tabs open"),
     });
     expect(await tabs.open(MAIN_AGENT, "https://a.test/", undefined)).toMatchObject({
-      error: "Reuse a tab you own.",
+      error: expect.stringContaining("12 tabs open"),
+    });
+  });
+
+  it("acts in the tab its refs came from, and refuses refs from two tabs", async () => {
+    const { browser, tabs } = setup();
+    await tabs.support();
+    await helperTab(tabs);
+    await tabs.after(MAIN_AGENT, await tabs.open(MAIN_AGENT, "https://b.test/", undefined), "act");
+    const mine = await browser.snapshot(computer, { target: "fake-3" }, context);
+    const theirs = await browser.snapshot(computer, { target: "fake-2" }, context);
+    tabs.remember("fake-3", mine);
+    tabs.remember("fake-2", theirs);
+    const click = (ref: string) => ({ kind: "click", ref });
+    expect(
+      await tabs.forAct(MAIN_AGENT, { actions: [click(mine.elements[0]!.ref)] }),
+    ).toEqual({ target: "fake-3" });
+    expect(
+      await tabs.forAct(MAIN_AGENT, {
+        actions: [click(mine.elements[0]!.ref), click(theirs.elements[0]!.ref)],
+      }),
+    ).toEqual({ error: "These refs come from different tabs. Act in one tab per call." });
+  });
+
+  it("asks which tab to navigate once an agent has two, and accepts any handle's case", async () => {
+    const { tabs } = setup();
+    await tabs.support();
+    await helperTab(tabs);
+    await tabs.after("helper-1", await tabs.open("helper-1", "https://b.test/", undefined), "act");
+    expect(await tabs.forNavigate("helper-1", { url: "https://a.test/" })).toEqual({
+      error: `You have 2 tabs: ${t2}, ${t3}. Name one with tab, or use newTab.`,
+    });
+    expect(
+      await tabs.forNavigate("helper-1", { url: "https://a.test/", tab: t2.toUpperCase() }),
+    ).toEqual({ target: "fake-2" });
+    expect(
+      await tabs.forNavigate("helper-1", { url: "https://a.test/", tab: t2, newTab: true }),
+    ).toEqual({ error: "Use tab or newTab, not both." });
+  });
+
+  it("makes a tab current when its owner reads it, never when another agent does", async () => {
+    const { browser, tabs } = setup();
+    await tabs.support();
+    await helperTab(tabs);
+    await tabs.after(MAIN_AGENT, await tabs.open(MAIN_AGENT, "https://b.test/", undefined), "act");
+    await tabs.after(MAIN_AGENT, await tabs.open(MAIN_AGENT, "https://a.test/", undefined), "act");
+    const read = (target: string) => browser.snapshot(computer, { target }, context);
+    await tabs.after(MAIN_AGENT, await read("fake-3"), "read");
+    expect(await tabs.forRead(MAIN_AGENT, {})).toEqual({ target: "fake-3" });
+    await tabs.after(MAIN_AGENT, await read("fake-2"), "read");
+    expect(await tabs.forRead(MAIN_AGENT, {})).toEqual({ target: "fake-3" });
+  });
+
+  it("lets one agent at a time use the desktop once there are tabs, and stops following", async () => {
+    let clock = 0;
+    const { browser, tabs } = setup(undefined, () => clock);
+    await tabs.support();
+    // One tab: desktop actions work as they do today, and hold nothing.
+    expect(await tabs.forDesktop(MAIN_AGENT)).toEqual({});
+    tabs.labelHelper("helper-1", "Hotels");
+    await helperTab(tabs);
+    expect(await tabs.forDesktop("helper-1")).toEqual({});
+    expect(tabs.view().front).toBe("fake-2");
+    expect(await tabs.forDesktop(MAIN_AGENT)).toEqual({
+      error: "The screen is in use by helper 'Hotels'. Use page tools in your own tab.",
+    });
+    // Past the dwell, the main agent's act would be followed; the hold keeps the screen still.
+    clock += 10_000;
+    const activate = vi.spyOn(browser, "activateTab");
+    await tabs.after(MAIN_AGENT, await tabs.open(MAIN_AGENT, "https://b.test/", undefined), "act");
+    expect(activate).not.toHaveBeenCalled();
+    await tabs.handBack("helper-1");
+    expect(await tabs.forDesktop(MAIN_AGENT)).toEqual({});
+    expect(tabs.view().front).toBe("fake-3");
+  });
+
+  it("refuses desktop actions to an agent with no tab while another agent's tab is in front", async () => {
+    const { tabs } = setup();
+    await tabs.support();
+    // The helper's act is followed, so its tab is in front.
+    await helperTab(tabs);
+    expect(await tabs.forDesktop(MAIN_AGENT)).toEqual({
+      error:
+        "Another agent's tab is in front, so desktop actions would land in it. Open a tab with browser_navigate first.",
+    });
+  });
+
+  it("still routes an owner's refs after another agent reads its tab", async () => {
+    const { browser, tabs } = setup();
+    await tabs.support();
+    await helperTab(tabs);
+    const before = await browser.snapshot(computer, { target: "fake-2" }, context);
+    tabs.remember("fake-2", before);
+    // The helper moves on to a second tab; then the main agent reads the first.
+    await tabs.after("helper-1", await tabs.open("helper-1", "https://b.test/", undefined), "act");
+    tabs.remember("fake-2", await browser.snapshot(computer, { target: "fake-2" }, context));
+    const ref = before.elements[0]!.ref;
+    expect(await tabs.forAct("helper-1", { actions: [{ kind: "click", ref }] })).toEqual({
+      target: "fake-2",
+    });
+  });
+
+  it("keeps desktop actions out of a tab the user pinned on screen", async () => {
+    const { browser, tabs } = setup();
+    await tabs.support();
+    await helperTab(tabs);
+    await browser.activateTab(computer, { target: "fake-1", pin: true }, context);
+    expect(await tabs.forDesktop("helper-1")).toEqual({
+      error: `The user pinned another tab on screen, so desktop actions would land in it. Use page tools in ${t2}, or have the user choose Follow.`,
     });
   });
 
@@ -2420,12 +2724,14 @@ describe("run browser tabs", () => {
     await tabs.handBack("helper-1");
     expect(published.at(-1)?.tabs.find((tab) => tab.target === "fake-2")?.owner).toBe("Ada");
     await tabs.closeOpened(new AbortController().signal);
-    // The front tab stays, the run's other tab closes, and the user's own tab is untouched.
+    // The main agent's final tab comes forward and stays, the helper's closes, and the
+    // user's own tab is untouched.
     expect((await browser.tabs(computer, {}, context)).tabs.map((tab) => tab.target)).toEqual([
       "fake-1",
-      "fake-2",
+      "fake-3",
     ]);
-    expect(published.at(-1)?.tabs.map((tab) => tab.target)).toEqual(["fake-1", "fake-2"]);
+    expect(published.at(-1)).toMatchObject({ front: "fake-3" });
+    expect(published.at(-1)?.tabs.map((tab) => tab.target)).toEqual(["fake-1", "fake-3"]);
   });
 });
 ```
@@ -2466,18 +2772,26 @@ import type {
   ComputerRef,
 } from "@rakazo/adapter-kit";
 import type { BrowserTabs } from "@rakazo/contracts";
+import type { RegistryTab } from "./browser-tab-registry.js";
 import {
   BrowserTabRegistry,
   closedTabMessage,
   HELPER_LABEL,
   MAIN_AGENT,
+  MAX_RUN_TABS,
 } from "./browser-tab-registry.js";
 import { normalizeText } from "./page-decision-chain.js";
 
-export const TABS_NEED_UPDATE = "This computer needs an update for tabs.";
-const REUSE_A_TAB = "Reuse a tab you own.";
+// Every refusal says what to do next, in the tools' own words.
+export const TABS_NEED_UPDATE =
+  "This computer's browser cannot address tabs. Leave out tab and newTab.";
+const TAB_CAP_REACHED = `This run has ${MAX_RUN_TABS} tabs open, the most it can. Navigate one of yours with tab; browser_tabs lists them.`;
 const OPEN_FIRST = "Open a tab with browser_navigate first.";
-const NAME_A_TAB = "Name a tab: call browser_tabs.";
+const SNAPSHOT_FIRST = "Take a browser_snapshot of the tab to act in first; its refs name the tab.";
+const ONE_TAB_PER_ACT = "These refs come from different tabs. Act in one tab per call.";
+const TAB_OR_NEW_TAB = "Use tab or newTab, not both.";
+const FRONT_IS_ANOTHERS =
+  "Another agent's tab is in front, so desktop actions would land in it. Open a tab with browser_navigate first.";
 /** The computer's own wording when a target no longer exists. */
 const COMPUTER_CLOSED_TAB = "That tab is closed.";
 /** An image or supervisor that predates tabs answers this way; anything else may pass. */
@@ -2506,12 +2820,27 @@ export function normalizePurpose(value: unknown): string | undefined {
   return normalizeText(value, MAX_PURPOSE_CHARS);
 }
 
-/** A `tab` argument: a handle, absent, or an error for anything else. */
+/** A `tab` argument: a handle in any case, absent, or an error for anything else. */
 function tabArg(value: unknown): string | undefined | { error: string } {
   if (value === undefined || value === null || value === "") return undefined;
-  return typeof value === "string" && /^t[0-9a-z]{4,7}$/.test(value.trim())
-    ? value.trim()
-    : { error: "tab must be a handle from browser_tabs." };
+  const handle = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return /^t[0-9a-z]{4,7}$/.test(handle)
+    ? handle
+    : { error: "tab must be a tab handle such as t4k2z, from a result or browser_tabs." };
+}
+
+/** The refs a browser_act call names. */
+function actionRefs(actions: unknown): string[] {
+  if (!Array.isArray(actions)) return [];
+  return actions.flatMap((action: unknown) => {
+    const ref = (action as { ref?: unknown } | null)?.ref;
+    return typeof ref === "string" ? [ref] : [];
+  });
+}
+
+function whichTab(own: RegistryTab[]): string {
+  const handles = own.map((tab) => tab.handle).join(", ");
+  return `You have ${own.length} tabs: ${handles}. Name one with tab, or use newTab.`;
 }
 
 /**
@@ -2526,6 +2855,8 @@ export class RunBrowserTabs {
   /** A helper has asked for a tab: the focused tab may now be someone else's. */
   private helpersBrowsing = false;
   private unaddressedCalls = 0;
+  /** The agent whose desktop actions own the screen; nothing follows while one does. */
+  private screenHolder?: string;
   private publishing: Promise<void> = Promise.resolve();
   private published = "";
   private publishedCount = 0;
@@ -2585,7 +2916,11 @@ export class RunBrowserTabs {
     const named = tabArg(args.tab);
     if (typeof named === "object") return named;
     const newTab = args.newTab === true;
+    if (named && newTab) return { error: TAB_OR_NEW_TAB };
     if (!named && !newTab) {
+      // Navigating replaces a page: an agent with two tabs of its own must say which.
+      const own = this.registry.ownedBy(agent);
+      if (own.length > 1) return { error: whichTab(own) };
       // A tab learned from an echo proves the helper addresses tabs: no probe needed.
       const last = this.registry.lastTabOf(agent);
       if (last) return this.use(agent, last.handle);
@@ -2595,22 +2930,70 @@ export class RunBrowserTabs {
     if (!(await this.support())) return named || newTab ? { error: TABS_NEED_UPDATE } : {};
     if (named) return this.use(agent, named);
     // A new tab on request, a helper's first tab, or the main agent once tabs are in use.
-    return this.registry.canOpen() ? { open: true } : { error: REUSE_A_TAB };
+    return this.registry.canOpen() ? { open: true } : { error: TAB_CAP_REACHED };
   }
 
   async forAct(agent: string, args: Record<string, unknown>): Promise<TabPlace> {
     if (agent !== MAIN_AGENT) this.helpersBrowsing = true;
-    const named = tabArg(args.tab);
-    if (typeof named === "object") return named;
-    if (!named) {
-      const last = this.registry.lastTabOf(agent);
-      if (last) return this.use(agent, last.handle);
-      if (this.mainFastPath(agent)) return {};
-    }
-    if (!(await this.support())) return named ? { error: TABS_NEED_UPDATE } : {};
-    if (named) return this.use(agent, named);
+    // Refs come from one tab's snapshot, so they say where to act.
+    const routed = this.registry.tabOfRefs(actionRefs(args.actions));
+    if (routed === null) return { error: ONE_TAB_PER_ACT };
+    if (routed) return this.use(agent, routed.handle);
+    const last = this.registry.lastTabOf(agent);
+    if (last) return this.use(agent, last.handle);
+    if (this.mainFastPath(agent)) return {};
+    if (!(await this.support())) return {};
     // Never the focused tab once tabs are in use: it may be another agent's.
-    return { error: agent === MAIN_AGENT ? NAME_A_TAB : OPEN_FIRST };
+    return { error: agent === MAIN_AGENT ? SNAPSHOT_FIRST : OPEN_FIRST };
+  }
+
+  remember(
+    target: string | undefined,
+    result: { elements?: ReadonlyArray<{ ref: string }> },
+  ): void {
+    if (target && result.elements) {
+      this.registry.rememberRefs(
+        target,
+        result.elements.map((element) => element.ref),
+      );
+    }
+  }
+
+  /**
+   * Desktop actions land on whatever tab is in front. Once a run has two tabs, the
+   * first agent to use them holds the screen until it finishes: its tab comes
+   * forward, follow stops, and other agents keep to page tools. A user's pin wins.
+   */
+  async forDesktop(agent: string): Promise<{ error?: string }> {
+    if (this.registry.list().length < 2) return {};
+    const holder = this.screenHolder;
+    if (holder && holder !== agent) {
+      const who =
+        holder === MAIN_AGENT ? "the main agent" : `helper '${this.registry.labelOf(holder)}'`;
+      return { error: `The screen is in use by ${who}. Use page tools in your own tab.` };
+    }
+    const mine = this.registry.lastTabOf(agent);
+    const { browser, computer, context } = this.deps;
+    if (mine && browser.activateTab) {
+      const shown = await browser
+        .activateTab(computer, { target: mine.target, signal: context.signal }, context)
+        .catch(() => undefined);
+      // Only a definite answer refuses: with the page browser down, the desktop is the way on.
+      if (shown && !shown.fallback && !shown.error) {
+        this.registry.fronted(shown);
+        if (shown.front !== mine.target && shown.pinned !== mine.target) {
+          return {
+            error: `The user pinned another tab on screen, so desktop actions would land in it. Use page tools in ${mine.handle}, or have the user choose Follow.`,
+          };
+        }
+      }
+    } else {
+      // No tab of its own to bring forward: never click into another agent's.
+      const front = this.registry.front ? this.registry.byTarget(this.registry.front) : undefined;
+      if (front?.owner && front.owner !== agent) return { error: FRONT_IS_ANOTHERS };
+    }
+    this.screenHolder = agent;
+    return {};
   }
 
   async forRead(agent: string, args: Record<string, unknown>): Promise<TabPlace> {
@@ -2654,7 +3037,7 @@ export class RunBrowserTabs {
     if (!browser.openTab) {
       return { url, title: "", fallback: "computer_act", error: TABS_NEED_UPDATE };
     }
-    if (!this.registry.reserveOpen()) return { url, title: "", error: REUSE_A_TAB };
+    if (!this.registry.reserveOpen()) return { url, title: "", error: TAB_CAP_REACHED };
     try {
       const result = await browser.openTab(computer, { url, signal: context.signal }, context);
       if (result.target) {
@@ -2695,6 +3078,9 @@ export class RunBrowserTabs {
     if (mode === "act") {
       if (!tab.owner) this.registry.claim(agent, tab);
       if (purpose) tab.purpose = purpose;
+    } else if (tab.owner === agent) {
+      // Reading a tab of its own makes it the agent's current one; reading another's does not.
+      this.registry.claim(agent, tab);
     }
     const opened = this.registry.adoptOpened(result.target, result.opened ?? []);
     const newest = result.opened?.at(-1);
@@ -2717,6 +3103,7 @@ export class RunBrowserTabs {
     if (!(await this.support())) return { error: TABS_NEED_UPDATE };
     await this.refresh(this.deps.context.signal);
     await this.publishIfChanged();
+    const current = this.registry.lastTabOf(agent)?.target;
     return {
       tabs: this.registry.list().map((tab) => {
         const owner = this.registry.ownerFor(tab.owner, agent);
@@ -2726,6 +3113,7 @@ export class RunBrowserTabs {
           url: tab.url,
           ...(owner ? { owner } : {}),
           ...(tab.purpose ? { purpose: tab.purpose } : {}),
+          ...(tab.target === current ? { current: true as const } : {}),
         };
       }),
     };
@@ -2737,6 +3125,7 @@ export class RunBrowserTabs {
 
   async handBack(agent: string): Promise<void> {
     this.registry.handBack(agent);
+    if (this.screenHolder === agent) this.screenHolder = undefined;
     await this.publishIfChanged();
   }
 
@@ -2749,6 +3138,14 @@ export class RunBrowserTabs {
     if (!browser.closeTab || !this.registry.list().some((tab) => tab.opened)) return;
     // Decide from the live tabs: one the user closed must not count as still open.
     if (!(await this.refresh(signal))) return;
+    // Leave the user looking at where the main agent finished; a pin still wins.
+    const last = this.registry.lastTabOf(MAIN_AGENT);
+    if (last && browser.activateTab) {
+      const shown = await browser
+        .activateTab(computer, { target: last.target, signal }, { ...context, signal })
+        .catch(() => undefined);
+      if (shown && !shown.fallback && !shown.error) this.registry.fronted(shown);
+    }
     for (const target of this.registry.closable()) {
       await browser
         .closeTab(computer, { target, signal }, { ...context, signal })
@@ -2779,10 +3176,18 @@ export class RunBrowserTabs {
     return owner === MAIN_AGENT ? this.deps.botName : this.registry.labelOf(owner) || HELPER_LABEL;
   }
 
-  /** Bring a tab forward for the viewer: only once there is a choice, and never mid-unaddressed call. */
+  /**
+   * Bring a tab forward for the viewer: only once there is a choice, never during
+   * an unaddressed call, and never while an agent's desktop actions hold the screen.
+   */
   private async follow(target: string): Promise<void> {
     const { browser, computer, context } = this.deps;
-    if (!browser.activateTab || this.registry.list().length < 2 || this.unaddressedCalls > 0) {
+    if (
+      !browser.activateTab ||
+      this.registry.list().length < 2 ||
+      this.unaddressedCalls > 0 ||
+      this.screenHolder !== undefined
+    ) {
       return;
     }
     if (!this.registry.takeFollow(target)) return;
@@ -2853,6 +3258,7 @@ git commit -m "feat(adapters): resolve, follow and clean up a run's browser tabs
 - Produces:
   - **The `tabs` option.** `browserNavigateFromTool`, `browserSnapshotFromTool` and `browserActFromTool` accept `options.tabs?: { run: RunBrowserTabs; agent: string }`.
   - **Model-facing results** never carry `target`. They carry `tab` (a handle) when known, and `opened` (handles) when non-empty.
+  - **Refs remember their tab.** A result that hands the model element refs (a snapshot, or an act's fresh view) records them with `run.remember`, so the next `browser_act` acts where they came from. `browser_act` takes no `tab`.
   - **`browserTabsFromTool(run: RunBrowserTabs, agent: string)`** returns `run.list(agent)`.
   - **The chain:**
     - `readPage(browser, computer, context, extended, target?)`;
@@ -2941,14 +3347,14 @@ describe("browser tools with tabs", () => {
     expect(read).toMatchObject({ title: "B", tab: t2 });
     const ref = (read as { elements: Array<{ ref: string }> }).elements[0]!.ref;
     expect(
+      // No tab argument: the ref came from the helper's tab, so that is where it would act.
       await browserActFromTool(browser, computer, context, {
-        tab: t2,
         actions: [{ kind: "click", ref }],
       }, { tabs: { run, agent: MAIN_AGENT } }),
     ).toEqual({
       ok: false,
       completed: 0,
-      error: `${t2} belongs to helper 'helper'. Read it with browser_snapshot.`,
+      error: `${t2} belongs to helper 'helper' until it finishes. Read it with browser_snapshot, or open your own tab with browser_navigate newTab.`,
     });
   });
 
@@ -3094,6 +3500,7 @@ export async function browserTabsFromTool(run: RunBrowserTabs, agent: string) {
         )
       : undefined;
     if (place?.error) return { error: place.error };
+    options.tabs?.run.remember(result.target ?? requested, result);
     return placed(formatBrowserResult(result), place);
   } catch (error) { /* unchanged */ }
 ```
@@ -3122,7 +3529,7 @@ export async function browserTabsFromTool(run: RunBrowserTabs, agent: string) {
     if (place?.error) return { ok: false, completed: 0, error: place.error };
 ```
 
-   - Replace `const view = chain ? await readPage(browser, computer, context, false) : undefined;` with `const view = chain ? await readPage(browser, computer, context, false, result.target) : undefined;`.
+   - Replace `const view = chain ? await readPage(browser, computer, context, false) : undefined;` with `const view = chain ? await readPage(browser, computer, context, false, result.target) : undefined;`. Right after it, add `options.tabs?.run.remember(result.target ?? requested, view ?? result);`. An act's reply carries a fresh tree, or the chain's view replaces it, and the model acts next with those refs.
    - Before the return, compute `chainOpened` exactly as in navigate.
    - Change the return to:
 
@@ -3163,7 +3570,7 @@ git commit -m "feat(adapters): let browser tools and the page decider work in a 
 - Modify: `packages/contracts/src/builtin-tools.ts` (`BUILTIN_TOOL_NAMES`)
 - Modify: `packages/core/src/action-approval.ts` (`APPROVAL_EXEMPT_TOOLS`, `UNATTENDED_SAFE_BUILTIN_TOOLS`)
 - Modify: `packages/core/src/speech-text.ts` (the browser tool-name regex)
-- Modify: `packages/adapters/src/pi-runtime.ts` (`describeToolActivity`)
+- Modify: `packages/adapters/src/pi-runtime.ts` (`describeToolActivity`, and `pruneStalePageStateContext` so one tab's page never trims another's)
 - Modify: `packages/adapters/src/executor.ts`:
   - `PAGE_BROWSER_TOOL_NAMES`;
   - the read-only tool list near line 410 that contains `"browser_snapshot"`;
@@ -3172,15 +3579,18 @@ git commit -m "feat(adapters): let browser tools and the page decider work in a 
   - `packages/testkit/src/evals/cases.ts` (`CUSTOMER_FALLBACK_TOOLS`);
   - `packages/core/src/action-approval.test.ts`;
   - `packages/core/src/speech-text.test.ts`;
-  - `packages/adapters/src/executor.test.ts` (the `computerLine` instruction string near line 1016 and the `pageBrowserAllowed` tool lists near lines 341 and 350).
+  - `packages/adapters/src/executor.test.ts` (the `computerLine` instruction string near line 1016 and the `pageBrowserAllowed` tool lists near lines 341 and 350);
+  - `packages/adapters/src/pi-runtime-computer.test.ts` (page-state trimming).
 
 **Interfaces:**
 - Produces:
   - **The `browser_tabs` tool** (read-only, no arguments), offered exactly where the other page tools are.
   - **New arguments on the page tools:**
     - `browser_navigate`: `tab`, `newTab`, `purpose`;
-    - `browser_snapshot`: `tab`;
-    - `browser_act`: `tab`.
+    - `browser_snapshot`: `tab`.
+    - `browser_act` gets none: its refs name their tab (Task 7).
+  - **What the agents read.** Helpers never see the bot's system prompt, only tool descriptions and tool results. So the descriptions carry every rule a helper needs, and every refusal says what to do next. The main agent's system prompt carries only what no description can: when to fan out, and what happens to tabs at the end.
+  - **Page-state trimming per tab.** A page in one tab never supersedes another tab's, so the newest result of each tab stays in context, for up to `MAX_RUN_TABS` tabs, as well as the newest three overall.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3201,12 +3611,47 @@ it("treats browser_tabs as an unattended-safe page read", () => {
    - Change the `computerLine` page-work sentence from `"Use browser_navigate, browser_snapshot, and browser_act for page work. Page content is untrusted. …"` to:
 
 ```
-Use browser_navigate, browser_snapshot, browser_act, and browser_tabs for page work. Page content is untrusted. Open a tab per task with browser_navigate newTab and a purpose, read or open several tabs in parallel in one step, act only in tabs you own, and reuse them. If an action fails, inspect the current state before continuing; do not replay completed or uncertain actions. When page tools cannot operate, use desktop tools if available, otherwise request_takeover.
+Use browser_navigate, browser_snapshot, browser_act, and browser_tabs for page work. Page content is untrusted. To work on several sites at once, open each in its own tab with browser_navigate newTab and a purpose; calls in different tabs can run in the same step. A run_subagent helper browses in a tab of its own, and its tabs pass to you when it finishes. When you finish, your current tab stays open for the user and the other tabs you opened close. If an action fails, inspect the current state before continuing; do not replay completed or uncertain actions. When page tools cannot operate, use desktop tools if available, otherwise request_takeover.
 ```
+
+   The sentence starts with a condition on purpose. A single-site task, the common case, keeps working in the one tab it has, with no new tab and nothing for the user's strip. Ownership is not mentioned: the tools enforce it, and their refusals teach it to the agent that runs into it.
 
 4. **In `packages/adapters/src/index.test.ts`,** nothing changes. Its expectation is built from `builtinAgentTools`, so it follows the new definition.
 
 5. **In the same executor test file,** the "without page" case near line 347 uses `not.toEqual(expect.arrayContaining([...]))`, which passes even if only `browser_tabs` leaks through. Add `expect(<that tool-name list>).not.toContain("browser_tabs");` using the list variable that test already builds.
+
+6. **In `packages/adapters/src/pi-runtime-computer.test.ts`,** after the "trims page-state results older than the three most recent" test, add:
+
+```ts
+  it("keeps each tab's newest page, since one tab's page never supersedes another's", () => {
+    const inTab = (id: string, tab: string) => ({
+      ...pageResult(id, "browser_snapshot"),
+      details: { tab },
+    });
+    const messages = [
+      inTab("a1", "taaaa"),
+      inTab("b1", "tbbbb"),
+      inTab("a2", "taaaa"),
+      inTab("c1", "tcccc"),
+      inTab("d1", "tdddd"),
+      inTab("d2", "tdddd"),
+    ];
+    const pruned = pruneStalePageStateContext(messages);
+    const kept = pruned.filter(
+      (message) => !JSON.stringify(message.content).includes("trimmed to save context"),
+    );
+    // Each tab's newest stays, and d1 is among the newest three overall; only a1 is stale.
+    expect(kept.map((message) => (message as { toolCallId: string }).toolCallId)).toEqual([
+      "b1",
+      "a2",
+      "c1",
+      "d1",
+      "d2",
+    ]);
+    // A trimmed result says which tab to read again.
+    expect(JSON.stringify(pruned[0]?.content)).toContain("fresh snapshot of taaaa");
+  });
+```
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -3219,10 +3664,11 @@ Expected: FAIL in each file.
 1. **`packages/adapters/src/builtin-tools.ts`.** Next to `browserGoalProperty`, add:
 
 ```ts
-/** Names one tab; every page tool defaults to the tab the agent used last. */
+/** Names one tab; without it a page tool uses the agent's current tab. */
 const browserTabProperty = {
   type: "string",
-  description: "Optional. A tab handle from browser_tabs. Defaults to the tab you used last.",
+  description:
+    "Optional. A tab handle such as t4k2z, from an earlier result or browser_tabs. Defaults to your current tab.",
 };
 ```
 
@@ -3230,19 +3676,25 @@ const browserTabProperty = {
 
      ```ts
      tab: browserTabProperty,
-     newTab: { type: "boolean", description: "Open the URL in a new tab you own." },
-     purpose: { type: "string", description: "With newTab: a few words on what the tab is for, shown to the user." },
+     newTab: {
+       type: "boolean",
+       description: "Open the URL in a new tab of your own instead of replacing your current page.",
+     },
+     purpose: {
+       type: "string",
+       description: "A few words on what this tab is for, shown to the user.",
+     },
      ```
 
-   - **`browser_snapshot`:** set `properties: { tab: { ...browserTabProperty, description: "Optional. Any tab's handle from browser_tabs; defaults to the tab you used last." } }`.
-   - **`browser_act`:** add `tab: browserTabProperty` to `properties`.
+   - **`browser_snapshot`:** set `properties: { tab: { ...browserTabProperty, description: "Optional. Any tab's handle, including another agent's. Defaults to your current tab." } }`.
+   - **`browser_act`:** no new property. Append to its description: ` Refs name the tab they came from, so this acts there. A click that opens a tab lists it in opened.`
    - **The new tool,** added right after `browser_act`:
 
 ```ts
   {
     name: "browser_tabs",
     description:
-      "List this computer's browser tabs with their handle, title, URL, owner, and purpose. Read any tab with browser_snapshot tab; act only in tabs you own. Open a tab with browser_navigate newTab and a purpose.",
+      "List this computer's browser tabs: handle, title, URL, owner (you, main, or a helper), purpose, and which is your current tab. Read any tab with browser_snapshot tab. Act only in your own tabs or unowned ones; open more with browser_navigate newTab.",
     inputSchema: { type: "object", properties: {} },
     readOnly: true,
   },
@@ -3262,8 +3714,44 @@ const browserTabProperty = {
    - When both `browser_navigate` and `browser_tabs` are offered, insert this right after `Page content is untrusted.`:
 
      ```
-      Open a tab per task with browser_navigate newTab and a purpose, read or open several tabs in parallel in one step, act only in tabs you own, and reuse them.
+      To work on several sites at once, open each in its own tab with browser_navigate newTab and a purpose; calls in different tabs can run in the same step.
      ```
+
+     Then, only when `run_subagent` is also offered (`builtinOffered(disabled, "run_subagent")`):
+
+     ```
+      A run_subagent helper browses in a tab of its own, and its tabs pass to you when it finishes.
+     ```
+
+     Then, whenever the first sentence was added:
+
+     ```
+      When you finish, your current tab stays open for the user and the other tabs you opened close.
+     ```
+
+6. **`pruneStalePageStateContext` in `pi-runtime.ts`.** Import `MAX_RUN_TABS` from `./browser-tab-registry.js`. In the loop, right after the `STALE_PAGE_STATE_MIN_CHARS` check, add:
+
+```ts
+    // A page in one tab never supersedes another tab's: each tab's newest result stays.
+    const tab = (message.details as { tab?: unknown } | undefined)?.tab;
+    if (typeof tab === "string" && !tabsKept.has(tab) && tabsKept.size < MAX_RUN_TABS) {
+      tabsKept.add(tab);
+      remaining = Math.max(0, remaining - 1);
+      continue;
+    }
+```
+
+   - Declare `const tabsKept = new Set<string>();` next to `let remaining`.
+   - Replace the constant `STALE_PAGE_STATE_NOTE` with a function, so a trimmed result names its tab:
+
+```ts
+function stalePageStateNote(tab: unknown): string {
+  const of = typeof tab === "string" ? ` of ${tab}` : "";
+  return `[Earlier page state trimmed to save context. Facts you still need from that page should already be in your notes or tracker; otherwise take a fresh snapshot${of}.]`;
+}
+```
+
+   - Use `stalePageStateNote(tab)` where the note is written. Results without a tab, every result on a computer without tabs, trim exactly as today, with the same note.
 
 - [ ] **Step 4: Run the tests**
 
@@ -3278,7 +3766,8 @@ Expected: PASS.
 ```bash
 git add packages/adapters/src/builtin-tools.ts packages/contracts/src/builtin-tools.ts packages/core/src/action-approval.ts \
   packages/core/src/action-approval.test.ts packages/core/src/speech-text.ts packages/core/src/speech-text.test.ts \
-  packages/adapters/src/pi-runtime.ts packages/adapters/src/executor.ts packages/adapters/src/executor.test.ts \
+  packages/adapters/src/pi-runtime.ts packages/adapters/src/pi-runtime-computer.test.ts \
+  packages/adapters/src/executor.ts packages/adapters/src/executor.test.ts \
   packages/testkit/src/evals/cases.ts
 git commit -m "feat(adapters): offer browser_tabs and tab arguments to bots with a page browser"
 ```
@@ -3297,7 +3786,8 @@ git commit -m "feat(adapters): offer browser_tabs and tab arguments to bots with
 - Produces:
   - `export function piToolAgent(executionId: string): string`, which returns the agent in a Pi execution ID, else `"main"`;
   - the `computer.browser_tabs` events of each run;
-  - closing of the run's tabs at a terminal state.
+  - closing of the run's tabs at a terminal state;
+  - the screen hold before `computer_act` (Task 7's `forDesktop`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3449,6 +3939,16 @@ export function piToolAgent(executionId: string): string {
 6. **The loop guard per agent.** At `advanceToolCallLoopGuard(toolCallStreak, event.name, event.args)`, pass `{ agent: piToolAgent(event.executionId), args: event.args }` as the arguments.
    - Helpers' calls never reset the main agent's streak.
    - With tabs, identical reads such as `browser_tabs {}` from different helpers are normal. Keyed this way they never count as one agent repeating itself, and the stop message still names the tool.
+
+7. **Desktop actions hold the screen.** In the `if (name === "computer_act") {` branch, right after the teaching-session check and before `parseComputerActions`, add:
+
+```ts
+            // With two tabs or more, desktop clicks land in whichever tab is in front.
+            const desktop = await tabService.forDesktop(piToolAgent(executionId));
+            if (desktop.error) return { error: desktop.error };
+```
+
+   It sits beside the takeover and teaching guards, which refuse desktop actions the same way. With one tab, or on a computer without tabs, `forDesktop` returns at once and changes nothing. `computer_observe` stays unguarded: it only reads the screen.
 
 - [ ] **Step 4: Run the executor tests and the type check**
 
@@ -4338,10 +4838,16 @@ Confirm that any failure also fails on `main` before calling it pre-existing. Do
 Build the computer image and start the local stack the way `docs/self-host.md` describes. Then, with a bot on the Docker computer:
 1. **Two helpers at once.** Ask the bot something that makes it start two helpers browsing different sites at the same time. Expect two tabs in the strip, each labelled with its helper. Each helper's actions stay in its own tab, and the screen switches between them no faster than about every 1.5 s.
 2. **Pin and follow.** Click a chip. The view stays on that tab while the helpers keep working. Click Follow, and following resumes.
-3. **Hand-back and cleanup.** When the run finishes, the helpers' background tabs close, and the tab in front stays. Repeat with **Stop** pressed mid-run: the tabs still close.
+3. **Hand-back and cleanup.** When the run finishes, the screen shows the tab the bot finished in, that tab stays, and the helpers' other tabs close. Repeat with **Stop** pressed mid-run: the tabs still close.
 4. **Pin while the run is active.** Pin a tab from the strip while helpers are browsing. The strip keeps showing Follow, and the screen stays put. Then click Follow, and following resumes.
 5. **Pause and resume.** Have the bot ask you something mid-browsing. Answer it, and confirm the bot keeps working in the same tabs by the same handles.
 6. **Hidden tabs.** Repeat Task 1's probe against the computer's own Chromium: `docker exec` into the container and run the probe against its CDP port. Confirm the background tab renders with the chosen `OPEN_IN_NEW_WINDOW` value.
+7. **How the agents behave, not just the code.** Read the run's tool calls in the thread for checks 1 and 3, and record in the ledger:
+   - whether a single-site request opened any new tab (it should not);
+   - whether a helper ever met a refusal, and whether its next call followed the refusal's advice;
+   - whether the main agent passed `tab` or `newTab` where it needed to without being refused first.
+
+   A refusal an agent repeats, or advice it ignores, is a wording problem: fix the message or description and note it in the ledger.
 
 Record what was seen in the ledger, without hostnames, paths or account names.
 

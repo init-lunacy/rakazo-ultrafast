@@ -48,6 +48,34 @@ Date: 2026-10-14
 > - **Background tabs** likely need separate windows, which Task 1 decides inside
 >   the computer image.
 
+> **Third review: what the agents actually see.** Helpers see only tool
+> descriptions and tool results, never the bot's system prompt. So every rule is
+> enforced in code and explained by the refusal an agent meets, and the prompt
+> carries only what no description can. That review changed:
+>
+> - **`browser_act` takes no tab.** Refs never repeat, so a ref names the tab its
+>   snapshot came from, and the act goes there. A tab's refs accumulate across
+>   snapshots, so another agent's read never orphans them. Acting with refs read from another
+>   agent's tab meets the ownership refusal instead of clicking in the wrong page.
+> - **A read no longer breaks another agent's refs.** A snapshot used to clear the
+>   page's refs, so the main agent reading a helper's tab would turn the helper's
+>   next click stale.
+> - **Unnamed navigate is refused once an agent has two tabs of its own,** since
+>   navigating replaces a page. Reading a tab of one's own makes it current;
+>   reading another's does not.
+> - **Desktop actions hold the screen** once a run has two tabs. Otherwise a
+>   helper's fallback clicks could land in whichever tab follow had just brought
+>   forward.
+> - **Context keeps each tab's newest page.** A snapshot of one tab no longer trims
+>   another tab's from the model's context.
+> - **The main agent's final tab stays open and comes forward** at the end, so the
+>   result is what the user sees. A finished helper's tabs keep its name as their
+>   purpose.
+> - **The instructions no longer say "a tab per task".** A single-site task keeps
+>   its one tab; the prompt says when fanning out helps. Every refusal now says what
+>   to do next.
+> - **Task 1 also checks that opening a window leaves the active window alone.**
+
 ## Why
 
 A bot has one Chromium per screen, and every page-browser command acts on "the
@@ -141,17 +169,24 @@ IDs never reach the model.
 
 | Tool | Arguments | Notes |
 |---|---|---|
-| `browser_tabs` | `{}` | New and read-only. It lists `{ tab, title, url, owner, purpose }` for every tab. `owner` is `"you"`, `"helper: <label>"`, or absent. |
-| `browser_navigate` | `{ url, tab?, newTab?, purpose?, goal? }` | `newTab: true` opens a tab owned by the caller. `purpose` is a short note of what the tab is for. |
+| `browser_tabs` | `{}` | New and read-only. It lists `{ tab, title, url, owner, purpose, current }` for every tab. `owner` is `"you"`, `"main"`, `"helper: <label>"`, or absent. `current` marks the caller's current tab. |
+| `browser_navigate` | `{ url, tab?, newTab?, purpose?, goal? }` | `newTab: true` opens a tab owned by the caller. `purpose` is a short note of what the tab is for. Handles are accepted in any case. |
 | `browser_snapshot` | `{ tab? }` | Reads any tab, owned or not. |
-| `browser_act` | `{ actions, tab?, goal? }` | Acts only in a tab the caller owns, or claims an unowned one. |
+| `browser_act` | `{ actions, goal? }` | No tab argument: it acts in the tab its refs came from, which the caller must own or which nobody owns. |
 
 Every result includes the `tab` it ran in. `browser_navigate` and `browser_act`
 results list tabs the call opened (`opened: ["t4"]`).
 
 ### Defaults
 
-When `tab` is omitted, the agent uses the tab it used last in this run.
+When `tab` is omitted, the agent uses its current tab: the one of its own it last
+navigated, acted in or read. Reading another agent's tab does not change it.
+
+- **Unnamed navigate with two tabs of one's own** is refused with "You have 2 tabs:
+  t…, t…. Name one with tab, or use newTab." Navigating replaces a page, so it
+  must never pick one by guesswork.
+- **`browser_act`** goes where its refs came from. With unknown refs it falls back
+  to the current tab, where a stale ref fails as it does today.
 
 - **Main agent.** Its first call uses the focused visible tab, found with today's
   probe. That probe runs only for this first call. Bots and prompts that never
@@ -171,21 +206,25 @@ When `tab` is omitted, the agent uses the tab it used last in this run.
   an unowned tab claims it, which covers tabs the user opened by hand and tabs left
   over from earlier runs.
 - **Another agent's tab.** Acting in it fails with: "t2 belongs to helper
-  '<label>'. Read it with browser_snapshot."
+  '<label>' until it finishes. Read it with browser_snapshot, or open your own tab
+  with browser_navigate newTab."
 - **Pop-ups.** A tab opened by a page from an owned tab, found through its CDP
   `openerId`, gets the same owner. The result reports it.
 - **Hand-back.** When a helper ends (finished, failed or aborted), the main agent
-  takes over its tabs.
+  takes over its tabs. A tab with no purpose takes the helper's name as one, so the
+  main agent and the user can still tell what it was for.
 - **Lifetime.** The registry lives for the run. A new run, or a run resumed after a
   lease takeover, starts with every tab unowned, and the main agent claims as
   today.
 
 ### Limits and cleanup
 
-- **Tab cap.** A run may open at most 12 tabs. The next `newTab` fails with "Reuse a
-  tab you own." Tabs the run did not open do not count.
-- **Cleanup.** When the run reaches a terminal state, it closes the tabs it opened
-  that are not in front and not pinned:
+- **Tab cap.** A run may have at most 12 tabs it opened. The next `newTab` fails
+  with "This run has 12 tabs open, the most it can. Navigate one of yours with tab;
+  browser_tabs lists them." Tabs the run did not open do not count.
+- **Cleanup.** When the run reaches a terminal state, it first brings the main
+  agent's current tab forward, unless the user pinned another. Then it closes the
+  tabs it opened, except the one in front, the pinned one and that current tab:
   - a terminal state is completed, failed or cancelled, including a Stop;
   - a paused run keeps its tabs;
   - one tab always stays.
@@ -195,10 +234,35 @@ When `tab` is omitted, the agent uses the tab it used last in this run.
   That is harmless, because they do not count toward any later run's cap.
 - **Helpers.** The helper cap stays at `MAX_PARALLEL_SUBAGENTS = 4`.
 
+### Desktop actions
+
+Desktop actions (`computer_act`) land in whichever tab is in front. With one tab
+nothing changes. Once a run has two tabs, the first agent to use them holds the
+screen until it finishes: its current tab comes forward, follow stops, and any
+other agent's desktop action is refused with "The screen is in use by <owner>. Use
+page tools in your own tab." When the user has pinned another tab, the refusal
+says so and suggests Follow. An agent with no tab of its own is refused while
+another agent's tab is in front, since its clicks would land there. If the computer cannot answer, the action goes ahead,
+since desktop tools are the way on when the page browser is down.
+`computer_observe` only reads, so it is not held.
+
+### Context
+
+Today the runtime keeps the newest three page results in the model's context and
+trims older ones. A page in one tab never supersedes another's, so the newest
+result of each tab also stays, for up to 12 tabs. A trimmed result names its tab.
+
 ### Instructions
 
-The bot's browser instructions gain one line: tabs can be opened and read in
-parallel in one step, each agent acts in its own tabs, and tabs should be reused.
+Helpers see only tool descriptions and results, so those carry the rules. The main
+agent's prompt adds what no description can:
+
+- to work on several sites at once, open each in its own tab, and calls in
+  different tabs can run in the same step;
+- a `run_subagent` helper browses in a tab of its own and hands its tabs back;
+- the current tab stays open for the user at the end, and the others close.
+
+It does not say "a tab per task": a single-site task keeps its one tab.
 
 ## Computer side
 
@@ -215,6 +279,12 @@ target ID).
   evaluation). An agent's click is a deliberate click. Without the flag, Chromium's
   popup blocker drops `target=_blank` links and `window.open`, so the tab a click
   should open never appears.
+- **A snapshot keeps earlier refs.** It drops only refs whose element has left the
+  page, instead of clearing them all. Any agent may read any tab, and a read must
+  not turn the owner's next click into "Stale element ref". Refs never repeat, and
+  acting already refuses an element that is gone.
+- **Opening leaves the active window alone.** If Task 1 finds that a new window
+  takes focus, `open` puts the previously active window back.
 
 New commands:
 
@@ -404,9 +474,15 @@ No tab error throws. Each returns a structured result the model can act on.
 |---|---|
 | Closed or unknown handle | "t3 is closed. Call browser_tabs." |
 | Tab owned by another agent | The ownership message above |
-| Run's tab cap reached | "Reuse a tab you own." |
+| Run's tab cap reached | "This run has 12 tabs open, the most it can. Navigate one of yours with tab; browser_tabs lists them." |
+| Unnamed navigate with two tabs of one's own | "You have 2 tabs: t…, t…. Name one with tab, or use newTab." |
+| Both `tab` and `newTab` | "Use tab or newTab, not both." |
 | Helper `browser_act` before any tab | "Open a tab with browser_navigate first." |
-| Computer without tab support | "This computer needs an update for tabs." |
+| Main agent `browser_act` with unknown refs once tabs are in use | "Take a browser_snapshot of the tab to act in first; its refs name the tab." |
+| One `browser_act` with refs from two tabs | "These refs come from different tabs. Act in one tab per call." |
+| Desktop action while another agent holds the screen, or the user pinned another tab | The desktop messages above |
+| Computer without tab support | "This computer's browser cannot address tabs. Leave out tab and newTab." |
+| A `tab` that is not a handle | "tab must be a tab handle such as t4k2z, from a result or browser_tabs." |
 | Helper failure | Today's `fallback: "computer_act"` |
 | User holds control, or teaching is active | Today's blocks, unchanged |
 
