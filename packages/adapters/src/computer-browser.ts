@@ -244,6 +244,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
       url: typeof live.url === "string" ? live.url : request.url,
       title: typeof live.title === "string" ? live.title : "",
       target: live.target,
+      ...pinnedOf(live),
     };
   }
 

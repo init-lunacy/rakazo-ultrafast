@@ -237,6 +237,21 @@ describe("computer browser provider", () => {
     expect(await provider.closeTab(computer, { target: "T2" }, baseContext)).toEqual({ ok: true });
   });
 
+  it("keeps the computer's pin on a tab it opened", async () => {
+    const liveDriver = vi.fn(async () => ({
+      ok: true,
+      url: "https://example.test/",
+      title: "Live",
+      target: "T4",
+      pinned: "T2",
+    }));
+    const provider = new ComputerBrowserProvider({ liveDriver });
+    const computer: ComputerRef = { id: "c", botId: "b", kind: "docker", providerRef: "c" };
+    expect(
+      await provider.openTab(computer, { url: "https://example.test/" }, baseContext),
+    ).toMatchObject({ target: "T4", pinned: "T2" });
+  });
+
   it("reports an older computer image's missing tab commands as a fallback", async () => {
     const liveDriver = vi.fn(async () => ({
       ok: false,

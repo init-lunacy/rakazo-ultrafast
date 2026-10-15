@@ -865,6 +865,8 @@ export const BrowserTabSchema = z.object({
   /** Display name of the agent using the tab: the bot, or a helper's task label. */
   owner: z.string().max(80).optional(),
   purpose: z.string().max(120).optional(),
+  /** Opened by the run, which closes it when it ends; a resumed run reads this back. */
+  opened: z.boolean().optional(),
 });
 export const BrowserTabsSchema = z.object({
   tabs: z.array(BrowserTabSchema).max(64),

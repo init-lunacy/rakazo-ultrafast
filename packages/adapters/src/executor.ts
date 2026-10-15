@@ -43,6 +43,7 @@ import {
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
   BotSecretName,
+  BrowserTabsSchema,
   botSecretSubmissionSchema,
   CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE,
   COMPUTER_COMMAND_OUTPUT_MAX_CHARS,
@@ -3792,6 +3793,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
           },
         });
         runTabs = tabService;
+        // A resumed run starts a fresh registry: read back what it opened before the
+        // pause, so those tabs still close when it ends. One indexed read per run.
+        try {
+          const left = await deps.prisma.event.findFirst({
+            where: { runId, type: "computer.browser_tabs" },
+            orderBy: { seq: "desc" },
+            select: { payload: true },
+          });
+          const view = BrowserTabsSchema.safeParse(left?.payload);
+          if (view.success) tabService.restoreOpened(view.data);
+        } catch {
+          // Only cleanup depends on it; the run itself goes on.
+        }
         let currentTurnFiles: Awaited<ReturnType<typeof materializeCurrentTurnFiles>>;
         try {
           currentTurnFiles = deps.artifacts

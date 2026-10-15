@@ -238,3 +238,25 @@ it("refuses an open with credentials in the URL before the helper runs", async (
   expect(response.status).toBeGreaterThanOrEqual(400);
   expect(mock.exec).not.toHaveBeenCalled();
 });
+
+it("passes an older helper's unknown-command answer through, so callers know it has no tabs", async () => {
+  const answer = { ok: false, error: "unknown command: tabs", fallback: "computer_act" };
+  mock.exec.mockImplementation(async (options: { Cmd: string[] }) => {
+    const helper = options.Cmd.includes("/usr/local/bin/rakazo-page-browser");
+    return {
+      start: async () =>
+        Duplex.from({
+          readable: Readable.from([Buffer.from(helper ? JSON.stringify(answer) : "")]),
+          writable: new Writable({
+            write(_chunk, _encoding, callback) {
+              callback();
+            },
+          }),
+        }),
+      inspect: async () => ({ ExitCode: helper ? 2 : 0 }),
+    };
+  });
+  const response = await browser({ command: "tabs" });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ ok: false, error: "unknown command: tabs" });
+});

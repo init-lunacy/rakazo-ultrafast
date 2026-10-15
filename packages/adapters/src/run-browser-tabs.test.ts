@@ -3,7 +3,7 @@ import type { BrowserTabs } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { MAIN_AGENT, tabHandle } from "./browser-tab-registry.js";
 import { FakeBrowserProvider } from "./fake-browser.js";
-import { RunBrowserTabs, TABS_NEED_UPDATE } from "./run-browser-tabs.js";
+import { RunBrowserTabs, TABS_NEED_UPDATE, TABS_NOT_ANSWERING } from "./run-browser-tabs.js";
 
 const context: AdapterContext = {
   operationId: "1",
@@ -83,12 +83,17 @@ describe("run browser tabs", () => {
   });
 
   it("does not follow while an unaddressed command is in flight", async () => {
-    const { browser, tabs } = setup();
+    let clock = 0;
+    const { browser, tabs } = setup(undefined, () => clock);
     await tabs.support();
+    await helperTab(tabs);
+    await tabs.after(MAIN_AGENT, await tabs.open(MAIN_AGENT, "https://b.test/", undefined), "act");
+    clock += 10_000;
     const activate = vi.spyOn(browser, "activateTab");
     let release!: () => void;
     const unaddressed = tabs.within({}, () => new Promise<void>((done) => (release = done)));
-    await helperTab(tabs);
+    // Past the dwell this act would be followed, but an unaddressed command is in flight.
+    await tabs.after(MAIN_AGENT, { target: "fake-3", url: "https://b.test/", title: "B" }, "act");
     expect(activate).not.toHaveBeenCalled();
     release();
     await unaddressed;
@@ -287,6 +292,126 @@ describe("run browser tabs", () => {
     expect(await tabs.forAct("helper-1", { actions: [{ kind: "click", ref }] })).toEqual({
       target: "fake-2",
     });
+  });
+
+  it("lets no follow land after a desktop hold is taken", async () => {
+    let clock = 0;
+    const browser = new FakeBrowserProvider({ pages });
+    const { tabs } = setup(browser, () => clock);
+    await tabs.support();
+    await helperTab(tabs);
+    await tabs.after(MAIN_AGENT, await tabs.open(MAIN_AGENT, "https://b.test/", undefined), "act");
+    clock += 10_000;
+    // The main agent's act is followed: its tab is in front.
+    await tabs.after(MAIN_AGENT, { target: "fake-3", url: "https://b.test/", title: "B" }, "act");
+    clock += 10_000;
+    const activate = browser.activateTab.bind(browser);
+    let release!: () => void;
+    const slow = new Promise<void>((done) => (release = done));
+    const order: Array<string | null> = [];
+    vi.spyOn(browser, "activateTab").mockImplementation(async (c, request, ctx) => {
+      if (request.target === "fake-2") await slow;
+      order.push(request.target);
+      return activate(c, request, ctx);
+    });
+    // The helper's act starts a follow that is still in flight when the hold is taken.
+    const helperAct = tabs.after(
+      "helper-1",
+      { target: "fake-2", url: "https://a.test/", title: "A" },
+      "act",
+    );
+    const hold = tabs.forDesktop(MAIN_AGENT);
+    release();
+    await helperAct;
+    expect(await hold).toEqual({});
+    expect(order.at(-1)).toBe("fake-3");
+  });
+
+  it("gives the screen to one of two agents asking for it at once", async () => {
+    const { tabs } = setup();
+    await tabs.support();
+    tabs.labelHelper("helper-1", "Hotels");
+    await helperTab(tabs);
+    await tabs.after(MAIN_AGENT, await tabs.open(MAIN_AGENT, "https://b.test/", undefined), "act");
+    const answers = await Promise.all([tabs.forDesktop("helper-1"), tabs.forDesktop(MAIN_AGENT)]);
+    expect(answers.filter((answer) => !answer.error)).toHaveLength(1);
+  });
+
+  it("gives the screen back when its holder returns to page tools", async () => {
+    const { tabs } = setup();
+    await tabs.support();
+    tabs.labelHelper("helper-1", "Hotels");
+    await helperTab(tabs);
+    await tabs.after(MAIN_AGENT, await tabs.open(MAIN_AGENT, "https://b.test/", undefined), "act");
+    expect(await tabs.forDesktop(MAIN_AGENT)).toEqual({});
+    expect(await tabs.forDesktop("helper-1")).toMatchObject({ error: expect.any(String) });
+    await tabs.forNavigate(MAIN_AGENT, { url: "https://b.test/" });
+    expect(await tabs.forDesktop("helper-1")).toEqual({});
+  });
+
+  it("never sends a helper to the focused tab when the tab probe fails once", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    vi.spyOn(browser, "tabs").mockResolvedValueOnce({
+      tabs: [],
+      fallback: "computer_act",
+      error: "CDP not ready",
+    });
+    const { tabs } = setup(browser);
+    expect(await tabs.forNavigate("helper-1", { url: "https://a.test/" })).toEqual({
+      error: TABS_NOT_ANSWERING,
+    });
+    expect(await tabs.forNavigate("helper-1", { url: "https://a.test/" })).toEqual({ open: true });
+  });
+
+  it("treats an older supervisor's refusal of the tab probe as a definite no", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    const listed = vi.spyOn(browser, "tabs").mockResolvedValue({
+      tabs: [],
+      fallback: "computer_act",
+      error: "page browser failed: 500",
+    });
+    const { tabs } = setup(browser);
+    expect(await tabs.support()).toBe(false);
+    expect(await tabs.support()).toBe(false);
+    expect(listed).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for an unaddressed command to finish before opening a tab", async () => {
+    const { browser, tabs } = setup();
+    await tabs.support();
+    const openTab = vi.spyOn(browser, "openTab");
+    let release!: () => void;
+    const unaddressed = tabs.within({}, () => new Promise<void>((done) => (release = done)));
+    const opening = tabs.open("helper-1", "https://a.test/", undefined);
+    await new Promise((done) => setTimeout(done, 0));
+    // A new window takes focus while it opens: the unaddressed command must not see it.
+    expect(openTab).not.toHaveBeenCalled();
+    release();
+    await unaddressed;
+    await opening;
+    expect(openTab).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes tabs a paused run opened before it resumed", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    const before = setup(browser);
+    await before.tabs.support();
+    await helperTab(before.tabs);
+    await helperTab(before.tabs, "https://b.test/");
+    const left = before.published.at(-1)!;
+    expect(left.tabs.filter((tab) => tab.opened).map((tab) => tab.target)).toEqual([
+      "fake-2",
+      "fake-3",
+    ]);
+    // A fresh registry for the resumed run learns what the paused one opened.
+    const resumed = setup(browser).tabs;
+    resumed.restoreOpened(left);
+    await resumed.closeOpened(new AbortController().signal);
+    // The tab in front stays; the other one the run opened closes.
+    expect((await browser.tabs(computer, {}, context)).tabs.map((tab) => tab.target)).toEqual([
+      "fake-1",
+      "fake-2",
+    ]);
   });
 
   it("keeps desktop actions out of a tab the user pinned on screen", async () => {

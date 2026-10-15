@@ -538,6 +538,11 @@ app.post("/computers/:id/browser", async (c) => {
     );
     // A nonzero exit or malformed output cannot establish which mutations ran.
     const maxBytes = body.command === "screenshot" ? PAGE_CAPTURE_MAX_BYTES : 512 * 1024;
+    // An older helper answers a command it lacks with exit 2: say so, so callers stop asking.
+    const unknownCommand = result.code === 2 && /"unknown command: /.test(result.stdout);
+    if (unknownCommand && Buffer.byteLength(result.stdout) <= maxBytes) {
+      return c.json(JSON.parse(result.stdout));
+    }
     if (result.code !== 0 || Buffer.byteLength(result.stdout) > maxBytes) {
       throw new Error("Page browser unavailable or interrupted");
     }

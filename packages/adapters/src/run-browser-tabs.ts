@@ -16,6 +16,9 @@ import {
 import { normalizeText } from "./page-decision-chain.js";
 
 // Every refusal says what to do next, in the tools' own words.
+/** A probe failed without a definite answer: never guess the focused tab meanwhile. */
+export const TABS_NOT_ANSWERING =
+  "The page browser is not answering. Try again in a moment; if it keeps failing, use desktop tools.";
 export const TABS_NEED_UPDATE =
   "This computer's browser cannot address tabs. Leave out tab and newTab.";
 const TAB_CAP_REACHED = `This run has ${MAX_RUN_TABS} tabs open, the most it can. Navigate one of yours with tab; browser_tabs lists them.`;
@@ -28,7 +31,8 @@ const FRONT_IS_ANOTHERS =
 /** The computer's own wording when a target no longer exists. */
 const COMPUTER_CLOSED_TAB = "That tab is closed.";
 /** An image or supervisor that predates tabs answers this way; anything else may pass. */
-const NO_TAB_COMMANDS = /unknown command/i;
+const NO_TAB_COMMANDS =
+  /unknown command|page browser failed: (4\d\d|500)|not attached to this computer's Chrome/i;
 const MAX_PURPOSE_CHARS = 120;
 /** The strip's schema bounds (Task 5). */
 const MAX_VIEW_TABS = 64;
@@ -88,6 +92,10 @@ export class RunBrowserTabs {
   /** A helper has asked for a tab: the focused tab may now be someone else's. */
   private helpersBrowsing = false;
   private unaddressedCalls = 0;
+  /** Opens waiting for unaddressed calls to finish: a new window takes focus while it opens. */
+  private idle: Array<() => void> = [];
+  /** Every screen change goes through this one queue, so none lands out of order. */
+  private activations: Promise<unknown> = Promise.resolve();
   /** The agent whose desktop actions own the screen; nothing follows while one does. */
   private screenHolder?: string;
   private publishing: Promise<void> = Promise.resolve();
@@ -146,6 +154,7 @@ export class RunBrowserTabs {
 
   async forNavigate(agent: string, args: Record<string, unknown>): Promise<TabPlace> {
     if (agent !== MAIN_AGENT) this.helpersBrowsing = true;
+    this.releaseScreen(agent);
     const named = tabArg(args.tab);
     if (typeof named === "object") return named;
     const newTab = args.newTab === true;
@@ -159,8 +168,11 @@ export class RunBrowserTabs {
       if (last) return this.use(agent, last.handle);
       if (this.mainFastPath(agent)) return {};
     }
-    // A helper on a computer without tabs shares the focused tab, as before tabs existed.
-    if (!(await this.support())) return named || newTab ? { error: TABS_NEED_UPDATE } : {};
+    if (!(await this.support())) {
+      if (this.supported !== false) return { error: TABS_NOT_ANSWERING };
+      // A helper on a computer without tabs shares the focused tab, as before tabs existed.
+      return named || newTab ? { error: TABS_NEED_UPDATE } : {};
+    }
     if (named) return this.use(agent, named);
     // A new tab on request, a helper's first tab, or the main agent once tabs are in use.
     return this.registry.canOpen() ? { open: true } : { error: TAB_CAP_REACHED };
@@ -168,6 +180,7 @@ export class RunBrowserTabs {
 
   async forAct(agent: string, args: Record<string, unknown>): Promise<TabPlace> {
     if (agent !== MAIN_AGENT) this.helpersBrowsing = true;
+    this.releaseScreen(agent);
     // Refs come from one tab's snapshot, so they say where to act.
     const routed = this.registry.tabOfRefs(actionRefs(args.actions));
     if (routed === null) return { error: ONE_TAB_PER_ACT };
@@ -175,7 +188,8 @@ export class RunBrowserTabs {
     const last = this.registry.lastTabOf(agent);
     if (last) return this.use(agent, last.handle);
     if (this.mainFastPath(agent)) return {};
-    if (!(await this.support())) return {};
+    if (!(await this.support()))
+      return this.supported === false ? {} : { error: TABS_NOT_ANSWERING };
     // Never the focused tab once tabs are in use: it may be another agent's.
     return { error: agent === MAIN_AGENT ? SNAPSHOT_FIRST : OPEN_FIRST };
   }
@@ -194,8 +208,9 @@ export class RunBrowserTabs {
 
   /**
    * Desktop actions land on whatever tab is in front. Once a run has two tabs, the
-   * first agent to use them holds the screen until it finishes: its tab comes
-   * forward, follow stops, and other agents keep to page tools. A user's pin wins.
+   * first agent to use them holds the screen until it finishes or goes back to page
+   * tools: its tab comes forward, follow stops, and other agents keep to page tools.
+   * A user's pin wins.
    */
   async forDesktop(agent: string): Promise<{ error?: string }> {
     if (this.registry.list().length < 2) return {};
@@ -205,6 +220,16 @@ export class RunBrowserTabs {
         holder === MAIN_AGENT ? "the main agent" : `helper '${this.registry.labelOf(holder)}'`;
       return { error: `The screen is in use by ${who}. Use page tools in your own tab.` };
     }
+    // Taken before any await, so two agents asking at once cannot both win, and no
+    // follow decided from here on moves the screen.
+    this.screenHolder = agent;
+    const refused = await this.serialized(() => this.showForDesktop(agent));
+    if (refused && this.screenHolder === agent) this.screenHolder = undefined;
+    return refused ? { error: refused } : {};
+  }
+
+  /** Bring the agent's tab forward for its desktop actions; a refusal says why not. */
+  private async showForDesktop(agent: string): Promise<string | undefined> {
     const mine = this.registry.lastTabOf(agent);
     const { browser, computer, context } = this.deps;
     if (mine && browser.activateTab) {
@@ -215,18 +240,25 @@ export class RunBrowserTabs {
       if (shown && !shown.fallback && !shown.error) {
         this.registry.fronted(shown);
         if (shown.front !== mine.target && shown.pinned !== mine.target) {
-          return {
-            error: `The user pinned another tab on screen, so desktop actions would land in it. Use page tools in ${mine.handle}, or have the user choose Follow.`,
-          };
+          return `The user pinned another tab on screen, so desktop actions would land in it. Use page tools in ${mine.handle}, or have the user choose Follow.`;
         }
       }
-    } else {
-      // No tab of its own to bring forward: never click into another agent's.
-      const front = this.registry.front ? this.registry.byTarget(this.registry.front) : undefined;
-      if (front?.owner && front.owner !== agent) return { error: FRONT_IS_ANOTHERS };
+      return undefined;
     }
-    this.screenHolder = agent;
-    return {};
+    // No tab of its own to bring forward: never click into another agent's.
+    const front = this.registry.front ? this.registry.byTarget(this.registry.front) : undefined;
+    return front?.owner && front.owner !== agent ? FRONT_IS_ANOTHERS : undefined;
+  }
+
+  /** A holder going back to page tools gives the screen back to follow. */
+  private releaseScreen(agent: string): void {
+    if (this.screenHolder === agent) this.screenHolder = undefined;
+  }
+
+  private serialized<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.activations.then(run, run);
+    this.activations = next.catch(() => undefined);
+    return next;
   }
 
   async forRead(agent: string, args: Record<string, unknown>): Promise<TabPlace> {
@@ -256,7 +288,9 @@ export class RunBrowserTabs {
     try {
       return await call();
     } finally {
-      if (unaddressed) this.unaddressedCalls--;
+      if (unaddressed && --this.unaddressedCalls === 0) {
+        for (const done of this.idle.splice(0)) done();
+      }
     }
   }
 
@@ -272,6 +306,10 @@ export class RunBrowserTabs {
     }
     if (!this.registry.reserveOpen()) return { url, title: "", error: TAB_CAP_REACHED };
     try {
+      // A new window takes focus while it opens: an unaddressed call must not find it.
+      while (this.unaddressedCalls > 0) {
+        await new Promise<void>((done) => this.idle.push(done));
+      }
       const result = await browser.openTab(computer, { url, signal: context.signal }, context);
       if (result.target) {
         this.registry.adopt(
@@ -378,10 +416,13 @@ export class RunBrowserTabs {
     if (!(await this.refresh(signal))) return;
     // Leave the user looking at where the main agent finished; a pin still wins.
     const last = this.registry.lastTabOf(MAIN_AGENT);
-    if (last && browser.activateTab) {
-      const shown = await browser
-        .activateTab(computer, { target: last.target, signal }, { ...context, signal })
-        .catch(() => undefined);
+    const { activateTab } = browser;
+    if (last && activateTab) {
+      const shown = await this.serialized(() =>
+        activateTab
+          .call(browser, computer, { target: last.target, signal }, { ...context, signal })
+          .catch(() => undefined),
+      );
       if (shown && !shown.fallback && !shown.error) this.registry.fronted(shown);
     }
     for (const target of this.registry.closable()) {
@@ -391,6 +432,18 @@ export class RunBrowserTabs {
     }
     await this.refresh(signal);
     await this.publishIfChanged();
+  }
+
+  /**
+   * What a paused run's last published strip says it opened. A resumed run starts a
+   * fresh registry, and without this it would leave those tabs open for good.
+   */
+  restoreOpened(view: BrowserTabs): void {
+    for (const tab of view.tabs) {
+      if (tab.opened)
+        this.registry.note(tab.target, { title: tab.title, url: tab.url }).opened = true;
+    }
+    this.registry.front ??= view.front;
   }
 
   view(): BrowserTabs {
@@ -404,6 +457,7 @@ export class RunBrowserTabs {
           url: tab.url.slice(0, 2048),
           ...(tab.owner ? { owner: this.ownerLabel(tab.owner).slice(0, 80) } : {}),
           ...(tab.purpose ? { purpose: tab.purpose } : {}),
+          ...(tab.opened ? { opened: true } : {}),
         })),
       front: this.registry.front,
       pinned: this.registry.pinned,
@@ -429,16 +483,20 @@ export class RunBrowserTabs {
       return;
     }
     if (!this.registry.takeFollow(target)) return;
-    try {
-      const result = await browser.activateTab(
-        computer,
-        { target, signal: context.signal },
-        context,
-      );
-      if (!result.fallback && !result.error) this.registry.fronted(result);
-    } catch {
-      // Following is for the viewer; a miss changes nothing for the agent.
-    }
+    await this.serialized(async () => {
+      // A desktop hold taken while this follow waited wins.
+      if (this.screenHolder !== undefined || !browser.activateTab) return;
+      try {
+        const result = await browser.activateTab(
+          computer,
+          { target, signal: context.signal },
+          context,
+        );
+        if (!result.fallback && !result.error) this.registry.fronted(result);
+      } catch {
+        // Following is for the viewer; a miss changes nothing for the agent.
+      }
+    });
   }
 
   /**
