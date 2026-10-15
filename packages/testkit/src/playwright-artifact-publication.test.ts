@@ -104,6 +104,13 @@ describe("Playwright artifact publication boundary", () => {
     expect(workflow).not.toContain("working-directory:");
   });
 
+  // A fork without the gallery's storage would otherwise fail after every CI run.
+  it("publishes only where the gallery's storage is configured", () => {
+    expect(workflow).toMatch(
+      /jobs:\n {2}publish:\n {4}#.*\n {4}if: >-\n {6}vars\.S3_BUCKET != '' &&/,
+    );
+  });
+
   it.each([
     ["../escape.txt", 0o100644],
     ["nested/../../escape.txt", 0o100644],
