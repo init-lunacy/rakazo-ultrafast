@@ -26,8 +26,9 @@ Date: 2026-10-14
 >   - A tab probe that fails without a definite answer refuses with "The page
 >     browser is not answering…", instead of sending a helper to the focused tab.
 >   - An older computer is recognised from the supervisor's real answers: an older
->     helper's unknown command is passed through, and an older supervisor's refusal
->     counts as a definite no.
+>     helper's unknown command is passed through. A server error never counts as
+>     "no tabs", which would send helpers into the shared focused tab; such a
+>     computer keeps refusing with "not answering".
 >   - The strip marks tabs the run opened (`opened`). A resumed run reads them back,
 >     so they still close at the end.
 >   - The `runs(botId, createdAt)` index is built concurrently.

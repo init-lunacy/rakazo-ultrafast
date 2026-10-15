@@ -30,9 +30,11 @@ const FRONT_IS_ANOTHERS =
   "Another agent's tab is in front, so desktop actions would land in it. Open a tab with browser_navigate first.";
 /** The computer's own wording when a target no longer exists. */
 const COMPUTER_CLOSED_TAB = "That tab is closed.";
-/** An image or supervisor that predates tabs answers this way; anything else may pass. */
-const NO_TAB_COMMANDS =
-  /unknown command|page browser failed: (4\d\d|500)|not attached to this computer's Chrome/i;
+// Only a structural answer means "no tabs": an older helper's unknown command (the
+// supervisor passes it through) or a sandbox with no page browser. Anything else,
+// a server error included, may pass, and treating it as "no tabs" would send helpers
+// into the shared focused tab for the rest of the run.
+const NO_TAB_COMMANDS = /unknown command|not attached to this computer's Chrome/i;
 const MAX_PURPOSE_CHARS = 120;
 /** The strip's schema bounds (Task 5). */
 const MAX_VIEW_TABS = 64;

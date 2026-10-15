@@ -363,17 +363,20 @@ describe("run browser tabs", () => {
     expect(await tabs.forNavigate("helper-1", { url: "https://a.test/" })).toEqual({ open: true });
   });
 
-  it("treats an older supervisor's refusal of the tab probe as a definite no", async () => {
+  it("never takes a server error for a computer without tabs: helpers stay out of the focused tab", async () => {
     const browser = new FakeBrowserProvider({ pages });
-    const listed = vi.spyOn(browser, "tabs").mockResolvedValue({
+    vi.spyOn(browser, "tabs").mockResolvedValue({
       tabs: [],
       fallback: "computer_act",
       error: "page browser failed: 500",
     });
     const { tabs } = setup(browser);
-    expect(await tabs.support()).toBe(false);
-    expect(await tabs.support()).toBe(false);
-    expect(listed).toHaveBeenCalledTimes(1);
+    expect(await tabs.forNavigate("helper-1", { url: "https://a.test/" })).toEqual({
+      error: TABS_NOT_ANSWERING,
+    });
+    expect(await tabs.forNavigate("helper-1", { url: "https://a.test/" })).toEqual({
+      error: TABS_NOT_ANSWERING,
+    });
   });
 
   it("waits for an unaddressed command to finish before opening a tab", async () => {
