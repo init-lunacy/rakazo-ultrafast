@@ -8,7 +8,7 @@ import type {
   ThreadMessagePage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { RUN_TRIGGERS } from "@rakazo/contracts";
+import { BrowserTabsSchema, RUN_TRIGGERS } from "@rakazo/contracts";
 import {
   isActive,
   isBackgroundRunTrigger,
@@ -561,6 +561,10 @@ export function reduceComputerStatus(
   if (!prev) return prev;
   if (!isComputerStatusEvent(event)) return prev;
   if (event.botId !== prev.botId) return prev;
+  if (event.type === "computer.browser_tabs") {
+    const parsed = BrowserTabsSchema.safeParse(event.payload);
+    return parsed.success ? { ...prev, browserTabs: parsed.data } : prev;
+  }
   if (event.type === "computer.takeover.requested") {
     const retainedControl = event.payload.retainedControl === true;
     const next = {
@@ -621,6 +625,7 @@ export function reduceComputerStatus(
 export function isComputerStatusEvent(event: ProductEvent): boolean {
   return (
     event.type === "computer.status" ||
+    event.type === "computer.browser_tabs" ||
     event.type === "computer.takeover.requested" ||
     event.type === "computer.takeover.granted" ||
     event.type === "computer.takeover.released"

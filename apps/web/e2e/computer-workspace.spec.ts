@@ -215,3 +215,57 @@ test("the terminal shows the bot's shell commands and file actions live and afte
   await expect(page.getByTestId("computer-terminal")).toContainText("$ echo terminal-feed-ok");
   await expect(page.getByTestId("computer-terminal")).toContainText("Wrote feed-note.txt");
 });
+
+test("the computer shows the bot's browser tabs and pins one", async ({ page }, testInfo) => {
+  await signup(page, `tabs-${Date.now()}@rakazo.test`, "password12", "Tabs");
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  await rpc(page, "computer/boot", { botId });
+  const browserTabs = {
+    tabs: [
+      {
+        target: "T1",
+        title: "United",
+        url: "https://united.example/",
+        owner: "Tabs",
+        purpose: "flights",
+      },
+      {
+        target: "T2",
+        title: "Booking",
+        url: "https://booking.example/",
+        owner: "Hotels",
+        purpose: "hotels in Lisbon",
+      },
+      { target: "T3", title: "Reddit", url: "https://reddit.example/", owner: "Reviews" },
+    ],
+    front: "T2",
+    pinned: null as string | null,
+  };
+  for (const pattern of ["**/rpc/computer/status", "**/rpc/threads/get"]) {
+    await page.route(pattern, async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      const target = pattern.endsWith("status") ? body.json : body.json?.computer;
+      if (target) target.browserTabs = browserTabs;
+      await route.fulfill({ response, json: body });
+    });
+  }
+  await page.route("**/rpc/computer/showBrowserTab", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ json: { ok: true } }),
+    }),
+  );
+  await openComputer(page);
+  const strip = page.getByRole("navigation", { name: "Tabs" });
+  await expect(strip.getByRole("button", { name: /Hotels · hotels in Lisbon/ })).toHaveAttribute(
+    "aria-current",
+    "true",
+  );
+  await captureScreenshot(page, testInfo, "computer-browser-tabs");
+  // Listen before clicking, or the request can be missed.
+  const pinned = page.waitForRequest("**/rpc/computer/showBrowserTab");
+  await strip.getByRole("button", { name: /Reviews · Reddit/ }).click();
+  expect((await pinned).postDataJSON()).toMatchObject({ json: { target: "T3" } });
+});

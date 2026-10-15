@@ -2272,6 +2272,10 @@ msgstr "Завершение подключения MCP…"
 msgid "Flag unexpected actions"
 msgstr "Пометить неожиданные действия"
 
+#: src/components/computer/BrowserTabStrip.tsx
+msgid "Follow"
+msgstr "Следовать"
+
 #: src/pages/Auth.tsx
 msgid "Forgot password?"
 msgstr "Забыли пароль?"
@@ -4296,6 +4300,10 @@ msgstr "Переключение…"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "System"
 msgstr "Системная"
+
+#: src/components/computer/BrowserTabStrip.tsx
+msgid "Tabs"
+msgstr "Вкладки"
 
 #: src/pages/Shell.tsx
 msgid "Take control"

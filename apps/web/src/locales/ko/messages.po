@@ -2272,6 +2272,10 @@ msgstr "MCP 연결을 마무리하는 중…"
 msgid "Flag unexpected actions"
 msgstr "예상하지 못한 작업 표시"
 
+#: src/components/computer/BrowserTabStrip.tsx
+msgid "Follow"
+msgstr ""
+
 #: src/pages/Auth.tsx
 msgid "Forgot password?"
 msgstr "비밀번호를 잊으셨나요?"
@@ -4296,6 +4300,10 @@ msgstr "전환 중…"
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "System"
 msgstr "시스템"
+
+#: src/components/computer/BrowserTabStrip.tsx
+msgid "Tabs"
+msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Take control"
