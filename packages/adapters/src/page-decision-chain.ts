@@ -18,11 +18,16 @@ import { redactConnectorPayload } from "./connector-safety.js";
 const MAX_GOAL_CHARS = 400;
 const EMPTY: PageDecision = { candidates: [], goalMet: 0, stuck: 0, blocked: 0 };
 
-/** Unusable goal means no goal: the decider never runs. */
-export function normalizeGoal(value: unknown): string | undefined {
+/** A trimmed string cut to `max` characters, or undefined for anything unusable. */
+export function normalizeText(value: unknown, max: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
-  return trimmed ? trimmed.slice(0, MAX_GOAL_CHARS) : undefined;
+  return trimmed ? trimmed.slice(0, max) : undefined;
+}
+
+/** Unusable goal means no goal: the decider never runs. */
+export function normalizeGoal(value: unknown): string | undefined {
+  return normalizeText(value, MAX_GOAL_CHARS);
 }
 
 /** A page URL's origin, or "" when it has none. */
