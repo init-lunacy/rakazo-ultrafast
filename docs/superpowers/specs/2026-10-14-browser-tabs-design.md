@@ -1,7 +1,23 @@
 # Browser tabs: addressable tabs for the bot, its helpers, and the user
 
-Status: approved design, revised after review, not yet implemented
+Status: implemented on 2026-10-15 (branch `feat/browser-tabs`)
 Date: 2026-10-14
+
+> **Corrections from implementation.** Building this design settled or changed a few
+> of its statements, listed here so nothing changes silently:
+>
+> - **Agent tabs open as their own windows.** Measured in the computer image: a
+>   background tab is hidden, stops animating and cannot be captured, while a
+>   background window renders fully. A new window takes focus, though, so `open`
+>   puts the previously active window back. After an `open`, an unnamed command
+>   still reaches the tab the user was watching.
+> - **`browser_tabs` is answered before the page-tool dispatch,** and that dispatch
+>   now fails closed: only `browser_act` reaches the path that clicks. Between two
+>   commits on the branch, the approval-exempt `browser_tabs` fell into the act
+>   path. The finished branch has no such gap.
+> - **The mobile menu is its own component,** like the computer's maintenance menu.
+>   Its trigger is a glass surface around a plain view, because a pressable button
+>   inside `MenuView` would take the tap from the menu.
 
 > **Revisions after review.** A review against the code, for upstream fit and
 > over-engineering, changed the first draft. The changes, so nothing moves silently:
