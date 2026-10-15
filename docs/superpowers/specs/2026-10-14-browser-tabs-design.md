@@ -18,6 +18,19 @@ Date: 2026-10-14
 > - **The mobile menu is its own component,** like the computer's maintenance menu.
 >   Its trigger is a glass surface around a plain view, because a pressable button
 >   inside `MenuView` would take the tap from the menu.
+> - **Review fixes:**
+>   - One queue orders every screen change: follow, the desktop hold, and the end of
+>     the run. A desktop hold is taken before it waits, and it ends when its holder
+>     goes back to page tools as well as when it finishes.
+>   - Opening a tab waits for unaddressed commands to finish.
+>   - A tab probe that fails without a definite answer refuses with "The page
+>     browser is not answering…", instead of sending a helper to the focused tab.
+>   - An older computer is recognised from the supervisor's real answers: an older
+>     helper's unknown command is passed through, and an older supervisor's refusal
+>     counts as a definite no.
+>   - The strip marks tabs the run opened (`opened`). A resumed run reads them back,
+>     so they still close at the end.
+>   - The `runs(botId, createdAt)` index is built concurrently.
 
 > **Revisions after review.** A review against the code, for upstream fit and
 > over-engineering, changed the first draft. The changes, so nothing moves silently:
@@ -254,7 +267,7 @@ navigated, acted in or read. Reading another agent's tab does not change it.
 
 Desktop actions (`computer_act`) land in whichever tab is in front. With one tab
 nothing changes. Once a run has two tabs, the first agent to use them holds the
-screen until it finishes: its current tab comes forward, follow stops, and any
+screen until it finishes or goes back to page tools: its current tab comes forward, follow stops, and any
 other agent's desktop action is refused with "The screen is in use by <owner>. Use
 page tools in your own tab." When the user has pinned another tab, the refusal
 says so and suggests Follow. An agent with no tab of its own is refused while
