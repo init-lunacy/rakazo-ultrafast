@@ -21,8 +21,9 @@ Date: 2026-10-14
 >   and block every later helper.
 > - **The chat activity prefix is dropped.** Activity lines are built from the
 >   call's arguments before it runs, so they have no tab labels to show.
-> - **The strip loads from thread events, not a new listing RPC.** One RPC remains,
->   for pinning.
+> - **The strip loads with the computer status, not from a new listing RPC.** The
+>   status carries the latest run's tab list, so web and mobile need nothing new to
+>   load it. One RPC remains, for pinning.
 > - **Version skew is handled.** An old computer image or supervisor would silently
 >   ignore `tab` and act in the focused tab. The executor now probes for tab support
 >   once per run and refuses tab arguments when it is missing.
@@ -187,6 +188,10 @@ target ID).
 - **Every result echoes the `target`** it ran in.
 - **`navigate` and `act` also return `opened`:** page targets whose `openerId` is
   the acted target and that did not exist before the call.
+- **Actions run as a user gesture** (`userGesture: true` on the action's
+  evaluation). An agent's click is a deliberate click. Without the flag, Chromium's
+  popup blocker drops `target=_blank` links and `window.open`, so the tab a click
+  should open never appears.
 
 New commands:
 
@@ -307,13 +312,16 @@ needs one way back to following the agent. Everything else in the strip is data.
 
 ### State and updates
 
-- **The event.** The executor publishes `thread.browser_tabs`, carrying the tab list
+- **The event.** The executor publishes `computer.browser_tabs`, carrying the tab list
   keyed by target and the front target it last activated, after any call that:
   - opened or adopted a tab;
   - changed the front tab;
   - changed a tab's title or URL;
   - ran cleanup.
-- **Initial load.** The persisted event reducer keeps the latest list, so opening
+- **Initial load.** `ComputerStatus` gains an optional `browserTabs`. The API fills
+  it from the latest run's latest `computer.browser_tabs` event, only while the
+  computer is running. The web applies live events to the status the way it applies
+  the other `computer.*` events, and mobile already polls the status. So opening
   the overlay or reloading shows the strip with no listing RPC. A tab the user
   opened by hand appears after the agent's next call.
 - **Pinning RPC.** Pinning is one RPC, `computer.showBrowserTab({ botId, target })`,
@@ -324,7 +332,7 @@ needs one way back to following the agent. Everything else in the strip is data.
 
 `apps/mobile/app/computer.tsx` gets a native header menu, shown only with two or more
 tabs:
-- it lists `owner · label` from the same thread state, with a check on the front tab;
+- it lists `owner · label` from the polled computer status, with a check on the front tab;
 - choosing an item pins that tab;
 - a **Follow** item appears while pinned.
 
@@ -355,7 +363,7 @@ No tab error throws. Each returns a structured result the model can act on.
   the chain stops with a new `opened_tab` reason, next to `left_origin`, instead of
   following it.
 - **Redaction.** Tab titles and URLs pass through the run's secret redaction, both
-  in tool results and in `thread.browser_tabs`. The event is visible only to people
+  in tool results and in `computer.browser_tabs`. The event is visible only to people
   who can read the thread, which already shows URLs in activity lines.
 - **Approval.** `browser_tabs` is read-only. Cleanup's `close` is the executor's,
   not a model action.
