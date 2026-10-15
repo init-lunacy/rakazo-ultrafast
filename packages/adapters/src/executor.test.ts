@@ -27,7 +27,7 @@ import {
 } from "./executor.js";
 import { UnavailableModelForAuthError } from "./model-selection.js";
 import { RetiredModelCredentialError, serializeModelSecret } from "./pi-oauth.js";
-import { advanceToolCallLoopGuard } from "./tool-loop.js";
+import { advanceAgentLoopGuard, advanceToolCallLoopGuard } from "./tool-loop.js";
 
 describe("bot tool permissions", () => {
   it("never lets self-edit change disabled tools alongside an allowed field", () => {
@@ -3130,5 +3130,22 @@ describe("piToolAgent", () => {
       streak = next.streak;
       expect(next.stuck).toBe(false);
     }
+  });
+});
+
+describe("advanceAgentLoopGuard", () => {
+  it("catches one agent repeating itself even while another agent's calls come in between", () => {
+    const streaks = new Map();
+    let stuck = false;
+    for (let index = 0; index < 6 && !stuck; index++) {
+      advanceAgentLoopGuard(streaks, "helper-b", "browser_navigate", {
+        url: `https://b.test/${index}`,
+      });
+      stuck = advanceAgentLoopGuard(streaks, "helper-a", "browser_snapshot", {
+        tab: "t4k2z",
+      }).stuck;
+    }
+    expect(stuck).toBe(true);
+    expect(advanceAgentLoopGuard(streaks, "helper-b", "browser_tabs", {}).stuck).toBe(false);
   });
 });

@@ -36,6 +36,7 @@ import { connectionIdArgument, credentialArgument } from "./bot-secrets.js";
 import { MAX_RUN_TABS } from "./browser-tab-registry.js";
 import { DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
 import { withCloudflareGatewayAuth } from "./cloudflare-ai-gateway.js";
+import { redactUrlSecrets } from "./connector-safety.js";
 import { shortenToolResultText } from "./context-selection.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
 import { estimateModelContextTokens } from "./model-context.js";
@@ -889,7 +890,7 @@ export function describeToolActivity(toolName: string, args: unknown): string {
   if (toolName === "add_mcp_server") return `Connecting MCP server: ${detail(record.name)}`;
   if (toolName === "computer_observe") return "Looking at the screen";
   if (toolName === "browser_navigate")
-    return `Opening page: ${detail(redactActivityUrl(record.url))}`;
+    return `Opening page: ${detail(redactUrlSecrets(record.url))}`;
   if (toolName === "browser_snapshot" || toolName === "browser_tabs") return "Reading the page";
   if (toolName === "browser_act") return "Using the page";
   if (toolName === "computer_act") return "Operating the computer";
@@ -898,7 +899,7 @@ export function describeToolActivity(toolName: string, args: unknown): string {
   if (toolName === "remember") return "Saving a note to memory";
   if (toolName === "save_shared_memory") return `Saving shared memory: ${detail(record.path)}`;
   if (toolName === "web_search") return `Searching the web: ${detail(record.query)}`;
-  if (toolName === "web_fetch") return `Reading page: ${detail(redactActivityUrl(record.url))}`;
+  if (toolName === "web_fetch") return `Reading page: ${detail(redactUrlSecrets(record.url))}`;
   if (toolName === "skill_read") return `Reading skill: ${detail(record.name)}`;
   if (toolName === "skill_create") return `Creating skill: ${detail(record.name ?? "skill")}`;
   if (toolName === "skill_update")
@@ -2120,21 +2121,6 @@ function sanitizeSensitiveText(message: string) {
 }
 
 /** Origin + path only for activity chips; drop userinfo, query, and fragment. */
-function redactActivityUrl(value: unknown): string {
-  const raw = String(value ?? "").trim();
-  if (!raw) return raw;
-  try {
-    const url = new URL(raw);
-    url.username = "";
-    url.password = "";
-    url.search = "";
-    url.hash = "";
-    return url.toString();
-  } catch {
-    // Never echo unparsed input — it may still contain userinfo/secrets.
-    return "[invalid URL]";
-  }
-}
 
 function sanitizeError(message: string) {
   return sanitizeSensitiveText(message);

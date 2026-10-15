@@ -446,6 +446,52 @@ describe("run browser tabs", () => {
     void browser;
   });
 
+  it("holds an unaddressed command until a tab that is opening has opened", async () => {
+    const { browser, tabs } = setup();
+    await tabs.support();
+    const openTab = browser.openTab.bind(browser);
+    let release!: () => void;
+    const slow = new Promise<void>((done) => (release = done));
+    vi.spyOn(browser, "openTab").mockImplementation(async (c, request, ctx) => {
+      await slow;
+      return openTab(c, request, ctx);
+    });
+    const opening = tabs.open("helper-1", "https://a.test/", undefined);
+    await new Promise((done) => setTimeout(done, 0));
+    let ran = false;
+    const unaddressed = tabs.within({}, async () => {
+      ran = true;
+    });
+    await new Promise((done) => setTimeout(done, 0));
+    // The opening window has focus: an unaddressed command would find it.
+    expect(ran).toBe(false);
+    release();
+    await opening;
+    await unaddressed;
+    expect(ran).toBe(true);
+  });
+
+  it("says the browser is not answering, not that it lacks tabs, after a passing failure", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    vi.spyOn(browser, "tabs").mockResolvedValue({
+      tabs: [],
+      fallback: "computer_act",
+      error: "CDP not ready",
+    });
+    const { tabs } = setup(browser);
+    expect(await tabs.forRead(MAIN_AGENT, { tab: t1 })).toEqual({ error: TABS_NOT_ANSWERING });
+    expect(await tabs.list(MAIN_AGENT)).toEqual({ error: TABS_NOT_ANSWERING });
+  });
+
+  it("lists the tabs once for a run's first browser_tabs", async () => {
+    const { browser, tabs } = setup();
+    const listed = vi.spyOn(browser, "tabs");
+    await tabs.list(MAIN_AGENT);
+    expect(listed).toHaveBeenCalledTimes(1);
+    await tabs.list(MAIN_AGENT);
+    expect(listed).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps desktop actions out of a tab the user pinned on screen", async () => {
     const { browser, tabs } = setup();
     await tabs.support();

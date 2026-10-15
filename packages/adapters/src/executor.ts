@@ -380,7 +380,7 @@ import {
   listBoardTickets,
   updateTicket,
 } from "./ticket-tools.js";
-import { advanceToolCallLoopGuard, loopGuardStopText } from "./tool-loop.js";
+import { advanceAgentLoopGuard, loopGuardStopText } from "./tool-loop.js";
 import { textContentArg } from "./tool-text.js";
 import {
   botMessageOutcomeFromMidTurn,
@@ -4022,7 +4022,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let pendingProgress = "";
         let lastProgressAt = 0;
         let hasStreamedText = false;
-        let toolCallStreak: ToolCallStreak = { key: undefined, count: 0 };
+        const toolCallStreaks = new Map<string, ToolCallStreak>();
         let lastComputerFrameId: string | undefined;
         let unchangedVisualStreak: UnchangedVisualStreak = { count: 0 };
         let terminalCheckpointComplete = false;
@@ -6813,7 +6813,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (event.type === "text") {
               assembled += event.text;
               currentTextSegment += event.text;
-              toolCallStreak = { key: undefined, count: 0 };
+              toolCallStreaks.clear();
               tryFlushPendingTools();
               pendingProgress += progressRedactor.push(event.text);
               const now = Date.now();
@@ -6821,7 +6821,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 await flushProgress();
               }
             } else if (event.type === "progress") {
-              toolCallStreak = { key: undefined, count: 0 };
+              toolCallStreaks.clear();
               if (isBackgroundRunTrigger(run.trigger)) continue;
               // Flush batched text deltas first so an activity line cannot land
               // ahead of text the model streamed before the tool call.
@@ -6965,12 +6965,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
               });
               pendingToolNames.push(event.name);
               tryFlushPendingTools();
-              // Keyed per agent: parallel helpers making the same read are not one agent repeating itself.
-              const loopGuard = advanceToolCallLoopGuard(toolCallStreak, event.name, {
-                agent: piToolAgent(event.executionId),
-                args: event.args,
-              });
-              toolCallStreak = loopGuard.streak;
+              // One streak per agent: parallel helpers neither reset nor trip each other's.
+              const loopGuard = advanceAgentLoopGuard(
+                toolCallStreaks,
+                piToolAgent(event.executionId),
+                event.name,
+                event.args,
+              );
               if (loopGuard.stuck) {
                 approvedEffectReplays.assertDrained();
                 flushPendingTools();
@@ -6982,7 +6983,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 terminalCheckpointComplete = true;
                 const stuckText = loopGuardStopText(
                   humanizeToolName(event.name),
-                  toolCallStreak.count,
+                  loopGuard.streak.count,
                 );
                 const stopped = await deps.events.finalizeRun({
                   spaceId: run.spaceId,

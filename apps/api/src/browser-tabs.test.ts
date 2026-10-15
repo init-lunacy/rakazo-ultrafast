@@ -14,8 +14,18 @@ const tabs = {
 
 function prismaWith(payload: unknown) {
   return {
-    run: { findFirst: vi.fn().mockResolvedValue({ id: "run-1", threadId: "group-thread" }) },
-    event: { findFirst: vi.fn().mockResolvedValue(payload === undefined ? null : { payload }) },
+    run: {
+      findMany: vi.fn().mockResolvedValue([
+        // The newest run has not browsed: the strip still comes from the one that did.
+        { id: "run-2", threadId: "new-thread" },
+        { id: "run-1", threadId: "group-thread" },
+      ]),
+    },
+    event: {
+      findFirst: vi
+        .fn()
+        .mockResolvedValue(payload === undefined ? null : { payload, runId: "run-1" }),
+    },
   } as unknown as PrismaClient;
 }
 
@@ -33,8 +43,13 @@ describe("browser tabs for the computer view", () => {
   it("reads the latest run's tab list by bot, and ignores a malformed one", async () => {
     const prisma = prismaWith(tabs);
     expect(await latestBrowserTabs(prisma, "bot-1")).toEqual(tabs);
-    expect(prisma.run.findFirst).toHaveBeenCalledWith(
+    expect(prisma.run.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { botId: "bot-1" } }),
+    );
+    expect(prisma.event.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { runId: { in: ["run-2", "run-1"] }, type: "computer.browser_tabs" },
+      }),
     );
     expect(await latestBrowserTabs(prismaWith({ tabs: "nope" }), "bot-1")).toBeUndefined();
     expect(await latestBrowserTabs(prismaWith(undefined), "bot-1")).toBeUndefined();

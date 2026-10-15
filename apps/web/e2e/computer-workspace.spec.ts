@@ -259,13 +259,13 @@ test("the computer shows the bot's browser tabs and pins one", async ({ page }, 
   );
   await openComputer(page);
   const strip = page.getByRole("navigation", { name: "Tabs" });
-  await expect(strip.getByRole("button", { name: /Hotels · hotels in Lisbon/ })).toHaveAttribute(
-    "aria-current",
+  await expect(strip.getByRole("tab", { name: /Hotels · hotels in Lisbon/ })).toHaveAttribute(
+    "aria-selected",
     "true",
   );
   await captureScreenshot(page, testInfo, "computer-browser-tabs");
   // Listen before clicking, or the request can be missed.
   const pinned = page.waitForRequest("**/rpc/computer/showBrowserTab");
-  await strip.getByRole("button", { name: /Reviews · Reddit/ }).click();
+  await strip.getByRole("tab", { name: /Reviews · Reddit/ }).click();
   expect((await pinned).postDataJSON()).toMatchObject({ json: { target: "T3" } });
 });

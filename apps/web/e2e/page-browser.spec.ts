@@ -139,7 +139,9 @@ test("live page helper preserves identity, masks passwords, and reports partial 
     const back = await command("snapshot", { target: first });
     expect(back).toMatchObject({ ok: true, target: first, title: "Fixture" });
     // Another agent reading the tab leaves the refs its owner holds working.
-    await command("snapshot", { target: first });
+    const again = await command("snapshot", { target: first });
+    // Re-reading a page hands out the same ref for the same element.
+    expect(ref(again, "Agree")).toBe(ref(back, "Agree"));
     expect(
       await command("act", {
         target: first,

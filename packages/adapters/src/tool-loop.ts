@@ -31,3 +31,22 @@ export function advanceToolCallLoopGuard(
     stuck: next.count >= MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS,
   };
 }
+
+/**
+ * One streak per agent of a run. Helpers run in parallel, so one shared streak would
+ * be reset by every other agent's call, and a helper repeating itself would never trip.
+ */
+export function advanceAgentLoopGuard(
+  streaks: Map<string, ToolCallStreak>,
+  agent: string,
+  name: string,
+  args: unknown,
+): { streak: ToolCallStreak; stuck: boolean } {
+  const next = advanceToolCallLoopGuard(
+    streaks.get(agent) ?? { key: undefined, count: 0 },
+    name,
+    args,
+  );
+  streaks.set(agent, next.streak);
+  return next;
+}

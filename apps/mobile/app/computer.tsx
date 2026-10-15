@@ -135,7 +135,8 @@ export default function Computer() {
     if (!botId) return;
     // A pin switches the shared screen; a refused or failed one leaves it as it was.
     void rpc("computer/showBrowserTab", { botId, target })
-      .then(() => refresh())
+      // Status only: a fresh screen URL would reconnect the screen for nothing.
+      .then(() => refresh({ poll: true }))
       .catch(() => undefined);
   };
   const refreshAfterMaintenance = useCallback(async () => {

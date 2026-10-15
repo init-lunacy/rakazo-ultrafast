@@ -37,6 +37,8 @@ export class PageBrowserSession {
   /** Fields holding a saved login; snapshots never report their values. */
   private loginFilled = new WeakSet<DomElement>();
   private nextRef = 1;
+  /** One ref per element for the life of the page, as in the computer's helper. */
+  private refOf = new WeakMap<DomElement, string>();
   /** Refs start with this; a fake's later tabs set their own, so no two tabs share a ref. */
   refPrefix = "e";
 
@@ -206,7 +208,11 @@ export class PageBrowserSession {
     for (const node of nodes) {
       if (!(node instanceof win.Element)) continue;
       if (isIgnored(win, node)) continue;
-      const ref = `${this.refPrefix}${this.nextRef++}`;
+      let ref = this.refOf.get(node);
+      if (!ref) {
+        ref = `${this.refPrefix}${this.nextRef++}`;
+        this.refOf.set(node, ref);
+      }
       this.refs.set(ref, node);
       const role = roleFor(win, node);
       const name = nameFor(win, node);

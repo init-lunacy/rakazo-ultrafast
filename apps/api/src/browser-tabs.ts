@@ -6,23 +6,32 @@ import type { Prisma, ThreadEvents } from "@rakazo/db";
 /** A client or a transaction: the thread snapshot reads this inside its own. */
 type Db = Pick<Prisma.TransactionClient, "run" | "event">;
 
+/** Runs back to look for a tab list: a newer run that has not browsed must not hide it. */
+const RECENT_RUNS = 10;
+
 async function latestRunTabs(db: Db, botId: string) {
-  const run = await db.run.findFirst({
+  const runs = await db.run.findMany({
     where: { botId },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: RECENT_RUNS,
     select: { id: true, threadId: true },
   });
-  if (!run) return undefined;
+  if (runs.length === 0) return undefined;
+  // The tabs and the pin outlive the run that opened them: a new message's run has
+  // published nothing yet, and the strip, Follow included, must stay meanwhile.
   const event = await db.event.findFirst({
-    where: { runId: run.id, type: "computer.browser_tabs" },
-    orderBy: { seq: "desc" },
-    select: { payload: true },
+    where: { runId: { in: runs.map((run) => run.id) }, type: "computer.browser_tabs" },
+    orderBy: { createdAt: "desc" },
+    select: { payload: true, runId: true },
   });
+  const run = runs.find((candidate) => candidate.id === event?.runId);
   const parsed = BrowserTabsSchema.safeParse(event?.payload);
-  return parsed.success ? { runId: run.id, threadId: run.threadId, tabs: parsed.data } : undefined;
+  return run && parsed.success
+    ? { runId: run.id, threadId: run.threadId, tabs: parsed.data }
+    : undefined;
 }
 
-/** The tab strip as the bot's latest run left it, or nothing. */
+/** The tab strip as the bot's latest browsing run left it, or nothing. */
 export async function latestBrowserTabs(db: Db, botId: string): Promise<BrowserTabs | undefined> {
   return (await latestRunTabs(db, botId))?.tabs;
 }

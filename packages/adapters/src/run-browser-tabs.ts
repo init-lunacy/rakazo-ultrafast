@@ -13,6 +13,7 @@ import {
   MAIN_AGENT,
   MAX_RUN_TABS,
 } from "./browser-tab-registry.js";
+import { redactUrlSecrets } from "./connector-safety.js";
 import { normalizeText } from "./page-decision-chain.js";
 
 // Every refusal says what to do next, in the tools' own words.
@@ -68,23 +69,6 @@ function tabArg(value: unknown): string | undefined | { error: string } {
     : { error: "tab must be a tab handle such as t4k2z, from a result or browser_tabs." };
 }
 
-/**
- * A tab's address as the strip stores and shows it: no credentials, query or
- * fragment, which can carry login codes or tokens. Agents still see the full URL.
- */
-function publishedUrl(value: string): string {
-  try {
-    const url = new URL(value);
-    url.username = "";
-    url.password = "";
-    url.search = "";
-    url.hash = "";
-    return url.href;
-  } catch {
-    return "";
-  }
-}
-
 /** The refs a browser_act call names. */
 function actionRefs(actions: unknown): string[] {
   if (!Array.isArray(actions)) return [];
@@ -111,8 +95,10 @@ export class RunBrowserTabs {
   /** A helper has asked for a tab: the focused tab may now be someone else's. */
   private helpersBrowsing = false;
   private unaddressedCalls = 0;
-  /** Opens waiting for unaddressed calls to finish: a new window takes focus while it opens. */
-  private idle: Array<() => void> = [];
+  /** Tabs opening now. A new window takes focus while it opens, so an unaddressed call waits. */
+  private opening = 0;
+  /** Calls waiting for an open or an unaddressed call to finish; each re-checks when woken. */
+  private waiting: Array<() => void> = [];
   /** Every screen change goes through this one queue, so none lands out of order. */
   private activations: Promise<unknown> = Promise.resolve();
   /** The agent whose desktop actions own the screen; nothing follows while one does. */
@@ -269,6 +255,11 @@ export class RunBrowserTabs {
     return front?.owner && front.owner !== agent ? FRONT_IS_ANOTHERS : undefined;
   }
 
+  /** Why tab work cannot go ahead: a computer without tabs, or one not answering yet. */
+  private unsupported(): string {
+    return this.supported === false ? TABS_NEED_UPDATE : TABS_NOT_ANSWERING;
+  }
+
   /** A holder going back to page tools gives the screen back to follow. */
   private releaseScreen(agent: string): void {
     if (this.screenHolder === agent) this.screenHolder = undefined;
@@ -285,7 +276,7 @@ export class RunBrowserTabs {
     const named = tabArg(args.tab);
     if (typeof named === "object") return named;
     if (named) {
-      if (!(await this.support())) return { error: TABS_NEED_UPDATE };
+      if (!(await this.support())) return { error: this.unsupported() };
       const tab = this.registry.byHandle(named);
       return tab ? { target: tab.target } : { error: closedTabMessage(named) };
     }
@@ -303,14 +294,24 @@ export class RunBrowserTabs {
   /** Run a browser call for a place. While an unaddressed call is in flight, nothing follows. */
   async within<T>(place: TabPlace, call: () => Promise<T>): Promise<T> {
     const unaddressed = !("target" in place && place.target) && !("open" in place);
-    if (unaddressed) this.unaddressedCalls++;
+    if (!unaddressed) return call();
+    // A window still opening has focus: the focused-tab lookup would find it.
+    while (this.opening > 0) await this.changed();
+    this.unaddressedCalls++;
     try {
       return await call();
     } finally {
-      if (unaddressed && --this.unaddressedCalls === 0) {
-        for (const done of this.idle.splice(0)) done();
-      }
+      this.unaddressedCalls--;
+      this.wake();
     }
+  }
+
+  private changed(): Promise<void> {
+    return new Promise((done) => this.waiting.push(done));
+  }
+
+  private wake(): void {
+    for (const done of this.waiting.splice(0)) done();
   }
 
   /** Open a background tab for an agent, holding a place under the cap while it opens. */
@@ -326,10 +327,14 @@ export class RunBrowserTabs {
     if (!this.registry.reserveOpen()) return { url, title: "", error: TAB_CAP_REACHED };
     try {
       // A new window takes focus while it opens: an unaddressed call must not find it.
-      while (this.unaddressedCalls > 0) {
-        await new Promise<void>((done) => this.idle.push(done));
-      }
-      const result = await browser.openTab(computer, { url, signal: context.signal }, context);
+      while (this.unaddressedCalls > 0) await this.changed();
+      this.opening++;
+      const result = await browser
+        .openTab(computer, { url, signal: context.signal }, context)
+        .finally(() => {
+          this.opening--;
+          this.wake();
+        });
       if (result.target) {
         this.registry.adopt(
           agent,
@@ -395,8 +400,10 @@ export class RunBrowserTabs {
   }
 
   async list(agent: string) {
-    if (!(await this.support())) return { error: TABS_NEED_UPDATE };
-    await this.refresh(this.deps.context.signal);
+    // A first call's probe is itself a fresh listing: no need to list twice.
+    const probed = this.supported === undefined;
+    if (!(await this.support())) return { error: this.unsupported() };
+    if (!probed) await this.refresh(this.deps.context.signal);
     await this.publishIfChanged();
     const current = this.registry.lastTabOf(agent)?.target;
     return {
@@ -473,7 +480,8 @@ export class RunBrowserTabs {
         .map((tab) => ({
           target: tab.target,
           title: tab.title.slice(0, 200),
-          url: publishedUrl(tab.url).slice(0, 2048),
+          // The strip is stored and shown to everyone who can see the bot: no tokens in it.
+          url: redactUrlSecrets(tab.url).slice(0, 2048),
           ...(tab.owner ? { owner: this.ownerLabel(tab.owner).slice(0, 80) } : {}),
           ...(tab.purpose ? { purpose: tab.purpose } : {}),
           ...(tab.opened ? { opened: true } : {}),

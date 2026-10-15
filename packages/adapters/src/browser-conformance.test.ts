@@ -192,6 +192,14 @@ describe("browser provider conformance", () => {
     });
   });
 
+  it("hands out the same ref for the same element on every read", async () => {
+    const provider = new FakeBrowserProvider({ pages: seededPages });
+    await provider.navigate(computer, { url: "https://example.test/form" }, context);
+    const first = await provider.snapshot(computer, {}, context);
+    const second = await provider.snapshot(computer, {}, context);
+    expect(second.elements.map((el) => el.ref)).toEqual(first.elements.map((el) => el.ref));
+  });
+
   it("never hands two tabs the same ref, and a second read keeps the first read's refs", async () => {
     const provider = new FakeBrowserProvider({ pages: seededPages });
     await provider.navigate(computer, { url: "https://example.test/form" }, context);

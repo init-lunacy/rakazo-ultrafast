@@ -444,6 +444,8 @@ EVAL_HELPERS = r"""
 (() => {
   if (window.__rakazoPageBrowser) return true;
   const refMap = new Map();
+  // One ref per element for the life of the page: re-reading a page hands out the same refs.
+  const refOf = new WeakMap();
   // Fields holding a saved login: snapshots never report their values, whatever their type.
   const loginFilled = new WeakSet();
   // New snapshots/documents never recycle references. Retain exact nodes, not selectors.
@@ -526,7 +528,11 @@ EVAL_HELPERS = r"""
       const elements = [];
       for (const el of document.querySelectorAll("body *")) {
         if (!isInteractive(el) || !visible(el)) continue;
-        const ref = newRef();
+        let ref = refOf.get(el);
+        if (!ref) {
+          ref = newRef();
+          refOf.set(el, ref);
+        }
         refMap.set(ref, el);
         elements.push({
           ref,

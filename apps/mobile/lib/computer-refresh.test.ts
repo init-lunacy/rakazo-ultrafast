@@ -101,6 +101,15 @@ describe("computer refresh lifecycle", () => {
     fixture.controller.dispose();
   });
 
+  it("reads only the status on a status refresh, so the screen does not reconnect", async () => {
+    const fixture = setup();
+    fixture.controller.start();
+    await vi.waitFor(() => expect(fixture.readScreen).toHaveBeenCalledTimes(1));
+    await fixture.controller.refresh({ poll: true });
+    expect(fixture.readStatus).toHaveBeenCalledTimes(2);
+    expect(fixture.readScreen).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the URL on screen failures, clears it on null, and recovers from status failures", async () => {
     vi.useFakeTimers();
     const fixture = setup();

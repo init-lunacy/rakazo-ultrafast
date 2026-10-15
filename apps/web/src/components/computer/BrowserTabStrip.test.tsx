@@ -41,9 +41,9 @@ it("stays hidden until there is more than one tab", () => {
 
 it("labels each tab by owner and purpose, marks the front one, and pins on click", () => {
   const { onShow } = render(two);
-  const buttons = [...container.querySelectorAll("button")];
+  const buttons = [...container.querySelectorAll('[role="tab"]')] as HTMLElement[];
   expect(buttons.map((button) => button.textContent)).toEqual(["Ada · Flights", "Hotels · hotels"]);
-  expect(buttons[0]?.getAttribute("aria-current")).toBe("true");
+  expect(buttons[0]?.getAttribute("aria-selected")).toBe("true");
   expect(buttons[1]?.getAttribute("title")).toBe("https://b.test/");
   act(() => buttons[1]?.click());
   expect(onShow).toHaveBeenCalledWith("T2");
@@ -54,7 +54,7 @@ it("offers Follow only while pinned, which unpins", () => {
   const { onShow } = render({ ...two, pinned: "T2" });
   const follow = [...container.querySelectorAll("button")].find((b) => b.textContent === "Follow");
   expect(follow).toBeTruthy();
-  expect(container.querySelector('[aria-current="true"]')?.textContent).toBe("Hotels · hotels");
+  expect(container.querySelector('[aria-selected="true"]')?.textContent).toBe("Hotels · hotels");
   act(() => follow?.click());
   expect(onShow).toHaveBeenCalledWith(null);
 });
@@ -63,4 +63,11 @@ it("does not animate the indicator when reduced motion is requested", () => {
   render(two);
   const indicator = container.querySelector("[data-tab-indicator]");
   expect(indicator?.className).toContain("motion-reduce:transition-none");
+});
+
+it("pins the tab already in front when it is clicked", () => {
+  const { onShow } = render(two);
+  const front = container.querySelector('[role="tab"][aria-selected="true"]') as HTMLElement;
+  act(() => front.click());
+  expect(onShow).toHaveBeenCalledWith("T1");
 });
