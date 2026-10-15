@@ -3984,6 +3984,10 @@ msgstr "Gönder"
 msgid "Send reset link"
 msgstr "Sıfırlama bağlantısı gönder"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Send with Enter"
+msgstr "Enter ile gönder"
+
 #: src/components/AskCard.tsx
 msgid "Sending…"
 msgstr "Gönderiliyor…"

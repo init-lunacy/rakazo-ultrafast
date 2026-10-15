@@ -260,3 +260,46 @@ it("passes an older helper's unknown-command answer through, so callers know it 
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({ ok: false, error: "unknown command: tabs" });
 });
+
+it.each([
+  [{ command: "snapshot" }, "Retry once"],
+  [{ command: "act", actions: [{ kind: "click", ref: "e1" }] }, "Inspect the screen"],
+])("reports a helper that exceeds its deadline as a timeout: %j", async (body, advice) => {
+  const defaultExec = mock.exec.getMockImplementation()!;
+  mock.exec.mockImplementation(async (options: { Cmd: string[] }) => {
+    if (options.Cmd.includes("/usr/local/bin/rakazo-page-browser")) {
+      return {
+        start: async () =>
+          Duplex.from({ readable: Readable.from([]), writable: new PassThrough() }),
+        inspect: async () => ({ ExitCode: 124 }),
+      };
+    }
+    if (options.Cmd[0] === "sh") {
+      return {
+        start: async () => Readable.from([]),
+        inspect: async () => ({ ExitCode: 1 }),
+      };
+    }
+    return defaultExec(options);
+  });
+  const response = await supervisorApp.request("/computers/computer-timeout/browser", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+      "content-type": "application/json",
+      "x-rakazo-bot-id": "home",
+      "x-rakazo-space-id": "space",
+      "x-rakazo-screen-id": "first",
+      "x-rakazo-screen-lease-id": "run:1",
+    },
+    body: JSON.stringify(body),
+  });
+  const result = (await response.json()) as { error: string; uncertain: boolean };
+  expect(result).toMatchObject({
+    ok: false,
+    fallback: "computer_act",
+    error: expect.stringContaining("timed out"),
+  });
+  expect(result.error).toContain(advice);
+  expect(result.uncertain).toBe(body.command === "act");
+});

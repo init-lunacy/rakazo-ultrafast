@@ -3984,6 +3984,10 @@ msgstr "Отправить"
 msgid "Send reset link"
 msgstr "Отправить ссылку для сброса"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Send with Enter"
+msgstr "Отправлять по Enter"
+
 #: src/components/AskCard.tsx
 msgid "Sending…"
 msgstr "Отправка…"
