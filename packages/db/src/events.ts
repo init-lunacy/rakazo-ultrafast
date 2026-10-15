@@ -40,7 +40,7 @@ export interface AppendEventInput {
   type: ProductEvent["type"];
   payload: Record<string, unknown>;
   runId?: string;
-  /** Terminal echo after the run is already cancelled. Every other event stays rejected. */
+  /** Allows writing to a run already cancelled: its terminal echo, and the computer state it left (browser tabs). Every other event stays rejected. */
   allowCancelledRun?: boolean;
 }
 

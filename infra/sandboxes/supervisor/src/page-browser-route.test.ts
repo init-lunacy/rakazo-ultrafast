@@ -216,3 +216,47 @@ it("sends a saved-login fill only over stdin, never in the helper's arguments", 
   expect(helperCall[0].Env).toContain("RAKAZO_BROWSER_ARGS_STDIN=1");
   expect(mock.stdin.join("")).toBe(`${JSON.stringify({ command: "act", actions })}\n`);
 });
+
+it("forwards tab commands and an addressed snapshot to the helper", async () => {
+  for (const body of [
+    { command: "snapshot", target: "T1" },
+    { command: "tabs" },
+    { command: "open", url: "https://example.test/" },
+    { command: "activate", target: "T1", pin: true },
+    { command: "activate", target: null, pin: false },
+    { command: "close", target: "T1" },
+  ]) {
+    mock.stdin.length = 0;
+    expect((await browser(body)).status).toBe(200);
+    expect(mock.stdin.join("")).toBe(`${JSON.stringify(body)}\n`);
+  }
+});
+
+it("refuses an open with credentials in the URL before the helper runs", async () => {
+  mock.exec.mockClear();
+  const response = await browser({ command: "open", url: "https://user:fake@example.test/" });
+  expect(response.status).toBeGreaterThanOrEqual(400);
+  expect(mock.exec).not.toHaveBeenCalled();
+});
+
+it("passes an older helper's unknown-command answer through, so callers know it has no tabs", async () => {
+  const answer = { ok: false, error: "unknown command: tabs", fallback: "computer_act" };
+  mock.exec.mockImplementation(async (options: { Cmd: string[] }) => {
+    const helper = options.Cmd.includes("/usr/local/bin/rakazo-page-browser");
+    return {
+      start: async () =>
+        Duplex.from({
+          readable: Readable.from([Buffer.from(helper ? JSON.stringify(answer) : "")]),
+          writable: new Writable({
+            write(_chunk, _encoding, callback) {
+              callback();
+            },
+          }),
+        }),
+      inspect: async () => ({ ExitCode: helper ? 2 : 0 }),
+    };
+  });
+  const response = await browser({ command: "tabs" });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ ok: false, error: "unknown command: tabs" });
+});

@@ -12,6 +12,8 @@ import type { LoginField } from "./bot-secrets.js";
 import { redactConnectorPayload } from "./connector-safety.js";
 import type { PageDecisionChainResult } from "./page-decision-chain.js";
 import { normalizeGoal, readPage, runPageDecisionChain } from "./page-decision-chain.js";
+import type { RunBrowserTabs } from "./run-browser-tabs.js";
+import { normalizePurpose } from "./run-browser-tabs.js";
 
 const MAX_BROWSER_ACTIONS = 24;
 
@@ -27,12 +29,32 @@ export type ResolveSecretFill = (
   step: SecretFillStep,
 ) => Promise<{ text: string; origin: string } | { error: string }>;
 
+/** The run's tabs and the agent making this call. */
+export type ToolTabs = { run: RunBrowserTabs; agent: string };
+
+/** A model-facing result: the tab it ran in by handle, never the computer's own ids or pin. */
+function placed<T extends { target?: string; opened?: string[]; pinned?: string | null }>(
+  result: T,
+  place?: { tab?: string; opened: string[] },
+) {
+  const { target: _target, opened: _opened, pinned: _pinned, ...rest } = result;
+  return {
+    ...rest,
+    ...(place?.tab ? { tab: place.tab } : {}),
+    ...(place?.opened.length ? { opened: place.opened } : {}),
+  };
+}
+
+export async function browserTabsFromTool(run: RunBrowserTabs, agent: string) {
+  return run.list(agent);
+}
+
 export async function browserNavigateFromTool(
   browser: BrowserProvider,
   computer: ComputerRef,
   context: AdapterContext,
   args: Record<string, unknown>,
-  options: { decider?: PageDecider; redactions?: () => string[] } = {},
+  options: { decider?: PageDecider; redactions?: () => string[]; tabs?: ToolTabs } = {},
 ) {
   const url = String(args.url ?? "").trim();
   try {
@@ -43,9 +65,38 @@ export async function browserNavigateFromTool(
         fallback: "computer_act" as const,
       };
     }
-    const result = await browser.navigate(computer, { url, signal: context.signal }, context);
-    const chain = await chainForGoal(browser, computer, context, args, options, result);
-    return chain ? withChain(result, chain) : formatBrowserResult(result);
+    const where = options.tabs ? await options.tabs.run.forNavigate(options.tabs.agent, args) : {};
+    if ("error" in where) return { error: where.error };
+    const purpose = normalizePurpose(args.purpose);
+    const requested = "target" in where ? where.target : undefined;
+    const navigate = () =>
+      browser.navigate(computer, { url, target: requested, signal: context.signal }, context);
+    const result =
+      "open" in where && options.tabs
+        ? await options.tabs.run.open(options.tabs.agent, url, purpose)
+        : options.tabs
+          ? await options.tabs.run.within(where, navigate)
+          : await navigate();
+    // A failure reply names no tab; the requested one is where it failed (a closed tab, say).
+    const place = options.tabs
+      ? await options.tabs.run.after(
+          options.tabs.agent,
+          { ...result, target: result.target ?? requested },
+          "act",
+          purpose,
+        )
+      : undefined;
+    if (place?.error) return { error: place.error };
+    const chain = await chainForGoal(browser, computer, context, args, options, {
+      ...result,
+      target: result.target ?? requested,
+    });
+    const chainOpened =
+      chain?.opened && result.target && options.tabs
+        ? await options.tabs.run.adoptOpened(result.target, chain.opened)
+        : [];
+    const shaped = chain ? withChain(result, chain) : formatBrowserResult(result);
+    return placed(shaped, place && { ...place, opened: [...place.opened, ...chainOpened] });
   } catch (error) {
     context.signal.throwIfAborted();
     return {
@@ -60,11 +111,25 @@ export async function browserSnapshotFromTool(
   computer: ComputerRef,
   context: AdapterContext,
   args: Record<string, unknown>,
+  options: { tabs?: ToolTabs } = {},
 ) {
-  void args;
   try {
-    const result = await browser.snapshot(computer, { signal: context.signal }, context);
-    return formatBrowserResult(result);
+    const where = options.tabs ? await options.tabs.run.forRead(options.tabs.agent, args) : {};
+    if ("error" in where) return { error: where.error };
+    const requested = "target" in where ? where.target : undefined;
+    const read = () =>
+      browser.snapshot(computer, { target: requested, signal: context.signal }, context);
+    const result = options.tabs ? await options.tabs.run.within(where, read) : await read();
+    const place = options.tabs
+      ? await options.tabs.run.after(
+          options.tabs.agent,
+          { ...result, target: result.target ?? requested },
+          "read",
+        )
+      : undefined;
+    if (place?.error) return { error: place.error };
+    options.tabs?.run.remember(result.target ?? requested, result);
+    return placed(formatBrowserResult(result), place);
   } catch (error) {
     context.signal.throwIfAborted();
     return {
@@ -83,9 +148,13 @@ export async function browserActFromTool(
     resolveSecretFill?: ResolveSecretFill;
     redactions?: () => string[];
     decider?: PageDecider;
+    tabs?: ToolTabs;
   } = {},
 ) {
   try {
+    const where = options.tabs ? await options.tabs.run.forAct(options.tabs.agent, args) : {};
+    if ("error" in where) return { ok: false, completed: 0, error: where.error };
+    const requested = "target" in where ? where.target : undefined;
     const actions: BrowserActStep[] = [];
     // Resolve every saved login before acting, so a missing one cannot leave a half-filled form.
     for (const step of parseBrowserActions(args.actions)) {
@@ -99,14 +168,39 @@ export async function browserActFromTool(
       if ("error" in resolved) return { ok: false, completed: 0, error: resolved.error };
       actions.push({ kind: "fill", ref: step.ref, text: resolved.text, origin: resolved.origin });
     }
-    const result = await browser.act(computer, { actions, signal: context.signal }, context);
-    const chain = await chainForGoal(browser, computer, context, args, options, result);
+    const act = () =>
+      browser.act(computer, { actions, target: requested, signal: context.signal }, context);
+    // While an unaddressed call is in flight, nothing brings another tab forward under it.
+    const result = options.tabs ? await options.tabs.run.within(where, act) : await act();
+    const place = options.tabs
+      ? await options.tabs.run.after(
+          options.tabs.agent,
+          { ...result, target: result.target ?? requested },
+          "act",
+        )
+      : undefined;
+    if (place?.error) return { ok: false, completed: 0, error: place.error };
+    const chain = await chainForGoal(browser, computer, context, args, options, {
+      ...result,
+      target: result.target ?? requested,
+    });
     // Reading the page for the decider renumbered every ref, and a click left the
     // page, so the act's own tree is stale once a chain ran. A default snapshot is
     // exactly what the model would see from browser_snapshot.
-    const view = chain ? await readPage(browser, computer, context, false) : undefined;
+    const view = chain
+      ? await readPage(browser, computer, context, false, result.target ?? requested)
+      : undefined;
+    // The model acts next with these refs: the act's fresh tree, or the chain's view.
+    options.tabs?.run.remember(result.target ?? requested, view ?? result);
+    const chainOpened =
+      chain?.opened && result.target && options.tabs
+        ? await options.tabs.run.adoptOpened(result.target, chain.opened)
+        : [];
     return redactConnectorPayload(
-      chain ? withChain(result, chain, view) : formatBrowserResult(result),
+      placed(
+        chain ? withChain(result, chain, view) : formatBrowserResult(result),
+        place && { ...place, opened: [...place.opened, ...chainOpened] },
+      ),
       options.redactions?.() ?? [],
     );
   } catch (error) {
@@ -131,12 +225,18 @@ async function chainForGoal(
   context: AdapterContext,
   args: Record<string, unknown>,
   { decider, redactions }: { decider?: PageDecider; redactions?: () => string[] },
-  step: { ok?: boolean; uncertain?: boolean; fallback?: "computer_act"; error?: string },
+  step: {
+    ok?: boolean;
+    uncertain?: boolean;
+    fallback?: "computer_act";
+    error?: string;
+    target?: string;
+  },
 ): Promise<PageDecisionChainResult | undefined> {
   const goal = normalizeGoal(args.goal);
   if (!goal || !decider) return undefined;
   if (step.ok === false || step.uncertain || step.fallback || step.error) return undefined;
-  const snapshot = await readPage(browser, computer, context, true);
+  const snapshot = await readPage(browser, computer, context, true, step.target);
   if (!snapshot) return undefined;
   return await runPageDecisionChain({
     browser,
@@ -146,6 +246,7 @@ async function chainForGoal(
     goal,
     snapshot,
     redactions,
+    target: step.target,
   });
 }
 

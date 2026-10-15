@@ -14,6 +14,7 @@ import {
   computerPanelAutoUsesBoot,
   computerPanelNeedsMaintenance,
   computerTakeoverBlocked,
+  isComputerStatusEvent,
   isThreadSnapshotEvent,
   mergeThreadSnapshot,
   prependThreadMessagePage,
@@ -1491,6 +1492,30 @@ describe("thread event reduction", () => {
 });
 
 describe("computer event reduction", () => {
+  it("applies a bot's browser tabs to its computer status", () => {
+    const status = computer();
+    const tabs = {
+      tabs: [
+        { target: "T1", title: "A", url: "https://a.test/" },
+        { target: "T2", title: "B", url: "https://b.test/" },
+      ],
+      front: "T2",
+      pinned: null,
+    };
+    const event = {
+      type: "computer.browser_tabs",
+      botId: status.botId,
+      payload: tabs,
+      seq: 9,
+    } as unknown as ProductEvent;
+    expect(isComputerStatusEvent(event)).toBe(true);
+    expect(reduceComputerStatus(status, event)?.browserTabs).toEqual(tabs);
+    expect(
+      reduceComputerStatus(status, { ...event, payload: { tabs: "bad" } } as ProductEvent),
+    ).toBe(status);
+    expect(reduceComputerStatus(status, { ...event, botId: "other" } as ProductEvent)).toBe(status);
+  });
+
   it("applies valid lifecycle states without accepting unknown states", () => {
     const initial = computer();
     const running = reduceComputerStatus(

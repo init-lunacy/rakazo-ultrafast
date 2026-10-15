@@ -18,11 +18,16 @@ import { redactConnectorPayload } from "./connector-safety.js";
 const MAX_GOAL_CHARS = 400;
 const EMPTY: PageDecision = { candidates: [], goalMet: 0, stuck: 0, blocked: 0 };
 
-/** Unusable goal means no goal: the decider never runs. */
-export function normalizeGoal(value: unknown): string | undefined {
+/** A trimmed string cut to `max` characters, or undefined for anything unusable. */
+export function normalizeText(value: unknown, max: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
-  return trimmed ? trimmed.slice(0, MAX_GOAL_CHARS) : undefined;
+  return trimmed ? trimmed.slice(0, max) : undefined;
+}
+
+/** Unusable goal means no goal: the decider never runs. */
+export function normalizeGoal(value: unknown): string | undefined {
+  return normalizeText(value, MAX_GOAL_CHARS);
 }
 
 /** A page URL's origin, or "" when it has none. */
@@ -46,6 +51,8 @@ export interface PageDecisionChainResult {
   uncertain?: boolean;
   /** The last extended snapshot. Never handed to the model as-is: it carries rects. */
   snapshot: BrowserSnapshotResult;
+  /** Tabs a chain click opened (computer target ids). */
+  opened?: string[];
 }
 
 /** What a stop may record: scores and origin, never page content. */
@@ -122,10 +129,11 @@ async function capture(
   browser: BrowserProvider,
   computer: ComputerRef,
   context: AdapterContext,
+  target?: string,
 ): Promise<PageDecisionRequest["screenshot"]> {
   if (!browser.screenshot) return undefined;
   try {
-    const shot = await browser.screenshot(computer, { signal: context.signal }, context);
+    const shot = await browser.screenshot(computer, { target, signal: context.signal }, context);
     return shot.fallback || !shot.data
       ? undefined
       : { data: shot.data, mimeType: "image/png", scale: shot.scale };
@@ -143,11 +151,12 @@ export async function readPage(
   computer: ComputerRef,
   context: AdapterContext,
   extended: boolean,
+  target?: string,
 ): Promise<BrowserSnapshotResult | undefined> {
   try {
     const snapshot = await browser.snapshot(
       computer,
-      { extended, signal: context.signal },
+      { extended, target, signal: context.signal },
       context,
     );
     return snapshot.fallback || snapshot.error ? undefined : snapshot;
@@ -172,6 +181,8 @@ export async function runPageDecisionChain(input: {
   snapshot: BrowserSnapshotResult;
   /** The run's secrets, scrubbed from everything the decider is shown. */
   redactions?: () => string[];
+  /** The tab the chain runs in; it never acts elsewhere. */
+  target?: string;
   now?: () => number;
 }): Promise<PageDecisionChainResult> {
   const { browser, decider, computer, context, goal } = input;
@@ -198,7 +209,7 @@ export async function runPageDecisionChain(input: {
           goal,
           ...pageForDecider(snapshot, input.redactions?.() ?? []),
           history: attempts,
-          screenshot: sees ? await capture(browser, computer, context) : undefined,
+          screenshot: sees ? await capture(browser, computer, context, input.target) : undefined,
           signal: context.signal,
         },
         context,
@@ -253,7 +264,11 @@ export async function runPageDecisionChain(input: {
     try {
       result = await browser.act(
         computer,
-        { actions: [{ kind: "click", ref: outcome.target }], signal: context.signal },
+        {
+          actions: [{ kind: "click", ref: outcome.target }],
+          target: input.target,
+          signal: context.signal,
+        },
         context,
       );
     } catch {
@@ -271,10 +286,14 @@ export async function runPageDecisionChain(input: {
     }
     if (!result.ok || result.fallback) return stop({ outcome: "escalate", reason: "act_failed" });
     acted.push(name);
+    // A tab the click opened is a new page the decider has not seen: hand it to the model.
+    if (result.opened?.length) {
+      return { ...stop({ outcome: "escalate", reason: "opened_tab" }), opened: result.opened };
+    }
 
     // Re-read with rects rather than reuse the act's own snapshot, which is the
     // default, model-facing one.
-    const next = await readPage(browser, computer, context, true);
+    const next = await readPage(browser, computer, context, true, input.target);
     if (!next) return stop({ outcome: "escalate", reason: "snapshot_failed" });
     if (target) {
       history.push({

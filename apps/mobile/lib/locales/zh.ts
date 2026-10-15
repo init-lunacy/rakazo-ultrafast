@@ -155,6 +155,8 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Clear conversation?": "要清除对话吗？",
   "Close chat organization": "关闭聊天整理",
   "Close computer": "关闭电脑",
+  Tabs: "标签页",
+  Follow: "跟随",
   "Computer keyboard": "电脑键盘",
   Control: "Ctrl",
   Down: "向下",

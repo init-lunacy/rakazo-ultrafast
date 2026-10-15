@@ -150,6 +150,13 @@ const browserGoalProperty = {
     "Optional. What to accomplish on this page, so simple steps run without a screenshot. The result lists what was clicked, with confidence scores to check against the page rather than trust.",
 };
 
+/** Names one tab; without it a page tool uses the agent's current tab. */
+const browserTabProperty = {
+  type: "string",
+  description:
+    "Optional. A tab handle such as t4k2z, from an earlier result or browser_tabs. Defaults to your current tab.",
+};
+
 export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "computer_observe",
@@ -217,6 +224,16 @@ export const builtinAgentTools: ConnectorTool[] = [
       type: "object",
       properties: {
         url: { type: "string", description: "http(s) URL to open." },
+        tab: browserTabProperty,
+        newTab: {
+          type: "boolean",
+          description:
+            "Open the URL in a new tab of your own instead of replacing your current page.",
+        },
+        purpose: {
+          type: "string",
+          description: "A few words on what this tab is for, shown to the user.",
+        },
         goal: browserGoalProperty,
       },
       required: ["url"],
@@ -226,13 +243,22 @@ export const builtinAgentTools: ConnectorTool[] = [
     name: "browser_snapshot",
     description:
       "Capture an accessibility-style snapshot of the current page with element refs (e1, e2, …). Use refs with browser_act. Prefer this over computer_observe for web pages. If fallback is computer_act, use the desktop tools instead.",
-    inputSchema: { type: "object", properties: {} },
+    inputSchema: {
+      type: "object",
+      properties: {
+        tab: {
+          ...browserTabProperty,
+          description:
+            "Optional. Any tab's handle, including another agent's. Defaults to your current tab.",
+        },
+      },
+    },
     readOnly: true,
   },
   {
     name: "browser_act",
     description:
-      'Click or fill page elements by ref from browser_snapshot (kinds: click, fill, type, fill_secret). fill_secret types the username or password of a login saved with request_secret, only on the site it was saved for; you never see the value. Prefer this over computer_act for web pages. If the result includes fallback:"computer_act", use computer_act instead.',
+      'Click or fill page elements by ref from browser_snapshot (kinds: click, fill, type, fill_secret). fill_secret types the username or password of a login saved with request_secret, only on the site it was saved for; you never see the value. Prefer this over computer_act for web pages. If the result includes fallback:"computer_act", use computer_act instead. Refs name the tab they came from, so this acts there. A click that opens a tab lists it in opened.',
     inputSchema: {
       type: "object",
       properties: {
@@ -258,6 +284,13 @@ export const builtinAgentTools: ConnectorTool[] = [
       },
       required: ["actions"],
     },
+  },
+  {
+    name: "browser_tabs",
+    description:
+      "List this computer's browser tabs: handle, title, URL, owner (you, main, or a helper), purpose, and which is your current tab. Read any tab with browser_snapshot tab. Act only in your own tabs or unowned ones; open more with browser_navigate newTab.",
+    inputSchema: { type: "object", properties: {} },
+    readOnly: true,
   },
   {
     name: "list_files",

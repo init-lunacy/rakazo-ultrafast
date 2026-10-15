@@ -696,6 +696,10 @@ describe("graphical computer spec", () => {
         const flags = readFileSync(capture, "utf8");
         expect(flags).toMatch(/--hide-crash-restore-bubble/);
         expect(flags).toMatch(/--disable-session-crashed-bubble/);
+        // Agents act in background tabs; hidden tabs must keep running at full speed.
+        expect(flags).toMatch(/--disable-background-timer-throttling/);
+        expect(flags).toMatch(/--disable-renderer-backgrounding/);
+        expect(flags).toMatch(/--disable-backgrounding-occluded-windows/);
 
         const updatedPrefs = readFileSync(prefsPath, "utf8");
         expect(updatedPrefs).toContain('"exit_type":"Normal"');

@@ -230,6 +230,7 @@ import {
 } from "./artifacts.js";
 import type { BillingService } from "./billing.js";
 import { botProfileLabelsChanged, commitBotUpdate } from "./bot-update.js";
+import { latestBrowserTabs, showBrowserTab } from "./browser-tabs.js";
 import {
   executionBlocksUserTakeover,
   resolveBusyBotName,
@@ -3118,6 +3119,28 @@ export function createRouter(deps: RouterDeps) {
             },
           ),
         };
+      }),
+      showBrowserTab: authed.computer.showBrowserTab.handler(async ({ context, input }) => {
+        const bot = await repos.getBot(context.actor, input.botId);
+        const computer = bot.computer;
+        if (computer?.state !== "running" || !computer.providerRef) {
+          return { ok: true as const };
+        }
+        // A pin switches the shared screen: never under someone who has taken control of it.
+        if (hasActiveComputerControl(computer)) {
+          throw new ORPCError("CONFLICT", { message: "Someone has control of the screen." });
+        }
+        await showBrowserTab(
+          { prisma: deps.prisma, sandbox: deps.sandbox, events: deps.events },
+          {
+            spaceId: context.actor.spaceId,
+            botId: bot.id,
+            computer: toComputerRef(computer),
+            target: input.target,
+          },
+          computerContext(context.actor, bot.id, "browser-tab"),
+        );
+        return { ok: true as const };
       }),
       screenUrl: authed.computer.screenUrl.handler(async ({ context, input }) => {
         let bot = await repos.getBot(context.actor, input.botId);
@@ -6440,7 +6463,9 @@ async function computerStatus(
     botId,
     botName: bot.name,
   });
-  return toComputerStatus(botId, bot.computer, busyBotName);
+  const browserTabs =
+    bot.computer?.state === "running" ? await latestBrowserTabs(deps.prisma, botId) : undefined;
+  return toComputerStatus(botId, bot.computer, busyBotName, browserTabs);
 }
 
 /** Hand the user's screen control for this bot back, continuing any run waiting on it. */

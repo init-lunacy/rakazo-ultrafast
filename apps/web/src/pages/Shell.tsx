@@ -1422,7 +1422,8 @@ export function ShellPage() {
         ) {
           // waiting_input: reconcile ask cards if a stale post-send refresh raced SSE.
           void refreshThread(active.id).catch(() => undefined);
-        } else if (isComputerStatusEvent(event)) {
+        } else if (isComputerStatusEvent(event) && event.type !== "computer.browser_tabs") {
+          // A tab list changes no screen: a fresh screen URL would only reconnect it.
           void refreshComputerScreen(active.id).catch(() => undefined);
         }
       },
@@ -4756,6 +4757,12 @@ export function ShellPage() {
                 computer={computer}
                 hasControl={hasControl}
                 dock={!recordingSkill}
+                onShowBrowserTab={(target) => {
+                  // A pin switches the shared screen; a refused or failed one leaves it as it was.
+                  void rpc.computer
+                    .showBrowserTab({ botId: computerBot.id, target })
+                    .catch(() => undefined);
+                }}
                 onTakeControl={
                   computer?.state === "running" &&
                   !hasControl &&

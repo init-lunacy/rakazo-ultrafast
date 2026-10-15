@@ -14,8 +14,14 @@ const helper = path.resolve(
 
 test("live page helper preserves identity, masks passwords, and reports partial actions", async () => {
   const profile = await mkdtemp(path.join(os.tmpdir(), "page-browser-test-"));
-  const server = http.createServer((_req, res) => {
+  const server = http.createServer((req, res) => {
     res.setHeader("content-type", "text/html");
+    if (req.url?.startsWith("/popup")) {
+      res.end(
+        `<!doctype html><title>Popup source</title><a href="/opened" target="_blank">Open</a>`,
+      );
+      return;
+    }
     res.end(`<!doctype html><title>Fixture</title><p>Readable article content</p>
       <label>Name <input id="name"></label><input aria-label="Password" type="password" value="fake-test-password">
       <button id="save" onclick="this.dataset.clicks=Number(this.dataset.clicks||0)+1">Save</button>
@@ -30,6 +36,8 @@ test("live page helper preserves identity, masks passwords, and reports partial 
     context = await chromium.launchPersistentContext(profile, {
       headless: true,
       args: ["--remote-debugging-port=0"],
+      // Popups must open only because an agent's click is a user gesture.
+      ignoreDefaultArgs: ["--disable-popup-blocking"],
     });
     let port = "";
     await expect(async () => {
@@ -116,6 +124,53 @@ test("live page helper preserves identity, masks passwords, and reports partial 
     await expect(other).toHaveTitle("Other tab");
     // Reading an existing page neither creates nor switches tabs.
     expect(context.pages()).toHaveLength(2);
+
+    // Tabs: addressed commands run in their own tab, whichever tab is in front.
+    const listed = await command("tabs");
+    expect(listed.ok).toBe(true);
+    // An unnamed command runs in the focused tab and says which one it was.
+    const first = snapshot.target as string;
+    expect(listed.tabs.map((tab: { target: string }) => tab.target)).toContain(first);
+    const opened = await command("open", { url: `http://127.0.0.1:${address.port}/popup` });
+    expect(opened).toMatchObject({ ok: true, title: "Popup source", target: expect.any(String) });
+    expect(opened.target).not.toBe(first);
+    const source = await command("snapshot", { target: opened.target });
+    expect(source).toMatchObject({ ok: true, target: opened.target, title: "Popup source" });
+    const back = await command("snapshot", { target: first });
+    expect(back).toMatchObject({ ok: true, target: first, title: "Fixture" });
+    // Another agent reading the tab leaves the refs its owner holds working.
+    const again = await command("snapshot", { target: first });
+    // Re-reading a page hands out the same ref for the same element.
+    expect(ref(again, "Agree")).toBe(ref(back, "Agree"));
+    expect(
+      await command("act", {
+        target: first,
+        actions: [{ kind: "click", ref: ref(back, "Agree") }],
+      }),
+    ).toMatchObject({ ok: true, completed: 1 });
+
+    // A click that opens a tab reports it, attributed to the tab that opened it.
+    const link = source.elements.find((element: { name: string }) => element.name === "Open");
+    const clicked = await command("act", {
+      target: opened.target,
+      actions: [{ kind: "click", ref: link.ref }],
+    });
+    expect(clicked).toMatchObject({ ok: true, target: opened.target });
+    await expect(async () => {
+      const after = (await command("tabs")).tabs as Array<{ target: string; openerId?: string }>;
+      expect(after.some((tab) => tab.openerId === opened.target)).toBe(true);
+    }).toPass({ timeout: 5_000 });
+
+    // Follow brings a tab to the front; a closed tab is refused, never replaced.
+    expect(await command("activate", { target: opened.target })).toMatchObject({
+      ok: true,
+      front: opened.target,
+    });
+    expect(await command("close", { target: opened.target })).toMatchObject({ ok: true });
+    expect(await command("snapshot", { target: opened.target })).toMatchObject({
+      ok: false,
+      error: "That tab is closed.",
+    });
   } finally {
     await context?.close();
     await rm(profile, { recursive: true, force: true });

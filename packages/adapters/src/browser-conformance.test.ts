@@ -122,4 +122,97 @@ describe("browser provider conformance", () => {
     provider.noScreenshot = true;
     expect((await provider.screenshot(computer, {}, context)).fallback).toBe("computer_act");
   });
+
+  it("keeps each tab's page apart and reports the tab it used", async () => {
+    const provider = new FakeBrowserProvider({
+      pages: {
+        ...seededPages,
+        "https://example.test/second": { title: "Second", html: "<button>Go</button>" },
+      },
+    });
+    const first = await provider.navigate(computer, { url: "https://example.test/form" }, context);
+    expect(first.target).toBe("fake-1");
+    const opened = await provider.openTab(
+      computer,
+      { url: "https://example.test/second" },
+      context,
+    );
+    expect(opened).toMatchObject({ title: "Second", target: "fake-2" });
+    // Opening is in the background: untargeted calls still use the front tab.
+    expect((await provider.snapshot(computer, {}, context)).title).toBe("Signup");
+    expect((await provider.snapshot(computer, { target: "fake-2" }, context)).title).toBe("Second");
+    expect((await provider.tabs(computer, {}, context)).tabs).toEqual([
+      { target: "fake-1", title: "Signup", url: "https://example.test/form" },
+      { target: "fake-2", title: "Second", url: "https://example.test/second" },
+    ]);
+  });
+
+  it("reports a tab a click opened, and refuses a closed tab", async () => {
+    const provider = new FakeBrowserProvider({ pages: seededPages });
+    await provider.navigate(computer, { url: "https://example.test/form" }, context);
+    const snap = await provider.snapshot(computer, {}, context);
+    const button = snap.elements.find((el) => el.name.toLowerCase().includes("continue"))!;
+    provider.popupOnNextAct = "https://example.test/form";
+    const acted = await provider.act(
+      computer,
+      { actions: [{ kind: "click", ref: button.ref }] },
+      context,
+    );
+    expect(acted).toMatchObject({ ok: true, target: "fake-1", opened: ["fake-2"] });
+    expect((await provider.tabs(computer, {}, context)).tabs[1]).toMatchObject({
+      target: "fake-2",
+      openerId: "fake-1",
+    });
+    expect(await provider.closeTab(computer, { target: "fake-2" }, context)).toEqual({ ok: true });
+    expect(await provider.snapshot(computer, { target: "fake-2" }, context)).toMatchObject({
+      fallback: "computer_act",
+      error: "That tab is closed.",
+    });
+  });
+
+  it("follows unless pinned, and a pin on a closed tab counts as unpinned", async () => {
+    const provider = new FakeBrowserProvider({ pages: seededPages });
+    await provider.openTab(computer, { url: "https://example.test/form" }, context);
+    expect(await provider.activateTab(computer, { target: "fake-2" }, context)).toEqual({
+      front: "fake-2",
+      pinned: null,
+    });
+    expect(await provider.activateTab(computer, { target: "fake-1", pin: true }, context)).toEqual({
+      front: "fake-1",
+      pinned: "fake-1",
+    });
+    expect(await provider.activateTab(computer, { target: "fake-2" }, context)).toEqual({
+      front: null,
+      pinned: "fake-1",
+    });
+    await provider.closeTab(computer, { target: "fake-1" }, context);
+    expect(await provider.activateTab(computer, { target: "fake-2" }, context)).toEqual({
+      front: "fake-2",
+      pinned: null,
+    });
+  });
+
+  it("hands out the same ref for the same element on every read", async () => {
+    const provider = new FakeBrowserProvider({ pages: seededPages });
+    await provider.navigate(computer, { url: "https://example.test/form" }, context);
+    const first = await provider.snapshot(computer, {}, context);
+    const second = await provider.snapshot(computer, {}, context);
+    expect(second.elements.map((el) => el.ref)).toEqual(first.elements.map((el) => el.ref));
+  });
+
+  it("never hands two tabs the same ref, and a second read keeps the first read's refs", async () => {
+    const provider = new FakeBrowserProvider({ pages: seededPages });
+    await provider.navigate(computer, { url: "https://example.test/form" }, context);
+    await provider.openTab(computer, { url: "https://example.test/form" }, context);
+    const first = await provider.snapshot(computer, {}, context);
+    const second = await provider.snapshot(computer, { target: "fake-2" }, context);
+    const refs = (snap: { elements: Array<{ ref: string }> }) => snap.elements.map((el) => el.ref);
+    expect(refs(second).some((ref) => refs(first).includes(ref))).toBe(false);
+    // Another reader's snapshot of the same tab leaves the owner's refs working.
+    await provider.snapshot(computer, {}, context);
+    const button = first.elements.find((el) => el.name.toLowerCase().includes("continue"))!;
+    expect(
+      await provider.act(computer, { actions: [{ kind: "click", ref: button.ref }] }, context),
+    ).toMatchObject({ ok: true, completed: 1 });
+  });
 });

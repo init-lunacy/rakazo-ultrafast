@@ -42,6 +42,7 @@ import {
   resolveGroupSendAttachments,
   resolveSendAttachments,
 } from "./artifacts.js";
+import { latestBrowserTabs } from "./browser-tabs.js";
 import { resolveBusyBotName, toComputerStatus } from "./computer-status.js";
 import { withSerializableRetry } from "./serializable-retry.js";
 import { loadMessagePage } from "./thread-message-pages.js";
@@ -416,7 +417,12 @@ export async function threadSnapshot(
                   orderBy: { seq: "asc" },
                 })
               : [];
-          return { messagePage, last, run: currentRun, liveEvents };
+          // Read in this transaction, so the cursor and the tab list come from one commit.
+          const browserTabs =
+            target.bot.computer?.state === "running"
+              ? await latestBrowserTabs(tx, target.botId)
+              : undefined;
+          return { messagePage, last, run: currentRun, liveEvents, browserTabs };
         },
         { timeout: 15_000, maxWait: 5_000 },
       ),
@@ -428,7 +434,7 @@ export async function threadSnapshot(
       messages: messagesWithLiveEvents(core.messagePage.messages, core.liveEvents),
       olderCursor: core.messagePage.olderCursor,
       run: core.run ? mapRun(core.run) : null,
-      computer: toComputerStatus(target.botId, target.bot.computer, busyBotName),
+      computer: toComputerStatus(target.botId, target.bot.computer, busyBotName, core.browserTabs),
     };
   }
 

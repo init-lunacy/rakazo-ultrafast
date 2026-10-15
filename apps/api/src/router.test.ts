@@ -1558,6 +1558,8 @@ describe("computer terminal and file transfer", () => {
       },
       computer: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       computerExecutionLease: { findUnique: vi.fn().mockResolvedValue(null) },
+      // A running computer's status reads the latest run's browser tabs.
+      run: { findMany: vi.fn().mockResolvedValue([]) },
     } as unknown as PrismaClient;
     const deps = {
       prisma,
@@ -1611,6 +1613,14 @@ describe("computer terminal and file transfer", () => {
       "bots/bot-1",
       expect.anything(),
     );
+  });
+
+  it("refuses to switch tabs under someone who has control of the screen", async () => {
+    const { sandbox, call } = setup(controlled);
+    const pageBrowser = vi.fn().mockResolvedValue({ ok: true, front: "T2", pinned: "T2" });
+    Object.assign(sandbox, { pageBrowser });
+    expect((await call("showBrowserTab", { target: "T2" })).status).toBe(409);
+    expect(pageBrowser).not.toHaveBeenCalled();
   });
 
   it("prepares the bot's folders when boot reuses an already running Team Computer", async () => {

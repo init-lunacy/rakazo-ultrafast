@@ -38,3 +38,20 @@ function redactPayloadValue(value: unknown, secrets: string[]): unknown {
     ]),
   );
 }
+
+/** A URL without credentials, query or fragment, which can carry tokens or login codes. */
+export function redactUrlSecrets(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return raw;
+  try {
+    const url = new URL(raw);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    // Never echo unparsed input — it may still contain userinfo/secrets.
+    return "[invalid URL]";
+  }
+}

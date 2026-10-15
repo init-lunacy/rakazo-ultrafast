@@ -1,13 +1,16 @@
 import type { AdapterContext, ComputerRef } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
+import { MAIN_AGENT, tabHandle } from "./browser-tab-registry.js";
 import {
   browserActFromTool,
   browserNavigateFromTool,
   browserSnapshotFromTool,
+  browserTabsFromTool,
   parseBrowserActions,
 } from "./browser-tools.js";
 import { filterPageBrowserTools, PAGE_BROWSER_TOOL_NAMES } from "./executor.js";
 import { FakeBrowserProvider } from "./fake-browser.js";
+import { RunBrowserTabs } from "./run-browser-tabs.js";
 
 const context: AdapterContext = {
   operationId: "1",
@@ -411,10 +414,127 @@ describe("browser tools", () => {
 
   it("hides page browser tools when the computer is not graphical", () => {
     const tools = [...PAGE_BROWSER_TOOL_NAMES].map((name) => ({ name }));
-    expect(filterPageBrowserTools(tools, true)).toHaveLength(3);
+    expect(filterPageBrowserTools(tools, true)).toHaveLength(4);
     expect(filterPageBrowserTools(tools, false)).toEqual([]);
     expect(filterPageBrowserTools([{ name: "computer_act" }, ...tools], false)).toEqual([
       { name: "computer_act" },
     ]);
+  });
+});
+
+describe("browser tools with tabs", () => {
+  const tabPages = {
+    "https://a.test/": { title: "A", html: "<button>Go</button>" },
+    "https://b.test/": { title: "B", html: "<button>Go</button>" },
+  };
+  function withTabs() {
+    const browser = new FakeBrowserProvider({ pages: tabPages });
+    const run = new RunBrowserTabs({
+      browser,
+      computer,
+      context,
+      botName: "Ada",
+      publish: async () => undefined,
+    });
+    return { browser, run };
+  }
+  const [t1, t2] = ["fake-1", "fake-2"].map((target) => tabHandle(target));
+
+  it("opens a helper's tab, answers with its handle, and never shows a target", async () => {
+    const { browser, run } = withTabs();
+    const result = await browserNavigateFromTool(
+      browser,
+      computer,
+      context,
+      { url: "https://b.test/", purpose: "compare" },
+      { tabs: { run, agent: "helper-1" } },
+    );
+    expect(result).toMatchObject({ title: "B", tab: t2 });
+    expect(result).not.toHaveProperty("target");
+    expect(result).not.toHaveProperty("pinned");
+    expect(await browserTabsFromTool(run, MAIN_AGENT)).toMatchObject({
+      tabs: [{ tab: t1 }, { tab: t2, owner: "helper: helper", purpose: "compare" }],
+    });
+  });
+
+  it("reads any tab but refuses to act in another agent's", async () => {
+    const { browser, run } = withTabs();
+    await browserNavigateFromTool(
+      browser,
+      computer,
+      context,
+      { url: "https://b.test/" },
+      {
+        tabs: { run, agent: "helper-1" },
+      },
+    );
+    const read = await browserSnapshotFromTool(
+      browser,
+      computer,
+      context,
+      { tab: t2 },
+      {
+        tabs: { run, agent: MAIN_AGENT },
+      },
+    );
+    expect(read).toMatchObject({ title: "B", tab: t2 });
+    const ref = (read as { elements: Array<{ ref: string }> }).elements[0]!.ref;
+    expect(
+      // No tab argument: the ref came from the helper's tab, so that is where it would act.
+      await browserActFromTool(
+        browser,
+        computer,
+        context,
+        {
+          actions: [{ kind: "click", ref }],
+        },
+        { tabs: { run, agent: MAIN_AGENT } },
+      ),
+    ).toEqual({
+      ok: false,
+      completed: 0,
+      error: `${t2} belongs to helper 'helper' until it finishes. Read it with browser_snapshot, or open your own tab with browser_navigate newTab.`,
+    });
+  });
+
+  it("reports a tab a click opened by handle", async () => {
+    const { browser, run } = withTabs();
+    await browserNavigateFromTool(
+      browser,
+      computer,
+      context,
+      { url: "https://a.test/" },
+      {
+        tabs: { run, agent: MAIN_AGENT },
+      },
+    );
+    const snap = (await browserSnapshotFromTool(
+      browser,
+      computer,
+      context,
+      {},
+      {
+        tabs: { run, agent: MAIN_AGENT },
+      },
+    )) as { elements: Array<{ ref: string }> };
+    browser.popupOnNextAct = "https://b.test/";
+    const acted = await browserActFromTool(
+      browser,
+      computer,
+      context,
+      {
+        actions: [{ kind: "click", ref: snap.elements[0]!.ref }],
+      },
+      { tabs: { run, agent: MAIN_AGENT } },
+    );
+    expect(acted).toMatchObject({ ok: true, tab: t1, opened: [t2] });
+  });
+
+  it("is unchanged without tabs, apart from never showing a target", async () => {
+    const browser = new FakeBrowserProvider({ pages: tabPages });
+    const result = await browserNavigateFromTool(browser, computer, context, {
+      url: "https://a.test/",
+    });
+    expect(result).toEqual({ url: "https://a.test/", title: "A" });
   });
 });

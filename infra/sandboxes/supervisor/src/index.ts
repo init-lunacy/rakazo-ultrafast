@@ -448,26 +448,32 @@ app.post("/computers/:id/exec", async (c) => {
 /** A viewport PNG, base64 encoded. Every other page-browser reply stays under 512 KiB. */
 const PAGE_CAPTURE_MAX_BYTES = 4 * 1024 * 1024;
 
+/** An http(s) URL with no embedded credentials. */
+const pageUrl = z
+  .string()
+  .url()
+  .max(8192)
+  .refine((value) => {
+    if (!URL.canParse(value)) return false;
+    const url = new URL(value);
+    return /^https?:$/.test(url.protocol) && !url.username && !url.password;
+  });
+/** A CDP target id naming one tab. */
+const tabTarget = z.string().min(1).max(128);
+
 app.post("/computers/:id/browser", async (c) => {
   // Read eagerly so the Node HTTP adapter observes disconnects during screen setup too.
   const signal = c.req.raw.signal;
   signal.throwIfAborted();
   const body = z
     .discriminatedUnion("command", [
+      z.object({ command: z.literal("navigate"), url: pageUrl, target: tabTarget.optional() }),
       z.object({
-        command: z.literal("navigate"),
-        url: z
-          .string()
-          .url()
-          .max(8192)
-          .refine((value) => {
-            if (!URL.canParse(value)) return false;
-            const url = new URL(value);
-            return /^https?:$/.test(url.protocol) && !url.username && !url.password;
-          }),
+        command: z.literal("snapshot"),
+        extended: z.boolean().optional(),
+        target: tabTarget.optional(),
       }),
-      z.object({ command: z.literal("snapshot"), extended: z.boolean().optional() }),
-      z.object({ command: z.literal("screenshot") }),
+      z.object({ command: z.literal("screenshot"), target: tabTarget.optional() }),
       z.object({
         command: z.literal("act"),
         actions: z
@@ -484,7 +490,16 @@ app.post("/computers/:id/browser", async (c) => {
           )
           .min(1)
           .max(24),
+        target: tabTarget.optional(),
       }),
+      z.object({ command: z.literal("tabs") }),
+      z.object({ command: z.literal("open"), url: pageUrl }),
+      z.object({
+        command: z.literal("activate"),
+        target: tabTarget.nullable(),
+        pin: z.boolean().optional(),
+      }),
+      z.object({ command: z.literal("close"), target: tabTarget }),
     ])
     .parse(await c.req.json());
   const carriesSavedLogin =
@@ -523,6 +538,11 @@ app.post("/computers/:id/browser", async (c) => {
     );
     // A nonzero exit or malformed output cannot establish which mutations ran.
     const maxBytes = body.command === "screenshot" ? PAGE_CAPTURE_MAX_BYTES : 512 * 1024;
+    // An older helper answers a command it lacks with exit 2: say so, so callers stop asking.
+    const unknownCommand = result.code === 2 && /"unknown command: /.test(result.stdout);
+    if (unknownCommand && Buffer.byteLength(result.stdout) <= maxBytes) {
+      return c.json(JSON.parse(result.stdout));
+    }
     if (result.code !== 0 || Buffer.byteLength(result.stdout) > maxBytes) {
       throw new Error("Page browser unavailable or interrupted");
     }

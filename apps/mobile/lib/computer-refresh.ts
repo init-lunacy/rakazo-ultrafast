@@ -101,7 +101,8 @@ export function createComputerRefresh(options: {
   }
 
   return {
-    refresh: (input?: { screenAttempts?: number }) => refresh(input),
+    /** `poll` reads only the status: the screen's URL, and so its connection, stays. */
+    refresh: (input?: { screenAttempts?: number; poll?: boolean }) => refresh(input),
     /** The viewer could not use the current URL: read a fresh one on the next poll. */
     invalidateScreen() {
       screenLoaded = false;
@@ -118,7 +119,7 @@ export function createComputerRefresh(options: {
       }
       return {
         isActive,
-        refresh: (input?: { screenAttempts?: number }) =>
+        refresh: (input?: { screenAttempts?: number; poll?: boolean }) =>
           isActive() && !finished ? refresh(input) : Promise.resolve(undefined),
         finish() {
           if (finished) return;

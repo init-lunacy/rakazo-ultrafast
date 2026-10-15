@@ -28,6 +28,7 @@ export const ProductEventType = z.enum([
   "computer.takeover.granted",
   "computer.takeover.released",
   "computer.command",
+  "computer.browser_tabs",
   "memory.revised",
   "routine.created",
   "routine.updated",

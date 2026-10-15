@@ -1,5 +1,5 @@
 import { computerSupportsTerminal, computerSupportsUpdate } from "@rakazo/adapters";
-import type { ComputerStatus } from "@rakazo/contracts";
+import type { BrowserTabs, ComputerStatus } from "@rakazo/contracts";
 import { ACTIVE_RUN_STATUSES, computerScreenSize } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 
@@ -62,6 +62,7 @@ export function toComputerStatus(
     maintenanceId?: string | null;
   } | null,
   busyBotName: string | null = null,
+  browserTabs?: BrowserTabs,
 ): ComputerStatus {
   const state = computer?.maintenanceId
     ? "booting"
@@ -91,5 +92,6 @@ export function toComputerStatus(
     busyBotName,
     canUpdate: computerSupportsUpdate(kind),
     terminalAvailable: computerSupportsTerminal(kind),
+    ...(browserTabs ? { browserTabs } : {}),
   };
 }

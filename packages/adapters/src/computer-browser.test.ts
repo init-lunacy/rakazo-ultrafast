@@ -176,6 +176,98 @@ describe("computer browser provider", () => {
     expect(result.fallback).toBeUndefined();
     expect(result.title).toBe("A");
   });
+
+  it("addresses a tab and reports where it ran and what it opened", async () => {
+    const liveDriver = vi.fn(async (_c: ComputerRef, request: { command: string }) => {
+      if (request.command === "act") {
+        return {
+          ok: true,
+          completed: 1,
+          url: "https://example.test/",
+          title: "Live",
+          tree: "",
+          elements: [],
+          target: "T2",
+          // "" stands for a malformed entry; it must be dropped.
+          opened: ["T3", ""],
+          pinned: null,
+        };
+      }
+      if (request.command === "tabs") {
+        return {
+          ok: true,
+          pinned: "T2",
+          tabs: [
+            { target: "T2", title: "Live", url: "https://example.test/" },
+            { target: 9, title: "Bad" } as never,
+          ],
+        };
+      }
+      if (request.command === "open") {
+        return { ok: true, url: "https://example.test/", title: "Live", target: "T4" };
+      }
+      if (request.command === "activate") return { ok: true, front: "T2", pinned: null };
+      if (request.command === "close") return { ok: true };
+      return { ok: false, error: "unexpected" };
+    });
+    const provider = new ComputerBrowserProvider({ liveDriver });
+    const computer: ComputerRef = { id: "c", botId: "b", kind: "docker", providerRef: "c" };
+    const act = await provider.act(
+      computer,
+      { actions: [{ kind: "click", ref: "e1" }], target: "T2" },
+      baseContext,
+    );
+    expect(liveDriver).toHaveBeenCalledWith(
+      computer,
+      { command: "act", actions: [{ kind: "click", ref: "e1" }], target: "T2" },
+      baseContext,
+    );
+    expect(act).toMatchObject({ ok: true, target: "T2", opened: ["T3"], pinned: null });
+    expect(await provider.tabs(computer, {}, baseContext)).toEqual({
+      tabs: [{ target: "T2", title: "Live", url: "https://example.test/" }],
+      pinned: "T2",
+    });
+    expect(
+      await provider.openTab(computer, { url: "https://example.test/" }, baseContext),
+    ).toMatchObject({ url: "https://example.test/", title: "Live", target: "T4" });
+    expect(await provider.activateTab(computer, { target: "T2" }, baseContext)).toEqual({
+      front: "T2",
+      pinned: null,
+    });
+    expect(await provider.closeTab(computer, { target: "T2" }, baseContext)).toEqual({ ok: true });
+  });
+
+  it("keeps the computer's pin on a tab it opened", async () => {
+    const liveDriver = vi.fn(async () => ({
+      ok: true,
+      url: "https://example.test/",
+      title: "Live",
+      target: "T4",
+      pinned: "T2",
+    }));
+    const provider = new ComputerBrowserProvider({ liveDriver });
+    const computer: ComputerRef = { id: "c", botId: "b", kind: "docker", providerRef: "c" };
+    expect(
+      await provider.openTab(computer, { url: "https://example.test/" }, baseContext),
+    ).toMatchObject({ target: "T4", pinned: "T2" });
+  });
+
+  it("reports an older computer image's missing tab commands as a fallback", async () => {
+    const liveDriver = vi.fn(async () => ({
+      ok: false,
+      error: "unknown command: tabs",
+      fallback: "computer_act" as const,
+    }));
+    const provider = new ComputerBrowserProvider({ liveDriver });
+    const computer: ComputerRef = { id: "c", botId: "b", kind: "docker", providerRef: "c" };
+    expect(await provider.tabs(computer, {}, baseContext)).toMatchObject({
+      tabs: [],
+      fallback: "computer_act",
+    });
+    expect(
+      await provider.openTab(computer, { url: "https://example.test/" }, baseContext),
+    ).toMatchObject({ fallback: "computer_act" });
+  });
 });
 
 describe("page browser session isolation", () => {

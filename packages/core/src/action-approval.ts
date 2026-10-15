@@ -6,6 +6,7 @@ const APPROVAL_EXEMPT_TOOLS = new Set([
   "browser_navigate",
   "browser_snapshot",
   "browser_act",
+  "browser_tabs",
   "list_files",
   "read_file",
   "read_history",
@@ -39,6 +40,7 @@ const EXPLICIT_APPROVAL_BUILTIN_TOOLS = new Set(["create_space"]);
 
 const UNATTENDED_SAFE_BUILTIN_TOOLS = new Set([
   "browser_snapshot",
+  "browser_tabs",
   "cloud_agent_status",
   "computer_observe",
   "list_files",

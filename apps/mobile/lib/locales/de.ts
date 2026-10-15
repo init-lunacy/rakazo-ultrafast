@@ -294,6 +294,8 @@ export const DE_MESSAGES: Record<string, string> = {
   "Booting {label}": "{label} wird gestartet",
   Bot: "Bot",
   "Close computer": "Computer schließen",
+  Tabs: "Tabs",
+  Follow: "Folgen",
   "Computer keyboard": "Computertastatur",
   Control: "Strg",
   Down: "Nach unten",
