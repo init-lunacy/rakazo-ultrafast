@@ -4,7 +4,7 @@ import type {
   ComputerRef,
   PageDecider,
 } from "@rakazo/adapter-kit";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { browserActFromTool, browserNavigateFromTool } from "./browser-tools.js";
 import { unchangedVisualStreakAfterPageBrowser } from "./computer-tools.js";
 import { FakeBrowserProvider } from "./fake-browser.js";
@@ -550,4 +550,28 @@ describe("browser tool integration", () => {
     );
     expect(unchangedVisualStreakAfterPageBrowser(streak, "browser_act", failed).count).toBe(3);
   });
+});
+
+it("stays in its tab and stops when a click opens another", async () => {
+  const browser = new FakeBrowserProvider({
+    pages: { "https://a.test/": { title: "A", html: "<button>Go</button>" } },
+  });
+  await browser.navigate(computer, { url: "https://a.test/" }, context);
+  const snapshot = await browser.snapshot(computer, { extended: true, target: "fake-1" }, context);
+  browser.popupOnNextAct = "https://a.test/";
+  const act = vi.spyOn(browser, "act");
+  const ref = snapshot.elements[0]!.ref;
+  const result = await runPageDecisionChain({
+    browser,
+    decider: new FakePageDecider({
+      decisions: [{ candidates: [{ ref, kind: "click", confidence: 0.99 }] }],
+    }),
+    computer,
+    context,
+    goal: "go",
+    snapshot,
+    target: "fake-1",
+  });
+  expect(act.mock.calls[0]?.[1]).toMatchObject({ target: "fake-1" });
+  expect(result).toMatchObject({ outcome: "escalate", reason: "opened_tab", opened: ["fake-2"] });
 });
