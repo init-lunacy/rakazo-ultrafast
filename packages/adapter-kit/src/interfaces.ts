@@ -13,15 +13,22 @@ import type {
   BillingCheckoutRequest,
   BillingPrice,
   BillingSubscriptionSnapshot,
+  BrowserActivateTabRequest,
+  BrowserActivateTabResult,
   BrowserActRequest,
   BrowserActResult,
   BrowserCapabilities,
+  BrowserCloseTabRequest,
+  BrowserCloseTabResult,
   BrowserNavigateRequest,
   BrowserNavigateResult,
+  BrowserOpenTabRequest,
   BrowserScreenshotRequest,
   BrowserScreenshotResult,
   BrowserSnapshotRequest,
   BrowserSnapshotResult,
+  BrowserTabsRequest,
+  BrowserTabsResult,
   CloudAgentCapabilities,
   CloudAgentHandle,
   CloudAgentLaunchRequest,
@@ -473,6 +480,29 @@ export interface BrowserProvider {
     request: BrowserScreenshotRequest,
     context: AdapterContext,
   ): Promise<BrowserScreenshotResult>;
+  /** The computer's page tabs. Optional: older computer images have no tab commands. */
+  tabs?(
+    computer: ComputerRef,
+    request: BrowserTabsRequest,
+    context: AdapterContext,
+  ): Promise<BrowserTabsResult>;
+  /** Open a background tab at a URL; the result's `target` names it. */
+  openTab?(
+    computer: ComputerRef,
+    request: BrowserOpenTabRequest,
+    context: AdapterContext,
+  ): Promise<BrowserNavigateResult>;
+  /** Bring a tab to the front for the viewer, or pin or unpin the view. */
+  activateTab?(
+    computer: ComputerRef,
+    request: BrowserActivateTabRequest,
+    context: AdapterContext,
+  ): Promise<BrowserActivateTabResult>;
+  closeTab?(
+    computer: ComputerRef,
+    request: BrowserCloseTabRequest,
+    context: AdapterContext,
+  ): Promise<BrowserCloseTabResult>;
 }
 
 /**

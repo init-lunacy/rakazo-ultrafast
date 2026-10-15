@@ -837,12 +837,20 @@ export interface BrowserCapabilities {
 
 export interface BrowserNavigateRequest {
   url: string;
+  /** The tab to use; the focused tab when absent. */
+  target?: string;
   signal?: AbortSignal;
 }
 
 export interface BrowserNavigateResult {
   url: string;
   title: string;
+  /** The tab it ran in. */
+  target?: string;
+  /** Tabs this call opened, by the tab it ran in. */
+  opened?: string[];
+  /** The viewer's pinned tab as the computer reports it; the run mirrors it. */
+  pinned?: string | null;
   /** When set, the page tool could not operate; use computer_act instead. */
   fallback?: "computer_act";
   error?: string;
@@ -850,6 +858,8 @@ export interface BrowserNavigateResult {
 
 export interface BrowserSnapshotRequest {
   signal?: AbortSignal;
+  /** The tab to use; the focused tab when absent. */
+  target?: string;
   /**
    * Up to 240 elements, each with its rect, for the page decider. Off by
    * default, so the snapshot the model sees is exactly what it was.
@@ -874,6 +884,10 @@ export interface BrowserSnapshotResult {
   /** Compact accessibility-style tree for the model. */
   tree: string;
   elements: BrowserSnapshotNode[];
+  /** The tab it ran in. */
+  target?: string;
+  /** The viewer's pinned tab as the computer reports it; the run mirrors it. */
+  pinned?: string | null;
   fallback?: "computer_act";
   error?: string;
 }
@@ -892,6 +906,8 @@ export type BrowserActStep =
 
 export interface BrowserActRequest {
   actions: BrowserActStep[];
+  /** The tab to use; the focused tab when absent. */
+  target?: string;
   signal?: AbortSignal;
 }
 
@@ -905,6 +921,12 @@ export interface BrowserActResult {
   /** Snapshot after the actions when available. */
   tree?: string;
   elements?: BrowserSnapshotNode[];
+  /** The tab it ran in. */
+  target?: string;
+  /** Tabs this call opened, by the tab it ran in. */
+  opened?: string[];
+  /** The viewer's pinned tab as the computer reports it; the run mirrors it. */
+  pinned?: string | null;
   fallback?: "computer_act";
   error?: string;
 }
@@ -912,6 +934,8 @@ export interface BrowserActResult {
 /** A sandbox must route these commands through its owned screen, never generic host execution. */
 export interface BrowserScreenshotRequest {
   signal?: AbortSignal;
+  /** The tab to use; the focused tab when absent. */
+  target?: string;
 }
 
 export interface BrowserScreenshotResult {
@@ -924,14 +948,66 @@ export interface BrowserScreenshotResult {
   error?: string;
 }
 
+export interface BrowserTabInfo {
+  /** The computer's own id for the tab (a CDP target id). Never shown to the model. */
+  target: string;
+  title: string;
+  url: string;
+  /** The tab whose page opened this one, when a page opened it. */
+  openerId?: string;
+}
+export interface BrowserTabsRequest {
+  signal?: AbortSignal;
+}
+export interface BrowserTabsResult {
+  tabs: BrowserTabInfo[];
+  /** The viewer's pinned tab as the computer reports it; absent on images without tabs. */
+  pinned?: string | null;
+  fallback?: "computer_act";
+  error?: string;
+}
+export interface BrowserOpenTabRequest {
+  url: string;
+  signal?: AbortSignal;
+}
+export interface BrowserActivateTabRequest {
+  /** null only with `pin: false`, which unpins without changing the front tab. */
+  target: string | null;
+  /** true pins the view to `target`; false unpins; absent is a follow, skipped while pinned. */
+  pin?: boolean;
+  signal?: AbortSignal;
+}
+export interface BrowserActivateTabResult {
+  front: string | null;
+  pinned: string | null;
+  fallback?: "computer_act";
+  error?: string;
+}
+export interface BrowserCloseTabRequest {
+  target: string;
+  signal?: AbortSignal;
+}
+export interface BrowserCloseTabResult {
+  ok: boolean;
+  error?: string;
+}
+
 export type PageBrowserCommand =
-  | { command: "navigate"; url: string }
-  | { command: "snapshot"; extended?: boolean }
-  | { command: "screenshot" }
-  | { command: "act"; actions: BrowserActStep[] };
+  | { command: "navigate"; url: string; target?: string }
+  | { command: "snapshot"; extended?: boolean; target?: string }
+  | { command: "screenshot"; target?: string }
+  | { command: "act"; actions: BrowserActStep[]; target?: string }
+  | { command: "tabs" }
+  | { command: "open"; url: string }
+  | { command: "activate"; target: string | null; pin?: boolean }
+  | { command: "close"; target: string };
 
 export type PageBrowserResult = Partial<
-  BrowserSnapshotResult & BrowserActResult & BrowserScreenshotResult
+  BrowserSnapshotResult &
+    BrowserActResult &
+    BrowserScreenshotResult &
+    BrowserTabsResult &
+    BrowserActivateTabResult
 > & { ok: boolean };
 
 /** Vendor-neutral status for a remote cloud coding agent. */

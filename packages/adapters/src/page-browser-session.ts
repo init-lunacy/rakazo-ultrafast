@@ -37,6 +37,8 @@ export class PageBrowserSession {
   /** Fields holding a saved login; snapshots never report their values. */
   private loginFilled = new WeakSet<DomElement>();
   private nextRef = 1;
+  /** Refs start with this; a fake's later tabs set their own, so no two tabs share a ref. */
+  refPrefix = "e";
 
   constructor(
     url = "about:blank",
@@ -194,7 +196,9 @@ export class PageBrowserSession {
   }
 
   private buildSnapshot(extended = false): { elements: BrowserSnapshotNode[]; tree: string } {
-    this.refs.clear();
+    // Another reader's snapshot must not invalidate the refs a tab's owner holds,
+    // as in the computer's helper; `load` still clears them for a new document.
+    for (const [ref, node] of this.refs) if (!node.isConnected) this.refs.delete(ref);
     const win = this.dom.window;
     const elements: BrowserSnapshotNode[] = [];
     const lines: string[] = [];
@@ -202,7 +206,7 @@ export class PageBrowserSession {
     for (const node of nodes) {
       if (!(node instanceof win.Element)) continue;
       if (isIgnored(win, node)) continue;
-      const ref = `e${this.nextRef++}`;
+      const ref = `${this.refPrefix}${this.nextRef++}`;
       this.refs.set(ref, node);
       const role = roleFor(win, node);
       const name = nameFor(win, node);
