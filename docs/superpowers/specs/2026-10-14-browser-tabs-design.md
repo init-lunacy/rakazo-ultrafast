@@ -32,6 +32,22 @@ Date: 2026-10-14
 > - The tab is threaded through the page-decider chain, and the plumbing list
 >   includes the browser request types.
 
+> **Second review: tracing the plan through the code.** That review changed:
+>
+> - **Handles.** They are derived from tab IDs, so a paused run that resumes keeps
+>   them.
+> - **The pin.** The computer's pin file is mirrored from every reply, so a pin from
+>   the UI is never undone.
+> - **Cleanup.** It happens once, for every terminal run including Stop, and never
+>   closes the front or pinned tab.
+> - **The loop guard** counts per agent.
+> - **Publishing** is serialized and starts only at two tabs.
+> - **The main agent's first untargeted call** is guarded against a helper's tab.
+> - **Two new UI strings were dropped:** a pin error, and a tabs activity line.
+> - **The mobile menu** is the native `MenuView`.
+> - **Background tabs** likely need separate windows, which Task 1 decides inside
+>   the computer image.
+
 ## Why
 
 A bot has one Chromium per screen, and every page-browser command acts on "the
@@ -115,9 +131,11 @@ Rejected alternatives:
 
 ### Handles
 
-Tabs are named by short handles: `t1`, `t2`, and so on. The run's tab registry
-assigns them and keeps each one stable for the rest of the run. Chrome target IDs
-never reach the model.
+Tabs are named by short handles: `t` and four characters derived from the tab's
+Chrome target ID, for example `tq3x7`. Every run's registry derives the same
+handle for the same tab. So a paused run that resumes with a fresh registry still
+means the same tab by the same handle, and nothing has to be stored. Chrome target
+IDs never reach the model.
 
 ### Tools
 
@@ -166,10 +184,15 @@ When `tab` is omitted, the agent uses the tab it used last in this run.
 
 - **Tab cap.** A run may open at most 12 tabs. The next `newTab` fails with "Reuse a
   tab you own." Tabs the run did not open do not count.
-- **Cleanup.** When the run ends, it closes the tabs it opened that are not in
-  front. The tab the user is looking at stays. A run that dies before cleanup leaves
-  its tabs behind, unowned. That is harmless, because they do not count toward any
-  later run's cap.
+- **Cleanup.** When the run reaches a terminal state, it closes the tabs it opened
+  that are not in front and not pinned:
+  - a terminal state is completed, failed or cancelled, including a Stop;
+  - a paused run keeps its tabs;
+  - one tab always stays.
+
+  The check runs in one place, at the end of the run's lifecycle, from the run's
+  committed status. A run that dies before cleanup leaves its tabs behind, unowned.
+  That is harmless, because they do not count toward any later run's cap.
 - **Helpers.** The helper cap stays at `MAX_PARALLEL_SUBAGENTS = 4`.
 
 ### Instructions
@@ -206,6 +229,13 @@ New commands:
 target ID. Only `activate` with `pin` writes it, by atomic rename, so it needs no
 lock. A pin naming a closed target counts as unpinned.
 
+That file is the only record of the pin. Every tab-aware reply (`navigate`,
+`snapshot`, `act`, `tabs`, `open`) reports the live pin, and the run mirrors it. So a
+pin set or cleared from the UI is never undone by the run's stale copy.
+
+**A failed `open`** closes the tab it created before it reports the error, so no tab
+leaks. **`close`** returns only once the tab is gone.
+
 ### Tab registry (adapters, TypeScript)
 
 The registry is a small pure module the executor creates once per run. It maps:
@@ -227,8 +257,21 @@ It decides:
 
 Calls are synchronous inside one Node process, so parallel tool calls cannot race
 a claim. Follow is also applied here. After an action, the executor sends
-`activate` (follow) for the acting tab, unless the front changed less than 1.5 s
-ago in this run. That dwell keeps parallel helpers from flickering the screen.
+`activate` (follow) for the acting tab, unless a follow was attempted less than
+1.5 s ago in this run. That dwell keeps parallel helpers from flickering the screen.
+If the action opened a tab, Chromium already shows it, and nothing follows.
+
+**Race guards.** The main agent's first call may go untargeted, to today's focused
+tab, only before any helper has asked for a tab and before any tab work. While an
+untargeted call is in flight, nothing follows, so no other tab can be brought
+forward under it.
+
+**Publishing.** The executor publishes the strip only once a run has two or more
+tabs, plus the one update that takes it back below two. Publishes are serialized
+in the order they were decided. A single-tab bot therefore writes no tab events.
+
+**Loop guard.** The run's stuck-loop guard counts identical calls per agent.
+Identical reads from parallel helpers are normal, not a loop.
 
 ### Tab support probe
 
@@ -248,6 +291,11 @@ The probe also checks the echo. A result without the echoed `target` is treated 
 same way, so an old helper can never act in the wrong tab silently.
 
 ### Hidden tabs (first implementation task)
+
+Chromium stops `requestAnimationFrame` in a background *tab* whatever the flags,
+so separate windows are the likely outcome. With several visible windows, the
+main agent's untargeted first call relies on exactly one window having focus. The
+spike checks that too, inside the computer image with its window manager.
 
 Actions run as page JavaScript, so a click does not need focus. But Chromium does
 not run `requestAnimationFrame` or `IntersectionObserver` work in hidden tabs, and
@@ -325,13 +373,23 @@ needs one way back to following the agent. Everything else in the strip is data.
   the overlay or reloading shows the strip with no listing RPC. A tab the user
   opened by hand appears after the agent's next call.
 - **Pinning RPC.** Pinning is one RPC, `computer.showBrowserTab({ botId, target })`,
-  where `target: null` unpins. It sends `activate` with `pin` and is authorized like
-  the other computer controls.
+  where `target: null` unpins.
+  - It sends `activate` with `pin`, and is authorized like the other computer
+    controls.
+  - It echoes the result into the latest run's own thread, which may be a group
+    thread.
+  - A failed pin shows nothing; the view simply stays.
+- **Lookup cost.** Mobile polls the status every 2 s, so the API reads the bot's
+  latest run through a new `runs(botId, createdAt)` index.
+- **Live delivery.** The event is forwarded for peer-bot and background runs too,
+  since it carries no message content. Web applies it to the status without
+  reloading the screen URL.
 
 ### Mobile
 
-`apps/mobile/app/computer.tsx` gets a native header menu, shown only with two or more
-tabs:
+`apps/mobile/app/computer.tsx` gets a native menu (`MenuView`, as the repo's other
+menus use), opened from a glass icon in the viewer's top bar. It is shown only with
+two or more tabs:
 - it lists `owner · label` from the polled computer status, with a check on the front tab;
 - choosing an item pins that tab;
 - a **Follow** item appears while pinned.

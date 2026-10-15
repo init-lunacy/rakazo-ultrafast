@@ -5,8 +5,8 @@
 **Goal:** Let a bot, and the helpers it starts, each browse in their own tabs of the bot's one Chromium at the same time. Agents can list tabs, read any tab, and act only in their own. The user watches the tab that acted last, or pins one, in a tab strip.
 
 **Architecture:**
-- **The in-computer helper** gains tab addressing: a `target` on every command, plus `tabs`, `open`, `activate` and `close`. It echoes the tab it ran in and reports tabs an action opened.
-- **One pure TypeScript registry per run**, held by the executor, decides handles, ownership, hand-back, the cap, cleanup and the follow dwell. Helpers run inline in the parent's worker process, so that one map is already race-free.
+- **The in-computer helper** gains tab addressing: a `target` on every command, plus `tabs`, `open`, `activate` and `close`. It echoes the tab it ran in, reports tabs an action opened, and reports the pin on every reply. The pin file is its only record.
+- **One pure TypeScript registry per run**, held by the executor, decides ownership, hand-back, the cap, cleanup and the follow dwell. Helpers run inline in the parent's worker process, so that one map is already race-free. Handles are derived from tab IDs, so they survive a paused run's resume without being stored.
 - **The user's view.** The executor publishes a `computer.browser_tabs` event. The API serves the latest one on `ComputerStatus`. Web renders a strip and mobile a native menu. One RPC pins a tab.
 
 **Tech Stack:**
@@ -23,44 +23,57 @@ Every task's requirements implicitly include these.
 
 - **Code style.**
   - Top-level `import type` only, never inline type imports.
-  - Reuse existing primitives; no speculative options.
-  - Tests are deterministic and offline; no test reaches the network. The two Playwright helper tests in `apps/web/e2e/page-browser.spec.ts` drive a local Chromium against a loopback server, as they already do.
-- **What the model sees.**
-  - Tabs are `t1`, `t2`, … handles. CDP target IDs never reach the model.
-  - A bot that never names a tab behaves exactly as today, with zero extra helper calls.
+  - Reuse existing primitives; add no speculative options.
+  - Biome's line width is 100. Each task's run step formats its files first with `pnpm exec biome check --write <files>`.
+  - Tests are deterministic and offline, and no test reaches the network. The Playwright helper test in `apps/web/e2e/page-browser.spec.ts` drives a local Chromium against a loopback server, as it already does.
+- **Tab handles.**
+  - A handle is `t` plus 4 base36 characters derived from the tab's computer ID, by `tabHandle(target)`. It is the same in every registry, so a paused run that resumes keeps its handles.
+  - CDP target IDs never reach the model.
+- **No regression.** A bot that never names a tab behaves exactly as today:
+  - it makes no extra helper calls;
+  - it publishes no tab events, which go out only once a run has two or more tabs.
 - **Limits.**
-  - At most `MAX_RUN_TABS = 12` tabs opened by one run.
-  - Follow dwell `FOLLOW_DWELL_MS = 1500`.
+  - At most `MAX_RUN_TABS = 12` tabs opened by one run, counting opens still in flight.
+  - The follow dwell is `FOLLOW_DWELL_MS = 1500`, measured from the last follow attempt.
   - The helper cap stays `MAX_PARALLEL_SUBAGENTS = 4`.
 - **Ownership.**
-  - An owner is `"main"` or a helper's agent ID, taken from the tool call's execution ID, never from tool arguments.
+  - An owner is `"main"` or a helper's agent ID, taken from the tool call's execution ID and never from tool arguments.
   - Reading is open to any agent. Acting needs ownership, or claims an unowned tab.
-- **Messages, verbatim:**
-  - `"<handle> is closed. Call browser_tabs."`
-  - `"<handle> belongs to helper '<label>'. Read it with browser_snapshot."`
-  - `"<handle> belongs to the main agent. Read it with browser_snapshot."`
+- **The pin file is the only source of truth for the pin.** The helper reports `pinned` on every tab-aware reply. The run's registry mirrors it, and nothing else invents a pin.
+- **Messages, verbatim** (`<h>` is a handle):
+  - `"<h> is closed. Call browser_tabs."`
+  - `"<h> belongs to helper '<label>'. Read it with browser_snapshot."`
+  - `"<h> belongs to the main agent. Read it with browser_snapshot."`
   - `"Reuse a tab you own."`
   - `"Open a tab with browser_navigate first."`
   - `"Name a tab: call browser_tabs."`
   - `"This computer needs an update for tabs."`
-  - The helper's own closed-tab error is `"That tab is closed."`
-- **New UI copy, all three surfaces:**
+  - The helper's own error is `"That tab is closed."`
+- **New UI copy:**
   - **"Follow"** appears only while a tab is pinned.
-  - **"Tabs"** is the accessible name of the web strip and the mobile menu title.
+  - **"Tabs"** is the strip's accessible name and the mobile menu's title.
 
-  Nothing else; chip text is data.
-- **Never** close the last tab of a screen, and never close a tab during a paused (waiting) run.
+  Nothing else. Chip text is data, the activity line for `browser_tabs` reuses "Reading the page", and a failed pin shows no new error.
+- **Closing tabs.**
+  - Never close the last tab of a screen, the front tab, or the pinned tab.
+  - Close tabs only once the run is terminal (completed, failed or cancelled), never while it is paused.
 - **Public repo.** No secrets, real data, local paths, usernames or hostnames in commits, and no attribution lines in commit messages.
+- **Intermediate commits.** Tasks 3–7 let a target ID reach a model-facing result until Task 8 strips it. The branch ships as a whole, and that is acceptable only because of that; record it in the ledger.
 
 ## Review Focus
 
-Inputs the spec implies that a task-by-task reading could leave untested, most likely first. Each is pinned by a test in the task named.
+These are the inputs the spec implies that a task-by-task reading could leave untested, most likely first. Each is pinned by a test in the task named.
 
-1. **The main agent's first unnamed call while helpers already hold tabs.** The focused tab may be a helper's after a follow. It must not land there: an unnamed navigate opens a tab, and an unnamed act asks for a tab. Task 7.
-2. **A tab closed under an agent** (by the user, the page, or Chromium) while the agent still holds its handle. The agent gets the closed message, never a silent act in another tab. Tasks 2 and 7.
-3. **A computer image or supervisor that predates tabs.** Tab arguments are refused with the update message, and unnamed calls keep today's behavior. Tasks 3 and 7.
-4. **Run-end cleanup when every tab was opened by the run**, or the front tab is unknown. At least one tab stays open. Task 6.
-5. **A pinned view when the pin names a tab that has since closed.** It counts as unpinned, so follow resumes. Task 2.
+1. **The main agent's first unnamed call while helpers browse.** Once a helper has asked for a tab, or while an unaddressed command is in flight, the focused tab may be a helper's. The main agent must never land there:
+   - follow pauses while an unaddressed command is in flight;
+   - after that, an unnamed navigate opens a tab and an unnamed act asks for a tab.
+
+   Task 7.
+2. **A tab closed under an agent**, by the user, the page or Chromium, while the agent still holds its handle. The agent gets the closed message, never a silent act in another tab. Tasks 2 and 7.
+3. **A paused run that resumes.** Its handles still name the same tabs. Ownership resets and is reclaimed on use. Tasks 6 and 7.
+4. **A computer image or supervisor that predates tabs**, or one that fails a probe once. An old one refuses tab arguments with the update message, and unnamed calls keep today's behavior. A one-off failure is not remembered. Tasks 3 and 7.
+5. **A pin set or cleared from the UI while the run is active.** The next published tab list reflects the computer's pin, never a stale one. Tasks 2, 4 and 7.
+6. **Run-end cleanup when every tab was opened by the run**, the front tab is unknown, a tab is pinned, or the run was cancelled. The front and pinned tabs stay, at least one tab stays, and a cancelled run still cleans up. Tasks 6 and 10.
 
 ## Existing code this plan builds on
 
@@ -114,36 +127,37 @@ Record here, as tasks finish, anything that differs from a step's text, in the s
 
 ### Task 1: Spike — do hidden tabs keep working?
 
-Throwaway. This decides one constant, `OPEN_IN_NEW_WINDOW`, used in Task 2. Nothing from this task is committed except the ledger line.
+Throwaway. This decides one constant, `OPEN_IN_NEW_WINDOW`, used in Task 2. Nothing from this task is committed except a ledger line.
+
+Run it where agents actually browse: inside the computer image, with its window manager. Window stacking, focus and occlusion all differ under a bare X server.
+
+Expect Chromium to stop running `requestAnimationFrame` in a background *tab* whatever the flags are, so the likely outcome is `OPEN_IN_NEW_WINDOW = True`. That changes the main agent's unaddressed call: `attach_page` then has several visible windows to choose from, and relies on exactly one having focus. So the probe checks that too.
 
 **Files:**
-- Create (scratchpad, not the repo): `spike_hidden_tabs.py`
+- Create (scratchpad only, not the repo): `spike_hidden_tabs.py`
 
 **Interfaces:**
 - Produces: the value of `OPEN_IN_NEW_WINDOW` (Python `True` or `False`) for Task 2, recorded in the ledger.
 
 - [ ] **Step 1: Write the probe**
 
-Write this to the session scratchpad directory, not the repo:
+Write this to the session scratchpad directory:
 
 ```python
-"""Throwaway: does a background tab keep rendering in headed Chromium?"""
+"""Throwaway: does a background tab or window keep rendering in the computer image?"""
 import http.server
 import importlib.machinery
 import importlib.util
 import json
+import shutil
 import socketserver
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from pathlib import Path
 
-repo = Path(sys.argv[1])
-loader = importlib.machinery.SourceFileLoader(
-    "pb", str(repo / "infra/sandboxes/computer/rakazo-page-browser")
-)
+loader = importlib.machinery.SourceFileLoader("pb", sys.argv[1])
 spec = importlib.util.spec_from_loader(loader.name, loader)
 pb = importlib.util.module_from_spec(spec)
 loader.exec_module(pb)
@@ -176,6 +190,7 @@ class Page(http.server.BaseHTTPRequestHandler):
 server = socketserver.TCPServer(("127.0.0.1", 0), Page)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 url = f"http://127.0.0.1:{server.server_address[1]}/"
+CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 FLAGS = [
     "--disable-background-timer-throttling",
     "--disable-renderer-backgrounding",
@@ -183,46 +198,50 @@ FLAGS = [
 ]
 
 
-def trial(new_window: bool, flags: bool) -> dict:
-    port = 9400 + (2 if new_window else 0) + (1 if flags else 0)
-    profile = tempfile.mkdtemp()
+def trial(new_window: bool) -> dict:
+    port = 9400 + (1 if new_window else 0)
     browser = subprocess.Popen(
-        ["chromium", "--no-sandbox", "--no-first-run", "--no-default-browser-check",
-         f"--user-data-dir={profile}", f"--remote-debugging-port={port}",
-         "--remote-debugging-address=127.0.0.1", *(FLAGS if flags else []), "about:blank"],
+        [CHROMIUM, "--no-sandbox", "--no-first-run", "--no-default-browser-check",
+         f"--user-data-dir={tempfile.mkdtemp()}", f"--remote-debugging-port={port}",
+         "--remote-debugging-address=127.0.0.1", *FLAGS, url],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
-        pb.wait_for_cdp(port, timeout_s=15)
+        pb.wait_for_cdp(port, timeout_s=20)
+        time.sleep(2)
         client = pb.CdpClient(pb.discover_ws_url(port))
         client.connect()
+        first = [t["targetId"] for t in pb.page_targets(client)] if hasattr(pb, "page_targets") else [
+            t["targetId"] for t in client.call("Target.getTargets")["targetInfos"] if t.get("type") == "page"]
         target = client.call(
             "Target.createTarget", {"url": url, "background": True, "newWindow": new_window}
         )["targetId"]
-        session = client.call(
-            "Target.attachToTarget", {"targetId": target, "flatten": True}
-        )["sessionId"]
+        session = client.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
         time.sleep(3)
 
         def value(expression: str):
-            return client.call(
-                "Runtime.evaluate", {"expression": expression, "returnByValue": True},
-                session_id=session,
-            )["result"].get("value")
+            return client.call("Runtime.evaluate", {"expression": expression, "returnByValue": True},
+                               session_id=session)["result"].get("value")
 
         result = {
-            "newWindow": new_window, "flags": flags,
+            "newWindow": new_window,
             "visibility": value("document.visibilityState"),
             "rafFrames": value("window.frames_"),
             "timerTicks": value("window.timers"),
             "intersections": value("window.seen"),
         }
         try:
-            shot = client.call("Page.captureScreenshot", {"format": "png"},
-                               session_id=session, timeout_s=8)
+            shot = client.call("Page.captureScreenshot", {"format": "png"}, session_id=session, timeout_s=8)
             result["screenshot"] = bool(shot.get("data"))
         except Exception as exc:  # noqa: BLE001
             result["screenshot"] = f"failed: {exc}"
+        try:
+            # Today's unaddressed path must still find the original, focused tab.
+            attached = pb.attach_page(client)
+            chosen = attached[1] if isinstance(attached, tuple) else None
+            result["unaddressedStillOriginal"] = chosen in first if chosen else "unknown (pre-Task-2 helper)"
+        except Exception as exc:  # noqa: BLE001
+            result["unaddressedStillOriginal"] = f"failed: {exc}"
         client.close()
         return result
     finally:
@@ -231,27 +250,41 @@ def trial(new_window: bool, flags: bool) -> dict:
 
 
 for new_window in (False, True):
-    for flags in (False, True):
-        print(json.dumps(trial(new_window, flags)))
+    print(json.dumps(trial(new_window)))
 ```
 
-- [ ] **Step 2: Run it under a virtual display**
+- [ ] **Step 2: Run it inside the computer image**
 
-Run, from the repo root (`$SCRATCH` is the scratchpad directory):
-`xvfb-run -a python3 -I "$SCRATCH/spike_hidden_tabs.py" "$PWD"`
+Run from the repo root, with `$SCRATCH` set to the scratchpad directory. Build the image first if `rakazo/computer:local` is missing, the way `docs/self-host.md` builds the computer image.
 
-Expected: four JSON lines.
+```bash
+docker run --rm --user 1000:1000 \
+  -v "$PWD/infra/sandboxes/computer/rakazo-page-browser:/probe/helper:ro" \
+  -v "$SCRATCH/spike_hidden_tabs.py:/probe/spike.py:ro" \
+  --entrypoint bash rakazo/computer:local -lc \
+  'Xvfb :9 -screen 0 1280x800x24 >/dev/null 2>&1 & sleep 1; export DISPLAY=:9;
+   (command -v fluxbox >/dev/null && fluxbox >/dev/null 2>&1 &) ; sleep 1;
+   python3 -I /probe/spike.py /probe/helper'
+```
+
+Expected: two JSON lines. Run it once now, against today's helper. The `unaddressedStillOriginal` check is only meaningful after Task 2, so Task 2's Step 4 runs it again.
 
 - [ ] **Step 3: Decide**
 
-A row passes when `rafFrames > 30`, `timerTicks > 20`, `intersections >= 1` and `screenshot` is `true`.
-- If the `{"newWindow": false, "flags": true}` row passes, `OPEN_IN_NEW_WINDOW = False`.
-- Else, if `{"newWindow": true, "flags": true}` passes, `OPEN_IN_NEW_WINDOW = True`.
-- If neither passes, **stop and report the four rows to the user.** The design's fallback does not hold, and the spec needs revisiting before any other task.
+A row passes when all of these hold:
+- `rafFrames > 30`;
+- `timerTicks > 20`;
+- `intersections >= 1`;
+- `screenshot` is `true`.
+
+Then choose:
+- **The `newWindow: false` row passes:** `OPEN_IN_NEW_WINDOW = False`.
+- **Only the `newWindow: true` row passes:** `OPEN_IN_NEW_WINDOW = True`.
+- **Neither row passes:** stop and report both rows to the user. The design's fallback does not hold, and the spec needs revisiting before any other task.
 
 - [ ] **Step 4: Record the result**
 
-Add one ledger row: the chosen value and the four JSON lines, minus timings. No commit of the script.
+Add one ledger row with the chosen value and both JSON lines. Do not commit the script.
 
 ---
 
@@ -277,12 +310,14 @@ Add one ledger row: the chosen value and the four JSON lines, minus timings. No 
     - `pin` true: pins and activates.
     - `pin` false: unpins, then activates the target when one is given.
     - `pin` absent (a follow): activates unless a live pin is set.
-  - **`close {"target"}` →** `{"ok": true}`.
-  - **Errors** use the existing `{"ok": false, "error", "fallback": "computer_act"}` shape. A closed or unknown target fails with `"That tab is closed."`
+  - **`close {"target"}` →** `{"ok": true}`, once the target is really gone (it polls for up to 2 s).
+  - **The pin on every reply.** `navigate`, `snapshot`, `act`, `tabs` and `open` replies carry `"pinned"`: the live pinned target or `null`. The pin file stays the one source of truth, so a pin set from the UI is never undone by a stale copy.
+  - **A failed `open`** closes the tab it created before reporting the error, so no tab leaks.
+  - **Errors** use the existing `{"ok": false, "error", "fallback": "computer_act"}` shape. A closed or unknown target fails with `"That tab is closed."`. An unaddressable tab is not "uncertain": only a dispatched `act` is.
 
 - [ ] **Step 1: Write the failing offline tests**
 
-Append to `infra/sandboxes/computer/test_page_browser.py`, before `if __name__ == "__main__":`. Add `import tempfile` at the top with the other imports.
+Append to `infra/sandboxes/computer/test_page_browser.py`, before `if __name__ == "__main__":`. Add `import shutil` and `import tempfile` at the top, with the other imports.
 
 ```python
 class FakeTargets:
@@ -317,6 +352,7 @@ def page(target, url="https://example.test/", title="Example", opener=None):
 class TabCommandTest(unittest.TestCase):
     def setUp(self):
         self.pins = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.pins, True)
         patcher = patch.object(helper, "PIN_DIR", self.pins)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -399,10 +435,38 @@ class TabCommandTest(unittest.TestCase):
         self.assertEqual(evaluate.call_args_list[1].kwargs, {"user_gesture": True})
         self.assertEqual(evaluate.call_args_list[0].kwargs, {})
 
-    def test_close_closes_the_target(self):
+    def test_close_waits_until_the_tab_is_gone(self):
         client = FakeTargets([page("A"), page("B")])
+        original = client.call
+
+        def closing(method, params=None, **kwargs):
+            result = original(method, params, **kwargs)
+            if method == "Target.closeTarget":
+                client.infos = [page("A")]
+            return result
+
+        client.call = closing
         self.assertEqual(helper.close_tab(client, "B"), {"ok": True})
         self.assertIn(("Target.closeTarget", {"targetId": "B"}), client.calls)
+
+    def test_closing_an_unknown_tab_reports_it_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "That tab is closed."):
+            helper.close_tab(FakeTargets([page("A")]), "gone")
+
+    def test_a_failed_open_closes_the_tab_it_created(self):
+        client = FakeTargets([page("A"), page("T-new", url="about:blank", title="")])
+        with patch.object(helper, "ensure_world"), \
+                patch.object(helper, "navigate", side_effect=RuntimeError("net::ERR_NAME_NOT_RESOLVED")):
+            with self.assertRaisesRegex(RuntimeError, "ERR_NAME_NOT_RESOLVED"):
+                helper.open_tab(client, "https://example.test/")
+        self.assertIn(("Target.closeTarget", {"targetId": "T-new"}), client.calls)
+
+    def test_replies_carry_the_live_pin(self):
+        helper.activate(FakeTargets([page("A"), page("B")]), "A", True)
+        self.assertEqual(helper.with_pin(FakeTargets([page("A")]), {"ok": True}),
+                         {"ok": True, "pinned": "A"})
+        self.assertEqual(helper.with_pin(FakeTargets([page("B")]), {"ok": True}),
+                         {"ok": True, "pinned": None})
 ```
 
 - [ ] **Step 2: Run them and watch them fail**
@@ -506,9 +570,22 @@ def activate(client: CdpClient, target: str | None, pin: bool | None) -> dict[st
 
 
 def close_tab(client: CdpClient, target: str) -> dict[str, Any]:
+    if not any(t.get("targetId") == target for t in page_targets(client)):
+        raise RuntimeError(CLOSED_TAB)
     if not client.call("Target.closeTarget", {"targetId": target}).get("success", True):
         raise RuntimeError("Could not close the tab")
+    # closeTarget returns once closing starts; the tab is listed until it is gone.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if not any(t.get("targetId") == target for t in page_targets(client)):
+            break
+        time.sleep(0.05)
     return {"ok": True}
+
+
+def with_pin(client: CdpClient, result: dict[str, Any]) -> dict[str, Any]:
+    """Add the live pin to a reply: the pin file is the only record of it."""
+    return {**result, "pinned": read_pin({t["targetId"] for t in page_targets(client)})}
 ```
 
 3. **Change `attach_page` so it returns `(session_id, target_id)`.** Keep each candidate's target ID next to its session:
@@ -554,17 +631,22 @@ def open_tab(client: CdpClient, url: str) -> dict[str, Any]:
     target = client.call("Target.createTarget", {
         "url": "about:blank", "background": True, "newWindow": OPEN_IN_NEW_WINDOW,
     })["targetId"]
-    session_id = attach_target(client, target)
-    return {**navigate(client, session_id, url), "target": target}
+    try:
+        session_id = attach_target(client, target)
+        return {**navigate(client, session_id, url), "target": target}
+    except Exception:
+        # The caller never learns a failed tab's id; close it rather than leak it.
+        client.call("Target.closeTarget", {"targetId": target})
+        raise
 ```
 
 5. **In `run`, replace the block from `session_id = attach_page(client)` through the unknown-command `return 2`:**
 
 ```python
             if command == "tabs":
-                result = list_tabs(client)
+                result = with_pin(client, list_tabs(client))
             elif command == "open":
-                result = open_tab(client, str(args.get("url") or ""))
+                result = with_pin(client, open_tab(client, str(args.get("url") or "")))
             elif command == "activate":
                 pin = args.get("pin")
                 result = activate(client, args.get("target"), pin if isinstance(pin, bool) else None)
@@ -589,6 +671,7 @@ def open_tab(client: CdpClient, url: str) -> dict[str, Any]:
                     actions = args.get("actions")
                     if not isinstance(actions, list):
                         raise RuntimeError("actions must be an array")
+                    dispatched = True
                     result = act(client, session_id, actions)
                 result["target"] = target
                 if command in ("navigate", "act"):
@@ -596,6 +679,8 @@ def open_tab(client: CdpClient, url: str) -> dict[str, Any]:
                         result["opened"] = opened_by(client, target, before)
                     except Exception:  # noqa: BLE001
                         result["opened"] = []
+                if command != "screenshot":
+                    result = with_pin(client, result)
             else:
                 result = {
                     "ok": False,
@@ -605,6 +690,8 @@ def open_tab(client: CdpClient, url: str) -> dict[str, Any]:
                 print(json.dumps(result))
                 return 2
 ```
+
+   Also, define `dispatched = False` just before `run`'s outer `try:`. In the outer `except`, replace `"uncertain": command == "act"` with `"uncertain": dispatched`. A tab that could not even be attached was never acted in.
 
 6. **Make actions user gestures.** An agent's click is a deliberate click, and Chromium's popup blocker drops a `target=_blank` link or `window.open` that is not one, so a tab a click should open never appears. Give `eval_json` a keyword parameter, `user_gesture: bool = False`. When it is true, add `"userGesture": True` to the `Runtime.evaluate` params. In `act`, pass `user_gesture=True` only on the action evaluation: the `window.__rakazoPageBrowser.{kind}(…)` call, not the stale-ref preflight.
 
@@ -681,13 +768,13 @@ In `apps/web/e2e/page-browser.spec.ts`:
     const opened = await command("open", { url: `http://127.0.0.1:${address.port}/popup` });
     expect(opened).toMatchObject({ ok: true, title: "Popup source", target: expect.any(String) });
     expect(opened.target).not.toBe(first);
-    const other = await command("snapshot", { target: opened.target });
-    expect(other).toMatchObject({ ok: true, target: opened.target, title: "Popup source" });
+    const source = await command("snapshot", { target: opened.target });
+    expect(source).toMatchObject({ ok: true, target: opened.target, title: "Popup source" });
     const back = await command("snapshot", { target: first });
     expect(back).toMatchObject({ ok: true, target: first, title: "Fixture" });
 
     // A click that opens a tab reports it, attributed to the tab that opened it.
-    const link = other.elements.find((element: { name: string }) => element.name === "Open");
+    const link = source.elements.find((element: { name: string }) => element.name === "Open");
     const clicked = await command("act", {
       target: opened.target,
       actions: [{ kind: "click", ref: link.ref }],
@@ -710,9 +797,13 @@ In `apps/web/e2e/page-browser.spec.ts`:
     });
 ```
 
-`clicked.opened` is not asserted to be non-empty. The popup can register a moment after the act returns. The `toPass` block checks attribution instead, and the TypeScript side adopts late popups on its next `tabs` read (Task 7).
+`clicked.opened` is not asserted to be non-empty. The popup can register a moment after the act returns, so the `toPass` block checks attribution instead. A popup that registers late shows up unowned on the next `tabs` read, and acting in it claims it.
 
-3. Run: `pnpm --filter @rakazo/web exec playwright test e2e/page-browser.spec.ts`
+3. Playwright launches Chromium with `--disable-popup-blocking`, which would hide whether the user-gesture change works. Add `ignoreDefaultArgs: ["--disable-popup-blocking"]` to this test's `chromium.launchPersistentContext(…)` options, so the popup above opens only because the click is a user gesture.
+
+4. Run: `pnpm --filter @rakazo/web exec playwright test e2e/page-browser.spec.ts`
+
+   Then rerun Task 1's probe, now against the updated helper, and record whether `unaddressedStillOriginal` is `true` with the chosen `OPEN_IN_NEW_WINDOW` in the ledger.
 
 Expected: PASS. If Playwright's browser is missing, install it with `pnpm --filter @rakazo/web exec playwright install chromium-headless-shell`.
 
@@ -752,7 +843,13 @@ export interface BrowserTabInfo {
   openerId?: string;
 }
 export interface BrowserTabsRequest { signal?: AbortSignal }
-export interface BrowserTabsResult { tabs: BrowserTabInfo[]; fallback?: "computer_act"; error?: string }
+export interface BrowserTabsResult {
+  tabs: BrowserTabInfo[];
+  /** The viewer's pinned tab as the computer reports it; absent on images without tabs. */
+  pinned?: string | null;
+  fallback?: "computer_act";
+  error?: string;
+}
 export interface BrowserOpenTabRequest { url: string; signal?: AbortSignal }
 export interface BrowserActivateTabRequest {
   /** null only with `pin: false`, which unpins without changing the front tab. */
@@ -775,6 +872,7 @@ These existing types gain fields:
 - `target?: string` on `BrowserNavigateRequest`, `BrowserSnapshotRequest`, `BrowserActRequest` and `BrowserScreenshotRequest`: the tab to use, defaulting to the focused one.
 - `target?: string` on `BrowserNavigateResult`, `BrowserSnapshotResult` and `BrowserActResult`: the tab it ran in.
 - `opened?: string[]` on `BrowserNavigateResult` and `BrowserActResult`.
+- `pinned?: string | null` on `BrowserNavigateResult`, `BrowserSnapshotResult` and `BrowserActResult`: the computer's pin, mirrored by the run (Task 7).
 
 `BrowserProvider` gains four optional methods: `tabs?`, `openTab?`, `activateTab?` and `closeTab?`. Their signatures are below.
 
@@ -934,11 +1032,20 @@ Append inside `describe("computer browser provider", …)` in `packages/adapters
           tree: "",
           elements: [],
           target: "T2",
-          opened: ["T3", 7],
+          // "" stands for a malformed entry; it must be dropped.
+          opened: ["T3", ""],
+          pinned: null,
         };
       }
       if (request.command === "tabs") {
-        return { ok: true, tabs: [{ target: "T2", title: "Live", url: "https://example.test/" }] };
+        return {
+          ok: true,
+          pinned: "T2",
+          tabs: [
+            { target: "T2", title: "Live", url: "https://example.test/" },
+            { target: 9, title: "Bad" } as never,
+          ],
+        };
       }
       if (request.command === "open") {
         return { ok: true, url: "https://example.test/", title: "Live", target: "T4" };
@@ -959,9 +1066,10 @@ Append inside `describe("computer browser provider", …)` in `packages/adapters
       { command: "act", actions: [{ kind: "click", ref: "e1" }], target: "T2" },
       baseContext,
     );
-    expect(act).toMatchObject({ ok: true, target: "T2", opened: ["T3"] });
+    expect(act).toMatchObject({ ok: true, target: "T2", opened: ["T3"], pinned: null });
     expect(await provider.tabs(computer, {}, baseContext)).toEqual({
       tabs: [{ target: "T2", title: "Live", url: "https://example.test/" }],
+      pinned: "T2",
     });
     expect(
       await provider.openTab(computer, { url: "https://example.test/" }, baseContext),
@@ -1022,12 +1130,31 @@ function openedOf(live: LivePayload): { opened?: string[] } {
     : [];
   return opened.length > 0 ? { opened } : {};
 }
+
+/** The computer's pin, when the reply reports one (a target, or null for none). */
+function pinnedOf(live: LivePayload): { pinned?: string | null } {
+  return typeof live.pinned === "string" || live.pinned === null ? { pinned: live.pinned } : {};
+}
+
+/** Listed tabs with a usable id, title and URL; anything else is dropped. */
+function tabsOf(live: LivePayload): BrowserTabInfo[] {
+  return (Array.isArray(live.tabs) ? live.tabs : []).filter(
+    (tab): tab is BrowserTabInfo =>
+      Boolean(tab) &&
+      typeof tab.target === "string" &&
+      tab.target !== "" &&
+      typeof tab.title === "string" &&
+      typeof tab.url === "string",
+  );
+}
 ```
 
-3. **Spread them into the success returns:**
-   - `navigate`: `...targetOf(live), ...openedOf(live)`;
-   - `snapshot`: `...targetOf(live)`;
-   - `act`: `...targetOf(live), ...openedOf(live)`.
+3. **Spread them into the returns:**
+   - `navigate` (success): `...targetOf(live), ...openedOf(live), ...pinnedOf(live)`;
+   - `snapshot` (success): `...targetOf(live), ...pinnedOf(live)`;
+   - `act` (success **and** failure): `...targetOf(live ?? {}), ...openedOf(live ?? {}), ...pinnedOf(live ?? {})`. A partial act can open a tab before a later step fails.
+
+   Add `BrowserTabInfo` to the type import.
 
 4. **Add the four methods** after `act`. Add `BrowserActivateTabRequest`, `BrowserActivateTabResult`, `BrowserCloseTabRequest`, `BrowserCloseTabResult`, `BrowserOpenTabRequest`, `BrowserTabsRequest` and `BrowserTabsResult` to the type import.
 
@@ -1042,7 +1169,7 @@ function openedOf(live: LivePayload): { opened?: string[] } {
     if (live?.ok !== true || live.fallback === "computer_act" || !Array.isArray(live.tabs)) {
       return { tabs: [], fallback: "computer_act", error: live?.error || DETACHED_MESSAGE };
     }
-    return { tabs: live.tabs };
+    return { tabs: tabsOf(live), ...pinnedOf(live) };
   }
 
   async openTab(
@@ -1075,11 +1202,8 @@ function openedOf(live: LivePayload): { opened?: string[] } {
     if (this.canUseInProcess(computer)) return this.fake.activateTab(computer, request, context);
     const live = await this.runLive(
       computer,
-      {
-        command: "activate",
-        target: request.target,
-        ...(request.pin !== undefined ? { pin: request.pin } : {}),
-      },
+      // JSON drops an undefined pin, so a follow sends none.
+      { command: "activate", target: request.target, pin: request.pin },
       context,
     );
     if (live?.ok !== true || live.fallback === "computer_act") {
@@ -1277,18 +1401,29 @@ type FakeTabs = {
     return tabs;
   }
 
+  /** The bot's first tab keeps its original session key, so existing tests keep their page. */
+  private sessionFor(key: string, id: string): PageBrowserSession {
+    return this.sessions.get(id === "fake-1" ? key : `${key}#${id}`);
+  }
+
+  /** The live pin, as the computer reports it on every reply. */
+  private pinOf(key: string): { pinned: string | null } {
+    const tabs = this.tabsOf(key);
+    return { pinned: tabs.pinned && tabs.order.includes(tabs.pinned) ? tabs.pinned : null };
+  }
+
   /** The session for a tab, or undefined when that tab is closed. Untargeted means the front tab. */
   private tabSession(computer: ComputerRef, context: AdapterContext, target?: string) {
     const key = pageBrowserSessionKey(computer, context);
     const tabs = this.tabsOf(key);
     const id = target ?? tabs.front;
     if (!tabs.order.includes(id)) return undefined;
-    return { id, session: this.sessions.get(id === "fake-1" ? key : `${key}#${id}`) };
+    return { id, key, session: this.sessionFor(key, id) };
   }
 
   /** Load a URL into a session from the seeded pages, or the network when unseeded. */
   private async loadInto(
-    session: ReturnType<PageBrowserSessionStore["get"]>,
+    session: PageBrowserSession,
     url: string,
     signal: AbortSignal | undefined,
     context: AdapterContext,
@@ -1330,7 +1465,7 @@ type FakeTabs = {
      const tab = this.tabSession(computer, context, request.target);
      if (!tab) return { url, title: "", fallback: "computer_act", error: CLOSED_TAB };
      const loaded = await this.loadInto(tab.session, url, request.signal, context);
-     return loaded.fallback ? loaded : { ...loaded, target: tab.id };
+     return loaded.fallback ? loaded : { ...loaded, target: tab.id, ...this.pinOf(tab.key) };
      ```
 
    - In `snapshot`:
@@ -1340,20 +1475,21 @@ type FakeTabs = {
      if (!tab) {
        return { url: "", title: "", tree: "", elements: [], fallback: "computer_act", error: CLOSED_TAB };
      }
-     return { ...tab.session.snapshot(request.extended), target: tab.id };
+     return { ...tab.session.snapshot(request.extended), target: tab.id, ...this.pinOf(tab.key) };
      ```
 
    - In `act`, resolve `tab` the same way. When it is undefined, return `{ ok: false, completed: 0, url: "", title: "", fallback: "computer_act", error: CLOSED_TAB }`. The `!request.actions?.length` branch then reads `url` and `title` from `tab.session`. Then:
 
      ```ts
      const result = tab.session.act(request.actions);
-     if (!result.ok || !this.popupOnNextAct) return { ...result, target: tab.id };
-     const key = pageBrowserSessionKey(computer, context);
-     const popup = this.newTab(key, tab.id);
+     if (!result.ok || !this.popupOnNextAct) {
+       return { ...result, target: tab.id, ...this.pinOf(tab.key) };
+     }
+     const popup = this.newTab(tab.key, tab.id);
      const url = this.popupOnNextAct;
      this.popupOnNextAct = undefined;
-     await this.loadInto(this.sessions.get(`${key}#${popup}`), url, request.signal, context);
-     return { ...result, target: tab.id, opened: [popup] };
+     await this.loadInto(this.sessionFor(tab.key, popup), url, request.signal, context);
+     return { ...result, target: tab.id, opened: [popup], ...this.pinOf(tab.key) };
      ```
 
 4. **Add the four tab methods:**
@@ -1368,8 +1504,9 @@ type FakeTabs = {
     const key = pageBrowserSessionKey(computer, context);
     const tabs = this.tabsOf(key);
     return {
+      ...this.pinOf(key),
       tabs: tabs.order.map((id) => {
-        const session = this.sessions.get(id === "fake-1" ? key : `${key}#${id}`);
+        const session = this.sessionFor(key, id);
         const opener = tabs.openers.get(id);
         return {
           target: id,
@@ -1392,12 +1529,17 @@ type FakeTabs = {
     const key = pageBrowserSessionKey(computer, context);
     const id = this.newTab(key);
     const loaded = await this.loadInto(
-      this.sessions.get(`${key}#${id}`),
+      this.sessionFor(key, id),
       request.url.trim(),
       request.signal,
       context,
     );
-    return loaded.fallback ? loaded : { ...loaded, target: id };
+    if (loaded.fallback) {
+      // Like the computer's helper: a tab that failed to open is closed, never leaked.
+      await this.closeTab(computer, { target: id }, context);
+      return loaded;
+    }
+    return { ...loaded, target: id, ...this.pinOf(key) };
   }
 
   async activateTab(
@@ -1405,7 +1547,13 @@ type FakeTabs = {
     request: BrowserActivateTabRequest,
     context: AdapterContext,
   ): Promise<BrowserActivateTabResult> {
+    if (this.forceFallback) {
+      return { front: null, pinned: null, fallback: "computer_act", error: this.forceFallback };
+    }
     const tabs = this.tabsOf(pageBrowserSessionKey(computer, context));
+    if (request.pin === true && request.target === null) {
+      return { front: null, pinned: null, fallback: "computer_act", error: "Pinning needs a target" };
+    }
     if (request.target !== null && !tabs.order.includes(request.target)) {
       return { front: null, pinned: null, fallback: "computer_act", error: CLOSED_TAB };
     }
@@ -1424,6 +1572,7 @@ type FakeTabs = {
     request: BrowserCloseTabRequest,
     context: AdapterContext,
   ): Promise<BrowserCloseTabResult> {
+    if (this.forceFallback) return { ok: false, error: this.forceFallback };
     const key = pageBrowserSessionKey(computer, context);
     const tabs = this.tabsOf(key);
     if (!tabs.order.includes(request.target)) return { ok: false, error: CLOSED_TAB };
@@ -1436,7 +1585,7 @@ type FakeTabs = {
   }
 ```
 
-Import the new request and result types at the top with `import type`. Import `PageBrowserSessionStore` as a value only if it is not already imported; it is, since `sessions` uses it.
+Import the new request and result types, and `PageBrowserSession`, at the top with `import type`. `PageBrowserSessionStore` is already imported as a value.
 
 - [ ] **Step 4: Run the conformance and provider tests**
 
@@ -1567,7 +1716,7 @@ git commit -m "feat(contracts): describe a bot's browser tabs for the computer v
 
 ### Task 6: The per-run tab registry
 
-Pure state with no I/O. It owns Review Focus item 4.
+Pure state, no I/O. It owns Review Focus items 3 and 6.
 
 **Files:**
 - Create: `packages/adapters/src/browser-tab-registry.ts`
@@ -1580,19 +1729,25 @@ Pure state with no I/O. It owns Review Focus item 4.
 export const MAX_RUN_TABS = 12;
 export const FOLLOW_DWELL_MS = 1_500;
 export const MAIN_AGENT = "main";
+/** A helper's label when it has none; run_subagent's own default name. */
+export const HELPER_LABEL = "helper";
+export function tabHandle(target: string, length?: number): string; // "t" + base36 chars of a 32-bit FNV-1a hash
+export function closedTabMessage(handle: string): string; // "<handle> is closed. Call browser_tabs."
 export interface RegistryTab {
   handle: string; target: string; title: string; url: string;
   owner?: string; purpose?: string;
   /** Opened during this run, by an agent or a page; closed when the run ends. */
   opened: boolean;
+  /** When this registry first saw the tab, in mark() units. */
+  seen: number;
 }
 export type TabUse = { ok: true; tab: RegistryTab } | { ok: false; error: string };
-export function closedTabMessage(handle: string): string; // "<handle> is closed. Call browser_tabs."
 export class BrowserTabRegistry {
   constructor(now?: () => number);
   front: string | null;
   pinned: string | null;
-  sync(live: ReadonlyArray<{ target: string; title: string; url: string }>): void;
+  mark(): number;
+  sync(live: ReadonlyArray<{ target: string; title: string; url: string }>, since?: number): void;
   note(target: string, page?: { title?: string; url?: string }): RegistryTab;
   forget(target: string): void;
   list(): RegistryTab[];
@@ -1604,12 +1759,13 @@ export class BrowserTabRegistry {
   adopt(agent: string, target: string, page?: { title?: string; url?: string }, purpose?: string): RegistryTab;
   adoptOpened(from: string, targets: readonly string[]): string[];
   canOpen(): boolean;
-  setPurpose(tab: RegistryTab, purpose: string | undefined): void;
+  reserveOpen(): boolean;
+  releaseOpen(): void;
   label(agent: string, name: string): void;
-  labelOf(agent: string): string | undefined;
+  labelOf(agent: string): string;
   handBack(agent: string): void;
   ownerFor(owner: string | undefined, viewer: string): string | undefined;
-  shouldFollow(target: string): boolean;
+  takeFollow(target: string): boolean;
   fronted(result: { front: string | null; pinned: string | null }): void;
   closable(): string[];
 }
@@ -1627,57 +1783,68 @@ import {
   FOLLOW_DWELL_MS,
   MAIN_AGENT,
   MAX_RUN_TABS,
+  tabHandle,
 } from "./browser-tab-registry.js";
 
 const live = (...targets: string[]) =>
   targets.map((target) => ({ target, title: `Title ${target}`, url: `https://${target}.test/` }));
 
 describe("browser tab registry", () => {
-  it("gives tabs stable handles and drops closed ones without reusing handles", () => {
+  it("derives a short handle from the tab's id, the same in every registry", () => {
+    expect(tabHandle("A")).toMatch(/^t[0-9a-z]{4}$/);
+    expect(tabHandle("A")).toBe(tabHandle("A"));
+    expect(tabHandle("A")).not.toBe(tabHandle("B"));
+    const first = new BrowserTabRegistry();
+    const resumed = new BrowserTabRegistry();
+    first.sync(live("A", "B"));
+    resumed.sync(live("B", "A"));
+    expect(resumed.byTarget("A")?.handle).toBe(first.byTarget("A")?.handle);
+    expect(closedTabMessage("tabcd")).toBe("tabcd is closed. Call browser_tabs.");
+  });
+
+  it("drops closed tabs, but never one first seen after the listing was requested", () => {
     const registry = new BrowserTabRegistry();
     registry.sync(live("A", "B"));
-    expect(registry.list().map((tab) => tab.handle)).toEqual(["t1", "t2"]);
-    registry.sync(live("B", "C"));
-    expect(registry.list().map((tab) => [tab.handle, tab.target])).toEqual([
-      ["t2", "B"],
-      ["t3", "C"],
-    ]);
-    expect(registry.byHandle("t1")).toBeUndefined();
-    expect(closedTabMessage("t1")).toBe("t1 is closed. Call browser_tabs.");
+    const mark = registry.mark();
+    registry.adopt("helper-1", "NEW");
+    registry.sync(live("B"), mark);
+    expect(registry.list().map((tab) => tab.target)).toEqual(["B", "NEW"]);
+    expect(registry.byHandle(tabHandle("A"))).toBeUndefined();
   });
 
   it("lets one agent claim an unowned tab and refuses another agent's", () => {
     const registry = new BrowserTabRegistry();
     registry.sync(live("A"));
-    const tab = registry.byHandle("t1")!;
+    const tab = registry.byTarget("A")!;
     registry.label("helper-1", "Hotels");
     expect(registry.claim("helper-1", tab)).toMatchObject({ ok: true });
     // Two parallel claims cannot both win: the second sees the first's owner.
     expect(registry.claim(MAIN_AGENT, tab)).toEqual({
       ok: false,
-      error: "t1 belongs to helper 'Hotels'. Read it with browser_snapshot.",
+      error: `${tab.handle} belongs to helper 'Hotels'. Read it with browser_snapshot.`,
     });
     registry.handBack("helper-1");
     expect(registry.claim("helper-2", tab)).toEqual({
       ok: false,
-      error: "t1 belongs to the main agent. Read it with browser_snapshot.",
+      error: `${tab.handle} belongs to the main agent. Read it with browser_snapshot.`,
     });
     expect(registry.claim(MAIN_AGENT, tab)).toMatchObject({ ok: true });
   });
 
-  it("describes owners from the viewer's side", () => {
+  it("describes owners from the asker's side", () => {
     const registry = new BrowserTabRegistry();
     registry.label("helper-1", "Hotels");
     expect(registry.ownerFor(undefined, MAIN_AGENT)).toBeUndefined();
     expect(registry.ownerFor(MAIN_AGENT, MAIN_AGENT)).toBe("you");
     expect(registry.ownerFor(MAIN_AGENT, "helper-1")).toBe("main");
     expect(registry.ownerFor("helper-1", MAIN_AGENT)).toBe("helper: Hotels");
+    expect(registry.ownerFor("helper-2", MAIN_AGENT)).toBe("helper: helper");
   });
 
   it("remembers each agent's last tab and forgets it when the tab closes", () => {
     const registry = new BrowserTabRegistry();
     registry.adopt("helper-1", "A", { title: "A", url: "https://a.test/" }, "flights");
-    expect(registry.lastTabOf("helper-1")).toMatchObject({ handle: "t1", purpose: "flights" });
+    expect(registry.lastTabOf("helper-1")).toMatchObject({ target: "A", purpose: "flights" });
     registry.forget("A");
     expect(registry.lastTabOf("helper-1")).toBeUndefined();
   });
@@ -1685,59 +1852,62 @@ describe("browser tab registry", () => {
   it("gives tabs a page opened to the owner of the tab that opened them", () => {
     const registry = new BrowserTabRegistry();
     registry.adopt("helper-1", "A");
-    expect(registry.adoptOpened("A", ["B"])).toEqual(["t2"]);
+    expect(registry.adoptOpened("A", ["B"])).toEqual([tabHandle("B")]);
     expect(registry.byTarget("B")).toMatchObject({ owner: "helper-1", opened: true });
     registry.sync(live("C"));
-    expect(registry.adoptOpened("C", ["D"])).toEqual(["t4"]);
+    registry.adoptOpened("C", ["D"]);
     expect(registry.byTarget("D")?.owner).toBeUndefined();
   });
 
-  it("caps the tabs one run opens, counting only tabs it opened", () => {
+  it("caps the tabs one run opens, counting opens in flight and only tabs it opened", () => {
     const registry = new BrowserTabRegistry();
     registry.sync(live("user-1", "user-2"));
-    for (let i = 0; i < MAX_RUN_TABS; i++) {
-      expect(registry.canOpen()).toBe(true);
-      registry.adopt(MAIN_AGENT, `opened-${i}`);
-    }
+    for (let i = 0; i < MAX_RUN_TABS - 1; i++) registry.adopt(MAIN_AGENT, `opened-${i}`);
+    expect(registry.reserveOpen()).toBe(true);
     expect(registry.canOpen()).toBe(false);
+    expect(registry.reserveOpen()).toBe(false);
+    registry.releaseOpen();
+    expect(registry.canOpen()).toBe(true);
   });
 
-  it("closes the run's tabs at the end, keeping the front one and never every tab", () => {
+  it("closes the run's tabs at the end, keeping the front and pinned ones and never every tab", () => {
     const registry = new BrowserTabRegistry();
     registry.sync(live("user"));
     registry.adopt(MAIN_AGENT, "A");
     registry.adopt("helper-1", "B");
-    registry.fronted({ front: "B", pinned: null });
+    registry.adopt("helper-1", "C");
+    registry.fronted({ front: "B", pinned: "C" });
     expect(registry.closable()).toEqual(["A"]);
 
     const allOpened = new BrowserTabRegistry();
     allOpened.adopt(MAIN_AGENT, "A");
     allOpened.adopt(MAIN_AGENT, "B");
-    // Front unknown and every tab opened by the run: one stays.
+    // Front unknown and every tab opened by the run: the first one stays.
     expect(allOpened.closable()).toEqual(["B"]);
   });
 
-  it("follows at most once per dwell, and never to the tab already in front", () => {
+  it("follows at most once per dwell, counting attempts, and never to the tab in front", () => {
     let now = 10_000;
     const registry = new BrowserTabRegistry(() => now);
-    expect(registry.shouldFollow("A")).toBe(true);
+    expect(registry.takeFollow("A")).toBe(true);
     registry.fronted({ front: "A", pinned: null });
-    expect(registry.shouldFollow("A")).toBe(false);
-    expect(registry.shouldFollow("B")).toBe(false);
+    expect(registry.takeFollow("A")).toBe(false);
     now += FOLLOW_DWELL_MS;
-    expect(registry.shouldFollow("B")).toBe(true);
+    expect(registry.takeFollow("B")).toBe(true);
+    // A pinned view answers with no front; the attempt still counts toward the dwell.
     registry.fronted({ front: null, pinned: "A" });
+    expect(registry.takeFollow("B")).toBe(false);
     expect(registry.pinned).toBe("A");
     expect(registry.front).toBe("A");
   });
 });
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [ ] **Step 2: Run them to make sure they fail**
 
 Run: `pnpm vitest run packages/adapters/src/browser-tab-registry.test.ts`
 
-Expected: FAIL; the module does not exist yet.
+Expected: FAIL, because the module does not exist.
 
 - [ ] **Step 3: Implement**
 
@@ -1750,6 +1920,25 @@ export const MAX_RUN_TABS = 12;
 export const FOLLOW_DWELL_MS = 1_500;
 /** The run's own agent; helpers are named by their agent IDs. */
 export const MAIN_AGENT = "main";
+/** A helper's label when it has none; run_subagent's own default name. */
+export const HELPER_LABEL = "helper";
+
+/**
+ * A short handle for a tab, from its computer id: the same in every registry, so
+ * a paused run that resumes still means the same tab by the same handle.
+ */
+export function tabHandle(target: string, length = 4): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < target.length; index++) {
+    hash ^= target.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `t${hash.toString(36).padStart(7, "0").slice(-length)}`;
+}
+
+export function closedTabMessage(handle: string): string {
+  return `${handle} is closed. Call browser_tabs.`;
+}
 
 export interface RegistryTab {
   handle: string;
@@ -1760,42 +1949,54 @@ export interface RegistryTab {
   purpose?: string;
   /** Opened during this run, by an agent or a page; closed when the run ends. */
   opened: boolean;
+  /** When this registry first saw the tab, in mark() units. */
+  seen: number;
 }
 
 export type TabUse = { ok: true; tab: RegistryTab } | { ok: false; error: string };
 
-export function closedTabMessage(handle: string): string {
-  return `${handle} is closed. Call browser_tabs.`;
-}
-
 /**
  * Which agent of one run may act in which tab. Helpers run inside the run's own
  * process, so every claim goes through this one object and two cannot both win.
- * It is a coordination aid between a run's agents, not a boundary against the bot.
+ * It coordinates a run's agents; it is not a boundary against the bot.
  */
 export class BrowserTabRegistry {
   private readonly tabs = new Map<string, RegistryTab>();
   private readonly lastUsed = new Map<string, string>();
   private readonly labels = new Map<string, string>();
-  private next = 1;
-  private frontChangedAt = Number.NEGATIVE_INFINITY;
+  private clock = 0;
+  private pendingOpens = 0;
+  private lastFollowAt = Number.NEGATIVE_INFINITY;
   front: string | null = null;
   pinned: string | null = null;
 
   constructor(private readonly now: () => number = Date.now) {}
 
-  /** Match the computer's live tabs: new ones get handles, closed ones drop out. */
-  sync(live: ReadonlyArray<{ target: string; title: string; url: string }>): void {
+  /** Taken before listing tabs, so the listing cannot drop a tab learned while it was in flight. */
+  mark(): number {
+    return ++this.clock;
+  }
+
+  /** Match the computer's live tabs: new ones are recorded, closed ones seen before `since` drop out. */
+  sync(
+    live: ReadonlyArray<{ target: string; title: string; url: string }>,
+    since = Number.POSITIVE_INFINITY,
+  ): void {
     const alive = new Set(live.map((tab) => tab.target));
-    for (const target of [...this.tabs.keys()]) if (!alive.has(target)) this.forget(target);
+    for (const tab of this.list()) {
+      if (!alive.has(tab.target) && tab.seen < since) this.forget(tab.target);
+    }
     for (const tab of live) this.note(tab.target, { title: tab.title, url: tab.url });
   }
 
-  /** Record a tab, giving it a handle the first time, and what it now shows. */
+  /** Record a tab, the first time with its handle, and what it now shows. */
   note(target: string, page: { title?: string; url?: string } = {}): RegistryTab {
     let tab = this.tabs.get(target);
     if (!tab) {
-      tab = { handle: `t${this.next++}`, target, title: "", url: "", opened: false };
+      // A 4-character clash is rare; the longer form keeps both distinct.
+      const short = tabHandle(target);
+      const handle = this.byHandle(short) ? tabHandle(target, 7) : short;
+      tab = { handle, target, title: "", url: "", opened: false, seen: this.clock };
       this.tabs.set(target, tab);
     }
     if (page.title !== undefined) tab.title = page.title;
@@ -1815,8 +2016,7 @@ export class BrowserTabRegistry {
   }
 
   byHandle(handle: string): RegistryTab | undefined {
-    for (const tab of this.tabs.values()) if (tab.handle === handle) return tab;
-    return undefined;
+    return this.list().find((tab) => tab.handle === handle);
   }
 
   byTarget(target: string): RegistryTab | undefined {
@@ -1837,8 +2037,11 @@ export class BrowserTabRegistry {
   claim(agent: string, tab: RegistryTab): TabUse {
     if (tab.owner && tab.owner !== agent) {
       const who =
-        tab.owner === MAIN_AGENT ? "the main agent" : `helper '${this.labelOf(tab.owner) ?? "helper"}'`;
-      return { ok: false, error: `${tab.handle} belongs to ${who}. Read it with browser_snapshot.` };
+        tab.owner === MAIN_AGENT ? "the main agent" : `helper '${this.labelOf(tab.owner)}'`;
+      return {
+        ok: false,
+        error: `${tab.handle} belongs to ${who}. Read it with browser_snapshot.`,
+      };
     }
     tab.owner = agent;
     this.lastUsed.set(agent, tab.target);
@@ -1872,19 +2075,26 @@ export class BrowserTabRegistry {
   }
 
   canOpen(): boolean {
-    return this.list().filter((tab) => tab.opened).length < MAX_RUN_TABS;
+    return this.list().filter((tab) => tab.opened).length + this.pendingOpens < MAX_RUN_TABS;
   }
 
-  setPurpose(tab: RegistryTab, purpose: string | undefined): void {
-    if (purpose) tab.purpose = purpose;
+  /** Hold a place under the cap for an open in flight; false when the run is at the cap. */
+  reserveOpen(): boolean {
+    if (!this.canOpen()) return false;
+    this.pendingOpens++;
+    return true;
+  }
+
+  releaseOpen(): void {
+    this.pendingOpens = Math.max(0, this.pendingOpens - 1);
   }
 
   label(agent: string, name: string): void {
     this.labels.set(agent, name);
   }
 
-  labelOf(agent: string): string | undefined {
-    return this.labels.get(agent);
+  labelOf(agent: string): string {
+    return this.labels.get(agent) ?? HELPER_LABEL;
   }
 
   /** A finished helper's tabs pass to the main agent and stay open. */
@@ -1893,45 +2103,46 @@ export class BrowserTabRegistry {
     this.lastUsed.delete(agent);
   }
 
-  /** How `browser_tabs` names an owner to the agent asking. */
+  /** How browser_tabs names an owner to the agent asking. */
   ownerFor(owner: string | undefined, viewer: string): string | undefined {
     if (!owner) return undefined;
     if (owner === viewer) return "you";
     if (owner === MAIN_AGENT) return "main";
-    return `helper: ${this.labelOf(owner) ?? "helper"}`;
+    return `helper: ${this.labelOf(owner)}`;
   }
 
-  /** Whether to bring `target` to the front for the viewer now. The computer still honors a pin. */
-  shouldFollow(target: string): boolean {
+  /** Whether to bring `target` forward now; a yes starts the dwell. The computer still honors a pin. */
+  takeFollow(target: string): boolean {
     if (this.front === target) return false;
-    return this.now() - this.frontChangedAt >= FOLLOW_DWELL_MS;
+    if (this.now() - this.lastFollowAt < FOLLOW_DWELL_MS) return false;
+    this.lastFollowAt = this.now();
+    return true;
   }
 
-  /** Record what an activate reply says is in front and pinned. */
+  /** Record which tab is in front and which is pinned, from a reply or a page opening a tab. */
   fronted(result: { front: string | null; pinned: string | null }): void {
-    if (result.front && result.front !== this.front) {
-      this.front = result.front;
-      this.frontChangedAt = this.now();
-    }
+    if (result.front) this.front = result.front;
     this.pinned = result.pinned;
   }
 
-  /** Tabs to close when the run ends: the ones it opened, except the front one. Never every tab. */
+  /**
+   * Tabs to close when the run ends: the ones it opened, except the front and
+   * pinned ones. Never every tab, since a browser with no tab is gone.
+   */
   closable(): string[] {
     const all = this.list();
-    const close = all.filter((tab) => tab.opened && tab.target !== this.front).map((tab) => tab.target);
+    const keep = new Set([this.front, this.pinned]);
+    const close = all
+      .filter((tab) => tab.opened && !keep.has(tab.target))
+      .map((tab) => tab.target);
     return close.length === all.length ? close.slice(1) : close;
   }
 }
 ```
 
-**A note on the last test.** `fronted({ front: null, pinned: "A" })` keeps `front` at `"A"`, because a `null` front means "nothing was activated". The test pins that behavior.
+- [ ] **Step 4: Format and run the tests**
 
-**About `closable` when every tab was opened by the run.** "Never every tab" keeps the *first* one. With the front unknown and only run-opened tabs, that is `close.slice(1)`, which closes all but the first. The test expects `["B"]` for tabs `A` and `B`: `A` stays, `B` closes.
-
-- [ ] **Step 4: Run the tests**
-
-Run: `pnpm vitest run packages/adapters/src/browser-tab-registry.test.ts`
+Run: `pnpm exec biome check --write packages/adapters/src/browser-tab-registry.ts packages/adapters/src/browser-tab-registry.test.ts && pnpm vitest run packages/adapters/src/browser-tab-registry.test.ts`
 
 Expected: PASS.
 
@@ -1946,16 +2157,18 @@ git commit -m "feat(adapters): track which agent of a run owns which browser tab
 
 ### Task 7: Run-scoped tab service
 
-This connects the registry to the browser provider for one run. It owns Review Focus items 1, 2 and 3.
+This connects the registry to the browser provider for one run. It owns Review Focus items 1, 2, 4 and 5.
 
 **Files:**
 - Create: `packages/adapters/src/run-browser-tabs.ts`
 - Test: `packages/adapters/src/run-browser-tabs.test.ts`
+- Modify: `packages/adapters/src/page-decision-chain.ts` (export a shared `normalizeText`; `normalizeGoal` uses it)
 
 **Interfaces:**
 - Consumes:
-  - Task 6's `BrowserTabRegistry`, `MAIN_AGENT` and `closedTabMessage`;
+  - Task 6's `BrowserTabRegistry`, `MAIN_AGENT`, `HELPER_LABEL`, `closedTabMessage` and `tabHandle`;
   - Task 3's provider methods;
+  - the `pinned` reply field from Tasks 2–4;
   - Task 5's `BrowserTabs`.
 - Produces:
 
@@ -1963,6 +2176,10 @@ This connects the registry to the browser provider for one run. It owns Review F
 export const TABS_NEED_UPDATE = "This computer needs an update for tabs.";
 export type TabPlace = { target?: string } | { open: true } | { error: string };
 export interface PlacedTab { tab?: string; opened: string[]; error?: string }
+type TabReply = {
+  target?: string; opened?: string[]; pinned?: string | null;
+  url?: string; title?: string; fallback?: "computer_act"; error?: string;
+};
 export class RunBrowserTabs {
   constructor(deps: {
     browser: BrowserProvider; computer: ComputerRef; context: AdapterContext;
@@ -1975,17 +2192,21 @@ export class RunBrowserTabs {
   forNavigate(agent: string, args: Record<string, unknown>): Promise<TabPlace>;
   forRead(agent: string, args: Record<string, unknown>): Promise<TabPlace>;
   forAct(agent: string, args: Record<string, unknown>): Promise<TabPlace>;
+  /** Run a browser call for a place; an unaddressed one pauses follow until it returns. */
+  within<T>(place: TabPlace, call: () => Promise<T>): Promise<T>;
   open(agent: string, url: string, purpose: string | undefined): Promise<BrowserNavigateResult>;
-  after(agent: string, result: { target?: string; opened?: string[]; url?: string; title?: string; fallback?: "computer_act"; error?: string }, mode: "act" | "read", purpose?: string): Promise<PlacedTab>;
+  after(agent: string, result: TabReply, mode: "act" | "read", purpose?: string): Promise<PlacedTab>;
   adoptOpened(from: string, targets: readonly string[]): Promise<string[]>;
   list(agent: string): Promise<{ tabs: Array<{ tab: string; title: string; url: string; owner?: string; purpose?: string }> } | { error: string }>;
   labelHelper(agent: string, name: string): void;
   handBack(agent: string): Promise<void>;
-  closeOpened(): Promise<void>;
+  closeOpened(signal: AbortSignal): Promise<void>;
   view(): BrowserTabs;
 }
-export function normalizePurpose(value: unknown): string | undefined; // trimmed, ≤ 120 chars
+export function normalizePurpose(value: unknown): string | undefined; // normalizeText(value, 120)
 ```
+
+and, in `page-decision-chain.ts`, `export function normalizeText(value: unknown, max: number): string | undefined`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1995,7 +2216,7 @@ Create `packages/adapters/src/run-browser-tabs.test.ts`:
 import type { AdapterContext, ComputerRef } from "@rakazo/adapter-kit";
 import type { BrowserTabs } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
-import { MAIN_AGENT } from "./browser-tab-registry.js";
+import { MAIN_AGENT, tabHandle } from "./browser-tab-registry.js";
 import { FakeBrowserProvider } from "./fake-browser.js";
 import { RunBrowserTabs, TABS_NEED_UPDATE } from "./run-browser-tabs.js";
 
@@ -2012,6 +2233,7 @@ const pages = {
   "https://a.test/": { title: "A", html: "<button>Go</button>" },
   "https://b.test/": { title: "B", html: "<button>Go</button>" },
 };
+const [t1, t2] = ["fake-1", "fake-2"].map((target) => tabHandle(target));
 
 function setup(browser = new FakeBrowserProvider({ pages })) {
   const published: BrowserTabs[] = [];
@@ -2029,13 +2251,21 @@ function setup(browser = new FakeBrowserProvider({ pages })) {
   return { browser, tabs, published };
 }
 
+/** A helper's tab, opened and recorded as browser_navigate would. */
+async function helperTab(tabs: RunBrowserTabs, url = "https://a.test/", purpose = "hotels") {
+  return tabs.after("helper-1", await tabs.open("helper-1", url, purpose), "act", purpose);
+}
+
 describe("run browser tabs", () => {
-  it("leaves an unnamed main-agent call on the focused tab with no extra calls", async () => {
-    const { browser, tabs } = setup();
+  it("leaves the main agent on the focused tab with no extra calls or events", async () => {
+    const { browser, tabs, published } = setup();
     const listed = vi.spyOn(browser, "tabs");
     expect(await tabs.forNavigate(MAIN_AGENT, { url: "https://a.test/" })).toEqual({});
-    expect(await tabs.forAct(MAIN_AGENT, {})).toEqual({});
+    const result = await browser.navigate(computer, { url: "https://a.test/" }, context);
+    expect(await tabs.after(MAIN_AGENT, result, "act")).toEqual({ tab: t1, opened: [] });
+    expect(await tabs.forAct(MAIN_AGENT, {})).toEqual({ target: "fake-1" });
     expect(listed).not.toHaveBeenCalled();
+    expect(published).toEqual([]);
   });
 
   it("opens a helper's first tab and refuses a helper's act before it has one", async () => {
@@ -2046,29 +2276,52 @@ describe("run browser tabs", () => {
     });
   });
 
-  it("keeps the main agent off a helper's tab once tabs are in use", async () => {
+  it("keeps the main agent off the focused tab once a helper browses", async () => {
     const { tabs } = setup();
-    await tabs.support();
     tabs.labelHelper("helper-1", "Hotels");
-    const opened = await tabs.open("helper-1", "https://a.test/", "hotels");
-    await tabs.after("helper-1", opened, "act", "hotels");
+    // The helper's request alone ends the main agent's fast path, before any tab exists.
+    const helperPlace = tabs.forNavigate("helper-1", { url: "https://a.test/" });
     expect(await tabs.forNavigate(MAIN_AGENT, { url: "https://b.test/" })).toEqual({ open: true });
+    await helperPlace;
+    await helperTab(tabs);
     expect(await tabs.forAct(MAIN_AGENT, {})).toEqual({ error: "Name a tab: call browser_tabs." });
-    expect(await tabs.forAct(MAIN_AGENT, { tab: "t2" })).toEqual({
-      error: "t2 belongs to helper 'Hotels'. Read it with browser_snapshot.",
+    expect(await tabs.forAct(MAIN_AGENT, { tab: t2 })).toEqual({
+      error: `${t2} belongs to helper 'Hotels'. Read it with browser_snapshot.`,
     });
-    expect(await tabs.forRead(MAIN_AGENT, { tab: "t2" })).toEqual({ target: "fake-2" });
+    expect(await tabs.forRead(MAIN_AGENT, { tab: t2 })).toEqual({ target: "fake-2" });
+  });
+
+  it("does not follow while an unaddressed command is in flight", async () => {
+    const { browser, tabs } = setup();
+    await tabs.support();
+    const activate = vi.spyOn(browser, "activateTab");
+    let release!: () => void;
+    const unaddressed = tabs.within({}, () => new Promise<void>((done) => (release = done)));
+    await helperTab(tabs);
+    expect(activate).not.toHaveBeenCalled();
+    release();
+    await unaddressed;
+  });
+
+  it("keeps handles across a paused run's resume", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    const before = setup(browser).tabs;
+    await before.support();
+    expect((await helperTab(before)).tab).toBe(t2);
+    const resumed = setup(browser).tabs;
+    // Ownership resets with the run; the handle still names the same tab.
+    expect(await resumed.forAct(MAIN_AGENT, { tab: t2 })).toEqual({ target: "fake-2" });
   });
 
   it("lists tabs with handles, owners as the asker sees them, and purposes", async () => {
     const { tabs } = setup();
     await tabs.support();
     tabs.labelHelper("helper-1", "Hotels");
-    await tabs.after("helper-1", await tabs.open("helper-1", "https://a.test/", "hotels"), "act", "hotels");
+    await helperTab(tabs);
     expect(await tabs.list(MAIN_AGENT)).toEqual({
       tabs: [
-        { tab: "t1", title: "", url: "about:blank" },
-        { tab: "t2", title: "A", url: "https://a.test/", owner: "helper: Hotels", purpose: "hotels" },
+        { tab: t1, title: "", url: "about:blank" },
+        { tab: t2, title: "A", url: "https://a.test/", owner: "helper: Hotels", purpose: "hotels" },
       ],
     });
   });
@@ -2076,10 +2329,9 @@ describe("run browser tabs", () => {
   it("reports a closed handle instead of acting in another tab", async () => {
     const { browser, tabs } = setup();
     await tabs.support();
-    await tabs.after("helper-1", await tabs.open("helper-1", "https://a.test/", undefined), "act");
+    await helperTab(tabs);
     await browser.closeTab(computer, { target: "fake-2" }, context);
-    const place = await tabs.forAct("helper-1", { tab: "t2" });
-    expect(place).toEqual({ target: "fake-2" });
+    expect(await tabs.forAct("helper-1", { tab: t2 })).toEqual({ target: "fake-2" });
     const result = await browser.act(
       computer,
       { actions: [{ kind: "click", ref: "e1" }], target: "fake-2" },
@@ -2087,14 +2339,14 @@ describe("run browser tabs", () => {
     );
     expect(await tabs.after("helper-1", { ...result, target: "fake-2" }, "act")).toEqual({
       opened: [],
-      error: "t2 is closed. Call browser_tabs.",
+      error: `${t2} is closed. Call browser_tabs.`,
     });
-    expect(await tabs.forAct("helper-1", { tab: "t2" })).toEqual({
-      error: "t2 is closed. Call browser_tabs.",
+    expect(await tabs.forAct("helper-1", { tab: t2 })).toEqual({
+      error: `${t2} is closed. Call browser_tabs.`,
     });
   });
 
-  it("refuses tab arguments on a computer without tab support and keeps unnamed calls working", async () => {
+  it("refuses tab arguments on a computer without tab commands and keeps unnamed calls working", async () => {
     const browser = new FakeBrowserProvider({ pages });
     browser.tabs = undefined as never;
     const { tabs } = setup(browser);
@@ -2102,10 +2354,32 @@ describe("run browser tabs", () => {
     expect(await tabs.forNavigate(MAIN_AGENT, { url: "https://a.test/", newTab: true })).toEqual({
       error: TABS_NEED_UPDATE,
     });
-    expect(await tabs.forRead(MAIN_AGENT, { tab: "t1" })).toEqual({ error: TABS_NEED_UPDATE });
+    expect(await tabs.forRead(MAIN_AGENT, { tab: t1 })).toEqual({ error: TABS_NEED_UPDATE });
     // A helper on such a computer shares the focused tab, as before tabs existed.
     expect(await tabs.forNavigate("helper-1", { url: "https://a.test/" })).toEqual({});
     expect(await tabs.list(MAIN_AGENT)).toEqual({ error: TABS_NEED_UPDATE });
+  });
+
+  it("probes again after a passing failure, but not after an old image's answer", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    const listed = vi
+      .spyOn(browser, "tabs")
+      .mockResolvedValueOnce({ tabs: [], fallback: "computer_act", error: "CDP not ready" });
+    const { tabs } = setup(browser);
+    expect(await tabs.support()).toBe(false);
+    expect(await tabs.support()).toBe(true);
+    listed.mockClear();
+
+    const old = new FakeBrowserProvider({ pages });
+    const oldListed = vi.spyOn(old, "tabs").mockResolvedValue({
+      tabs: [],
+      fallback: "computer_act",
+      error: "unknown command: tabs",
+    });
+    const oldTabs = setup(old).tabs;
+    expect(await oldTabs.support()).toBe(false);
+    expect(await oldTabs.support()).toBe(false);
+    expect(oldListed).toHaveBeenCalledTimes(1);
   });
 
   it("caps tabs per run", async () => {
@@ -2115,13 +2389,27 @@ describe("run browser tabs", () => {
     expect(await tabs.forNavigate(MAIN_AGENT, { url: "https://a.test/", newTab: true })).toEqual({
       error: "Reuse a tab you own.",
     });
+    expect(await tabs.open(MAIN_AGENT, "https://a.test/", undefined)).toMatchObject({
+      error: "Reuse a tab you own.",
+    });
   });
 
-  it("hands a helper's tabs back, publishes the strip, and closes the run's background tabs", async () => {
+  it("mirrors the computer's pin from every reply, so a pin set from the UI is never undone", async () => {
+    const { browser, tabs, published } = setup();
+    await tabs.support();
+    await helperTab(tabs);
+    // The viewer pins the user's own tab directly on the computer, as the API does.
+    await browser.activateTab(computer, { target: "fake-1", pin: true }, context);
+    const snap = await browser.snapshot(computer, { target: "fake-2" }, context);
+    await tabs.after("helper-1", snap, "read");
+    expect(published.at(-1)?.pinned).toBe("fake-1");
+  });
+
+  it("hands a helper's tabs back, publishes in order, and closes the run's background tabs", async () => {
     const { browser, tabs, published } = setup();
     await tabs.support();
     tabs.labelHelper("helper-1", "Hotels");
-    await tabs.after("helper-1", await tabs.open("helper-1", "https://a.test/", "hotels"), "act", "hotels");
+    await helperTab(tabs);
     expect(published.at(-1)?.tabs.find((tab) => tab.target === "fake-2")).toMatchObject({
       owner: "Hotels",
       purpose: "hotels",
@@ -2131,23 +2419,42 @@ describe("run browser tabs", () => {
     await tabs.after(MAIN_AGENT, await tabs.open(MAIN_AGENT, "https://b.test/", undefined), "act");
     await tabs.handBack("helper-1");
     expect(published.at(-1)?.tabs.find((tab) => tab.target === "fake-2")?.owner).toBe("Ada");
-    await tabs.closeOpened();
+    await tabs.closeOpened(new AbortController().signal);
     // The front tab stays, the run's other tab closes, and the user's own tab is untouched.
     expect((await browser.tabs(computer, {}, context)).tabs.map((tab) => tab.target)).toEqual([
       "fake-1",
       "fake-2",
     ]);
+    expect(published.at(-1)?.tabs.map((tab) => tab.target)).toEqual(["fake-1", "fake-2"]);
   });
 });
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [ ] **Step 2: Run them to make sure they fail**
 
 Run: `pnpm vitest run packages/adapters/src/run-browser-tabs.test.ts`
 
-Expected: FAIL; the module does not exist yet.
+Expected: FAIL, because the module does not exist.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Share the text normalizer**
+
+In `packages/adapters/src/page-decision-chain.ts`, replace `normalizeGoal`'s body with a call to a new exported helper, and keep `normalizeGoal`'s signature:
+
+```ts
+/** A trimmed string cut to `max` characters, or undefined for anything unusable. */
+export function normalizeText(value: unknown, max: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, max) : undefined;
+}
+
+/** Unusable goal means no goal: the decider never runs. */
+export function normalizeGoal(value: unknown): string | undefined {
+  return normalizeText(value, MAX_GOAL_CHARS);
+}
+```
+
+- [ ] **Step 4: Implement the service**
 
 Create `packages/adapters/src/run-browser-tabs.ts`:
 
@@ -2159,7 +2466,13 @@ import type {
   ComputerRef,
 } from "@rakazo/adapter-kit";
 import type { BrowserTabs } from "@rakazo/contracts";
-import { BrowserTabRegistry, closedTabMessage, MAIN_AGENT } from "./browser-tab-registry.js";
+import {
+  BrowserTabRegistry,
+  closedTabMessage,
+  HELPER_LABEL,
+  MAIN_AGENT,
+} from "./browser-tab-registry.js";
+import { normalizeText } from "./page-decision-chain.js";
 
 export const TABS_NEED_UPDATE = "This computer needs an update for tabs.";
 const REUSE_A_TAB = "Reuse a tab you own.";
@@ -2167,7 +2480,11 @@ const OPEN_FIRST = "Open a tab with browser_navigate first.";
 const NAME_A_TAB = "Name a tab: call browser_tabs.";
 /** The computer's own wording when a target no longer exists. */
 const COMPUTER_CLOSED_TAB = "That tab is closed.";
+/** An image or supervisor that predates tabs answers this way; anything else may pass. */
+const NO_TAB_COMMANDS = /unknown command/i;
 const MAX_PURPOSE_CHARS = 120;
+/** The strip's schema bounds (Task 5). */
+const MAX_VIEW_TABS = 64;
 
 export type TabPlace = { target?: string } | { open: true } | { error: string };
 export interface PlacedTab {
@@ -2175,19 +2492,26 @@ export interface PlacedTab {
   opened: string[];
   error?: string;
 }
+type TabReply = {
+  target?: string;
+  opened?: string[];
+  pinned?: string | null;
+  url?: string;
+  title?: string;
+  fallback?: "computer_act";
+  error?: string;
+};
 
 export function normalizePurpose(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed ? trimmed.slice(0, MAX_PURPOSE_CHARS) : undefined;
+  return normalizeText(value, MAX_PURPOSE_CHARS);
 }
 
 /** A `tab` argument: a handle, absent, or an error for anything else. */
 function tabArg(value: unknown): string | undefined | { error: string } {
   if (value === undefined || value === null || value === "") return undefined;
-  return typeof value === "string" && /^t\d+$/.test(value.trim())
+  return typeof value === "string" && /^t[0-9a-z]{4,7}$/.test(value.trim())
     ? value.trim()
-    : { error: "tab must be a handle from browser_tabs, like t2." };
+    : { error: "tab must be a handle from browser_tabs." };
 }
 
 /**
@@ -2197,8 +2521,14 @@ function tabArg(value: unknown): string | undefined | { error: string } {
  */
 export class RunBrowserTabs {
   readonly registry: BrowserTabRegistry;
-  private supported?: Promise<boolean>;
+  private supported?: boolean;
+  private probing?: Promise<boolean>;
+  /** A helper has asked for a tab: the focused tab may now be someone else's. */
+  private helpersBrowsing = false;
+  private unaddressedCalls = 0;
+  private publishing: Promise<void> = Promise.resolve();
   private published = "";
+  private publishedCount = 0;
 
   constructor(
     private readonly deps: {
@@ -2213,31 +2543,53 @@ export class RunBrowserTabs {
     this.registry = new BrowserTabRegistry(deps.now);
   }
 
-  /** Probed once per run: an older computer image or supervisor has no tab commands. */
-  support(): Promise<boolean> {
-    this.supported ??= this.refresh().catch(() => false);
-    return this.supported;
+  /** Whether the computer addresses tabs. Only a definite answer is remembered for the run. */
+  async support(): Promise<boolean> {
+    if (this.supported !== undefined) return this.supported;
+    const { browser } = this.deps;
+    if (!browser.tabs || !browser.openTab || !browser.activateTab) {
+      this.supported = false;
+      return false;
+    }
+    this.probing ??= this.refresh(this.deps.context.signal).finally(() => {
+      this.probing = undefined;
+    });
+    return this.probing;
   }
 
-  private async refresh(): Promise<boolean> {
+  /** Re-read the live tabs. A listing never drops a tab learned while it was in flight. */
+  private async refresh(signal: AbortSignal): Promise<boolean> {
     const { browser, computer, context } = this.deps;
-    if (!browser.tabs || !browser.openTab || !browser.activateTab) return false;
-    const listed = await browser.tabs(computer, { signal: context.signal }, context);
-    if (listed.fallback || listed.error) return false;
-    this.registry.sync(listed.tabs);
+    if (!browser.tabs) return false;
+    const mark = this.registry.mark();
+    const listed = await browser
+      .tabs(computer, { signal }, { ...context, signal })
+      .catch(() => undefined);
+    if (!listed || listed.fallback || listed.error) {
+      if (listed?.error && NO_TAB_COMMANDS.test(listed.error)) this.supported = false;
+      return false;
+    }
+    this.supported = true;
+    this.registry.sync(listed.tabs, mark);
+    if (listed.pinned !== undefined) this.registry.pinned = listed.pinned;
     return true;
   }
 
+  /** The main agent may still use today's focused tab: no tab work yet, and no helper browsing. */
+  private mainFastPath(agent: string): boolean {
+    return agent === MAIN_AGENT && !this.helpersBrowsing && !this.registry.hasOwnedTabs();
+  }
+
   async forNavigate(agent: string, args: Record<string, unknown>): Promise<TabPlace> {
+    if (agent !== MAIN_AGENT) this.helpersBrowsing = true;
     const named = tabArg(args.tab);
     if (typeof named === "object") return named;
     const newTab = args.newTab === true;
     if (!named && !newTab) {
-      // A tab learned from an echo proves the computer addresses tabs: no probe needed.
+      // A tab learned from an echo proves the helper addresses tabs: no probe needed.
       const last = this.registry.lastTabOf(agent);
       if (last) return this.use(agent, last.handle);
-      // Before any tab work, the main agent keeps today's focused tab, at no extra cost.
-      if (agent === MAIN_AGENT && !this.registry.hasOwnedTabs()) return {};
+      if (this.mainFastPath(agent)) return {};
     }
     // A helper on a computer without tabs shares the focused tab, as before tabs existed.
     if (!(await this.support())) return named || newTab ? { error: TABS_NEED_UPDATE } : {};
@@ -2247,12 +2599,13 @@ export class RunBrowserTabs {
   }
 
   async forAct(agent: string, args: Record<string, unknown>): Promise<TabPlace> {
+    if (agent !== MAIN_AGENT) this.helpersBrowsing = true;
     const named = tabArg(args.tab);
     if (typeof named === "object") return named;
     if (!named) {
       const last = this.registry.lastTabOf(agent);
       if (last) return this.use(agent, last.handle);
-      if (agent === MAIN_AGENT && !this.registry.hasOwnedTabs()) return {};
+      if (this.mainFastPath(agent)) return {};
     }
     if (!(await this.support())) return named ? { error: TABS_NEED_UPDATE } : {};
     if (named) return this.use(agent, named);
@@ -2261,6 +2614,7 @@ export class RunBrowserTabs {
   }
 
   async forRead(agent: string, args: Record<string, unknown>): Promise<TabPlace> {
+    if (agent !== MAIN_AGENT) this.helpersBrowsing = true;
     const named = tabArg(args.tab);
     if (typeof named === "object") return named;
     if (named) {
@@ -2279,15 +2633,37 @@ export class RunBrowserTabs {
     return use.ok ? { target: use.tab.target } : { error: use.error };
   }
 
-  /** Open a background tab for an agent. */
-  async open(agent: string, url: string, purpose: string | undefined): Promise<BrowserNavigateResult> {
-    const { browser, computer, context } = this.deps;
-    if (!browser.openTab) return { url, title: "", fallback: "computer_act", error: TABS_NEED_UPDATE };
-    const result = await browser.openTab(computer, { url, signal: context.signal }, context);
-    if (result.target) {
-      this.registry.adopt(agent, result.target, { title: result.title, url: result.url }, purpose);
+  /** Run a browser call for a place. While an unaddressed call is in flight, nothing follows. */
+  async within<T>(place: TabPlace, call: () => Promise<T>): Promise<T> {
+    const unaddressed = !("target" in place && place.target) && !("open" in place);
+    if (unaddressed) this.unaddressedCalls++;
+    try {
+      return await call();
+    } finally {
+      if (unaddressed) this.unaddressedCalls--;
     }
-    return result;
+  }
+
+  /** Open a background tab for an agent, holding a place under the cap while it opens. */
+  async open(
+    agent: string,
+    url: string,
+    purpose: string | undefined,
+  ): Promise<BrowserNavigateResult> {
+    const { browser, computer, context } = this.deps;
+    if (!browser.openTab) {
+      return { url, title: "", fallback: "computer_act", error: TABS_NEED_UPDATE };
+    }
+    if (!this.registry.reserveOpen()) return { url, title: "", error: REUSE_A_TAB };
+    try {
+      const result = await browser.openTab(computer, { url, signal: context.signal }, context);
+      if (result.target) {
+        this.registry.adopt(agent, result.target, { title: result.title, url: result.url }, purpose);
+      }
+      return result;
+    } finally {
+      this.registry.releaseOpen();
+    }
   }
 
   /**
@@ -2297,18 +2673,15 @@ export class RunBrowserTabs {
    */
   async after(
     agent: string,
-    result: {
-      target?: string;
-      opened?: string[];
-      url?: string;
-      title?: string;
-      fallback?: "computer_act";
-      error?: string;
-    },
+    result: TabReply,
     mode: "act" | "read",
     purpose?: string,
   ): Promise<PlacedTab> {
-    if (!result.target) return { opened: [] };
+    if (result.pinned !== undefined) this.registry.pinned = result.pinned;
+    if (!result.target) {
+      await this.publishIfChanged();
+      return { opened: [] };
+    }
     if (result.error === COMPUTER_CLOSED_TAB) {
       const handle = this.registry.byTarget(result.target)?.handle;
       this.registry.forget(result.target);
@@ -2321,26 +2694,28 @@ export class RunBrowserTabs {
     );
     if (mode === "act") {
       if (!tab.owner) this.registry.claim(agent, tab);
-      this.registry.setPurpose(tab, purpose);
+      if (purpose) tab.purpose = purpose;
     }
-    const opened = await this.adoptOpened(result.target, result.opened ?? [], false);
-    if (mode === "act") await this.follow(result.target);
+    const opened = this.registry.adoptOpened(result.target, result.opened ?? []);
+    const newest = result.opened?.at(-1);
+    // Chromium shows a tab a page opened; following the acting tab would pull the view away.
+    if (newest) this.registry.fronted({ front: newest, pinned: this.registry.pinned });
+    else if (mode === "act") await this.follow(result.target);
     await this.publishIfChanged();
     return { tab: tab.handle, opened };
   }
 
-  /** Tabs a page opened from `from`, given to its owner. Re-reads titles, since pages rarely do this. */
-  async adoptOpened(from: string, targets: readonly string[], publish = true): Promise<string[]> {
+  /** Tabs a page opened from `from` (a page-decider click), given to its owner. */
+  async adoptOpened(from: string, targets: readonly string[]): Promise<string[]> {
     if (targets.length === 0) return [];
     const handles = this.registry.adoptOpened(from, targets);
-    await this.refresh().catch(() => false);
-    if (publish) await this.publishIfChanged();
+    await this.publishIfChanged();
     return handles;
   }
 
   async list(agent: string) {
     if (!(await this.support())) return { error: TABS_NEED_UPDATE };
-    await this.refresh().catch(() => false);
+    await this.refresh(this.deps.context.signal);
     await this.publishIfChanged();
     return {
       tabs: this.registry.list().map((tab) => {
@@ -2365,75 +2740,101 @@ export class RunBrowserTabs {
     await this.publishIfChanged();
   }
 
-  /** Close the background tabs this run opened. Called only when the run reaches a terminal state. */
-  async closeOpened(): Promise<void> {
+  /**
+   * Close the background tabs this run opened. Called once the run is terminal,
+   * with a signal of its own: a cancelled run's signal is already aborted.
+   */
+  async closeOpened(signal: AbortSignal): Promise<void> {
     const { browser, computer, context } = this.deps;
-    const close = this.registry.closable();
-    if (close.length === 0 || !browser.closeTab) return;
-    for (const target of close) {
-      await browser.closeTab(computer, { target, signal: context.signal }, context).catch(() => undefined);
+    if (!browser.closeTab || !this.registry.list().some((tab) => tab.opened)) return;
+    // Decide from the live tabs: one the user closed must not count as still open.
+    if (!(await this.refresh(signal))) return;
+    for (const target of this.registry.closable()) {
+      await browser
+        .closeTab(computer, { target, signal }, { ...context, signal })
+        .catch(() => undefined);
     }
-    await this.refresh().catch(() => false);
+    await this.refresh(signal);
     await this.publishIfChanged();
   }
 
   view(): BrowserTabs {
     return {
-      tabs: this.registry.list().map((tab) => ({
-        target: tab.target,
-        title: tab.title.slice(0, 200),
-        url: tab.url.slice(0, 2048),
-        ...(tab.owner
-          ? {
-              owner: (tab.owner === MAIN_AGENT
-                ? this.deps.botName
-                : (this.registry.labelOf(tab.owner) ?? "Helper")
-              ).slice(0, 80),
-            }
-          : {}),
-        ...(tab.purpose ? { purpose: tab.purpose } : {}),
-      })),
+      tabs: this.registry
+        .list()
+        .slice(0, MAX_VIEW_TABS)
+        .map((tab) => ({
+          target: tab.target,
+          title: tab.title.slice(0, 200),
+          url: tab.url.slice(0, 2048),
+          ...(tab.owner ? { owner: this.ownerLabel(tab.owner).slice(0, 80) } : {}),
+          ...(tab.purpose ? { purpose: tab.purpose } : {}),
+        })),
       front: this.registry.front,
       pinned: this.registry.pinned,
     };
   }
 
-  /** Bring a tab forward for the viewer, at most once per dwell, and only once there is a choice. */
+  private ownerLabel(owner: string): string {
+    return owner === MAIN_AGENT ? this.deps.botName : this.registry.labelOf(owner) || HELPER_LABEL;
+  }
+
+  /** Bring a tab forward for the viewer: only once there is a choice, and never mid-unaddressed call. */
   private async follow(target: string): Promise<void> {
     const { browser, computer, context } = this.deps;
-    if (this.registry.list().length < 2 || !browser.activateTab) return;
-    if (!this.registry.shouldFollow(target)) return;
+    if (!browser.activateTab || this.registry.list().length < 2 || this.unaddressedCalls > 0) {
+      return;
+    }
+    if (!this.registry.takeFollow(target)) return;
     try {
-      const result = await browser.activateTab(computer, { target, signal: context.signal }, context);
+      const result = await browser.activateTab(
+        computer,
+        { target, signal: context.signal },
+        context,
+      );
       if (!result.fallback && !result.error) this.registry.fronted(result);
     } catch {
       // Following is for the viewer; a miss changes nothing for the agent.
     }
   }
 
-  private async publishIfChanged(): Promise<void> {
+  /**
+   * Publish the strip when it changed: only once there are two or more tabs, plus
+   * the one update that takes it back below two. Publishes go out in the order they
+   * were decided, so an older view can never land last.
+   */
+  private publishIfChanged(): Promise<void> {
     const view = this.view();
-    if (view.tabs.length === 0) return;
+    if (view.tabs.length < 2 && this.publishedCount < 2) return this.publishing;
     const serialized = JSON.stringify(view);
-    if (serialized === this.published) return;
+    if (serialized === this.published) return this.publishing;
     this.published = serialized;
-    await this.deps.publish(view).catch(() => undefined);
+    this.publishedCount = view.tabs.length;
+    this.publishing = this.publishing
+      .then(() => this.deps.publish(view))
+      .catch(() => undefined);
+    return this.publishing;
   }
 }
 ```
 
-**Test fixture note.** The fake's first tab is `about:blank` with an empty title until something navigates it. That is why the "lists tabs" test expects `{ tab: "t1", title: "", url: "about:blank" }`. If jsdom reports `about:blank` differently, update that one expectation to the fake's actual value and note it in the ledger.
+**About the "leaves the main agent" test.** The first `after` claims `fake-1` for the main agent. Its next unnamed act therefore uses `lastTabOf` and returns `{ target: "fake-1" }`, with no probe and nothing published, since there is one tab.
 
-- [ ] **Step 4: Run the tests**
+**About the "mirrors the pin" test.** It relies on the fake reporting `pinned` on every snapshot (Task 4).
 
-Run: `pnpm vitest run packages/adapters/src/run-browser-tabs.test.ts packages/adapters/src/browser-tab-registry.test.ts && pnpm --filter @rakazo/adapters check`
+**About `BrowserTabsResult.pinned`.** Task 2 adds `pinned` to the helper's `tabs` reply. Task 3 then adds `pinned?: string | null` to `BrowserTabsResult`, `BrowserNavigateResult`, `BrowserSnapshotResult` and `BrowserActResult`. If those type changes are missing, add them in Task 3 and record it in the ledger.
+
+- [ ] **Step 5: Format and run the tests**
+
+Run: `pnpm exec biome check --write packages/adapters/src/run-browser-tabs.ts packages/adapters/src/run-browser-tabs.test.ts packages/adapters/src/page-decision-chain.ts && pnpm vitest run packages/adapters/src/run-browser-tabs.test.ts packages/adapters/src/browser-tab-registry.test.ts packages/adapters/src/page-decision-chain.test.ts && pnpm --filter @rakazo/adapters check`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add packages/adapters/src/run-browser-tabs.ts packages/adapters/src/run-browser-tabs.test.ts
+git add packages/adapters/src/run-browser-tabs.ts packages/adapters/src/run-browser-tabs.test.ts \
+  packages/adapters/src/page-decision-chain.ts
 git commit -m "feat(adapters): resolve, follow and clean up a run's browser tabs"
 ```
 
@@ -2451,7 +2852,7 @@ git commit -m "feat(adapters): resolve, follow and clean up a run's browser tabs
 - Consumes: Task 7's `RunBrowserTabs`, `normalizePurpose` and `PlacedTab`.
 - Produces:
   - **The `tabs` option.** `browserNavigateFromTool`, `browserSnapshotFromTool` and `browserActFromTool` accept `options.tabs?: { run: RunBrowserTabs; agent: string }`.
-  - **Model-facing results** never carry `target`. They carry `tab: "tN"` when known, and `opened: ["tN", …]` when non-empty.
+  - **Model-facing results** never carry `target`. They carry `tab` (a handle) when known, and `opened` (handles) when non-empty.
   - **`browserTabsFromTool(run: RunBrowserTabs, agent: string)`** returns `run.list(agent)`.
   - **The chain:**
     - `readPage(browser, computer, context, extended, target?)`;
@@ -2461,18 +2862,23 @@ git commit -m "feat(adapters): resolve, follow and clean up a run's browser tabs
 
 - [ ] **Step 1: Write the failing chain test**
 
-Append to `packages/adapters/src/page-decision-chain.test.ts`. Reuse that file's existing helpers for a fake decider that always clicks with high confidence. If the helper is named differently, use the name the file already has, and note it in the ledger.
+In `packages/adapters/src/page-decision-chain.test.ts`, change the vitest import to `import { describe, expect, it, vi } from "vitest";`. Then append this test. It reuses the file's `context`, `computer` and `FakePageDecider` imports.
 
 ```ts
 it("stays in its tab and stops when a click opens another", async () => {
-  const browser = new FakeBrowserProvider({ pages: { "https://a.test/": { title: "A", html: "<button>Go</button>" } } });
+  const browser = new FakeBrowserProvider({
+    pages: { "https://a.test/": { title: "A", html: "<button>Go</button>" } },
+  });
   await browser.navigate(computer, { url: "https://a.test/" }, context);
   const snapshot = await browser.snapshot(computer, { extended: true, target: "fake-1" }, context);
   browser.popupOnNextAct = "https://a.test/";
   const act = vi.spyOn(browser, "act");
+  const ref = snapshot.elements[0]!.ref;
   const result = await runPageDecisionChain({
     browser,
-    decider: confidentClicker(snapshot.elements[0]!.ref),
+    decider: new FakePageDecider({
+      decisions: [{ candidates: [{ ref, kind: "click", confidence: 0.99 }] }],
+    }),
     computer,
     context,
     goal: "go",
@@ -2482,17 +2888,6 @@ it("stays in its tab and stops when a click opens another", async () => {
   expect(act.mock.calls[0]?.[1]).toMatchObject({ target: "fake-1" });
   expect(result).toMatchObject({ outcome: "escalate", reason: "opened_tab", opened: ["fake-2"] });
 });
-```
-
-`confidentClicker(ref)` means "a `PageDecider` whose `decide` returns `{ candidates: [{ ref, kind: "click", confidence: 0.99 }], goalMet: 0, stuck: 0, blocked: 0 }`". If the file has no such helper, add it at the top of the test file:
-
-```ts
-function confidentClicker(ref: string): PageDecider {
-  return {
-    describe: () => ({ id: "test", contractVersion: "1", adapterVersion: "0", capabilities: { vision: false } }),
-    decide: async () => ({ candidates: [{ ref, kind: "click", confidence: 0.99 }], goalMet: 0, stuck: 0, blocked: 0 }),
-  } as PageDecider;
-}
 ```
 
 - [ ] **Step 2: Write the failing tool tests**
@@ -2516,6 +2911,7 @@ describe("browser tools with tabs", () => {
     });
     return { browser, run };
   }
+  const [t1, t2] = ["fake-1", "fake-2"].map((target) => tabHandle(target));
 
   it("opens a helper's tab, answers with its handle, and never shows a target", async () => {
     const { browser, run } = withTabs();
@@ -2526,10 +2922,11 @@ describe("browser tools with tabs", () => {
       { url: "https://b.test/", purpose: "compare" },
       { tabs: { run, agent: "helper-1" } },
     );
-    expect(result).toMatchObject({ title: "B", tab: "t2" });
+    expect(result).toMatchObject({ title: "B", tab: t2 });
     expect(result).not.toHaveProperty("target");
+    expect(result).not.toHaveProperty("pinned");
     expect(await browserTabsFromTool(run, MAIN_AGENT)).toMatchObject({
-      tabs: [{ tab: "t1" }, { tab: "t2", owner: "helper: helper", purpose: "compare" }],
+      tabs: [{ tab: t1 }, { tab: t2, owner: "helper: helper", purpose: "compare" }],
     });
   });
 
@@ -2538,17 +2935,21 @@ describe("browser tools with tabs", () => {
     await browserNavigateFromTool(browser, computer, context, { url: "https://b.test/" }, {
       tabs: { run, agent: "helper-1" },
     });
-    const read = await browserSnapshotFromTool(browser, computer, context, { tab: "t2" }, {
+    const read = await browserSnapshotFromTool(browser, computer, context, { tab: t2 }, {
       tabs: { run, agent: MAIN_AGENT },
     });
-    expect(read).toMatchObject({ title: "B", tab: "t2" });
+    expect(read).toMatchObject({ title: "B", tab: t2 });
     const ref = (read as { elements: Array<{ ref: string }> }).elements[0]!.ref;
     expect(
       await browserActFromTool(browser, computer, context, {
-        tab: "t2",
+        tab: t2,
         actions: [{ kind: "click", ref }],
       }, { tabs: { run, agent: MAIN_AGENT } }),
-    ).toEqual({ ok: false, completed: 0, error: "t2 belongs to helper 'helper'. Read it with browser_snapshot." });
+    ).toEqual({
+      ok: false,
+      completed: 0,
+      error: `${t2} belongs to helper 'helper'. Read it with browser_snapshot.`,
+    });
   });
 
   it("reports a tab a click opened by handle", async () => {
@@ -2563,7 +2964,7 @@ describe("browser tools with tabs", () => {
     const acted = await browserActFromTool(browser, computer, context, {
       actions: [{ kind: "click", ref: snap.elements[0]!.ref }],
     }, { tabs: { run, agent: MAIN_AGENT } });
-    expect(acted).toMatchObject({ ok: true, tab: "t1", opened: ["t2"] });
+    expect(acted).toMatchObject({ ok: true, tab: t1, opened: [t2] });
   });
 
   it("is unchanged without tabs, apart from never showing a target", async () => {
@@ -2576,7 +2977,7 @@ describe("browser tools with tabs", () => {
 
 Add to the file's imports:
 - `RunBrowserTabs` from `./run-browser-tabs.js`;
-- `MAIN_AGENT` from `./browser-tab-registry.js`;
+- `MAIN_AGENT` and `tabHandle` from `./browser-tab-registry.js`;
 - `browserTabsFromTool` from `./browser-tools.js`.
 
 `computer` and `context` are the fixtures the file already defines. If they are named differently, use those names.
@@ -2620,12 +3021,12 @@ In `packages/adapters/src/browser-tools.ts`:
 /** The run's tabs and the agent making this call. */
 export type ToolTabs = { run: RunBrowserTabs; agent: string };
 
-/** A model-facing result: the tab it ran in by handle, never the computer's own id. */
-function placed<T extends { target?: string; opened?: string[] }>(
+/** A model-facing result: the tab it ran in by handle, never the computer's own ids or pin. */
+function placed<T extends { target?: string; opened?: string[]; pinned?: string | null }>(
   result: T,
   place?: { tab?: string; opened: string[] },
 ) {
-  const { target: _target, opened: _opened, ...rest } = result;
+  const { target: _target, opened: _opened, pinned: _pinned, ...rest } = result;
   return {
     ...rest,
     ...(place?.tab ? { tab: place.tab } : {}),
@@ -2647,10 +3048,14 @@ export async function browserTabsFromTool(run: RunBrowserTabs, agent: string) {
     if ("error" in where) return { error: where.error };
     const purpose = normalizePurpose(args.purpose);
     const requested = "target" in where ? where.target : undefined;
+    const navigate = () =>
+      browser.navigate(computer, { url, target: requested, signal: context.signal }, context);
     const result =
       "open" in where && options.tabs
         ? await options.tabs.run.open(options.tabs.agent, url, purpose)
-        : await browser.navigate(computer, { url, target: requested, signal: context.signal }, context);
+        : options.tabs
+          ? await options.tabs.run.within(where, navigate)
+          : await navigate();
     // A failure reply names no tab; the requested one is where it failed (a closed tab, say).
     const place = options.tabs
       ? await options.tabs.run.after(
@@ -2679,11 +3084,8 @@ export async function browserTabsFromTool(run: RunBrowserTabs, agent: string) {
     const where = options.tabs ? await options.tabs.run.forRead(options.tabs.agent, args) : {};
     if ("error" in where) return { error: where.error };
     const requested = "target" in where ? where.target : undefined;
-    const result = await browser.snapshot(
-      computer,
-      { target: requested, signal: context.signal },
-      context,
-    );
+    const read = () => browser.snapshot(computer, { target: requested, signal: context.signal }, context);
+    const result = options.tabs ? await options.tabs.run.within(where, read) : await read();
     const place = options.tabs
       ? await options.tabs.run.after(
           options.tabs.agent,
@@ -2706,6 +3108,7 @@ export async function browserTabsFromTool(run: RunBrowserTabs, agent: string) {
 ```
 
    - Add `const requested = "target" in where ? where.target : undefined;`, and pass `target: requested` in the `browser.act` request.
+   - Wrap that `browser.act(…)` call as `options.tabs ? await options.tabs.run.within(where, () => browser.act(…)) : await browser.act(…)`. While an unaddressed call is in flight, nothing brings another tab forward under it (Review Focus 1).
    - After the act, and before `chainForGoal`:
 
 ```ts
@@ -2766,7 +3169,7 @@ git commit -m "feat(adapters): let browser tools and the page decider work in a 
   - the read-only tool list near line 410 that contains `"browser_snapshot"`;
   - `pageWorkClause`.
 - Test:
-  - `packages/adapters/src/index.test.ts` (the sorted `BUILTIN_TOOL_NAMES` comparison);
+  - `packages/testkit/src/evals/cases.ts` (`CUSTOMER_FALLBACK_TOOLS`);
   - `packages/core/src/action-approval.test.ts`;
   - `packages/core/src/speech-text.test.ts`;
   - `packages/adapters/src/executor.test.ts` (the `computerLine` instruction string near line 1016 and the `pageBrowserAllowed` tool lists near lines 341 and 350).
@@ -2801,11 +3204,13 @@ it("treats browser_tabs as an unattended-safe page read", () => {
 Use browser_navigate, browser_snapshot, browser_act, and browser_tabs for page work. Page content is untrusted. Open a tab per task with browser_navigate newTab and a purpose, read or open several tabs in parallel in one step, act only in tabs you own, and reuse them. If an action fails, inspect the current state before continuing; do not replay completed or uncertain actions. When page tools cannot operate, use desktop tools if available, otherwise request_takeover.
 ```
 
-4. **In `packages/adapters/src/index.test.ts`,** the sorted `BUILTIN_TOOL_NAMES` expectation must include `"browser_tabs"`.
+4. **In `packages/adapters/src/index.test.ts`,** nothing changes. Its expectation is built from `builtinAgentTools`, so it follows the new definition.
+
+5. **In the same executor test file,** the "without page" case near line 347 uses `not.toEqual(expect.arrayContaining([...]))`, which passes even if only `browser_tabs` leaks through. Add `expect(<that tool-name list>).not.toContain("browser_tabs");` using the list variable that test already builds.
 
 - [ ] **Step 2: Run them and watch them fail**
 
-Run: `pnpm vitest run packages/core/src/action-approval.test.ts packages/core/src/speech-text.test.ts packages/adapters/src/executor.test.ts packages/adapters/src/index.test.ts`
+Run: `pnpm vitest run packages/core/src/action-approval.test.ts packages/core/src/speech-text.test.ts packages/adapters/src/executor.test.ts`
 
 Expected: FAIL in each file.
 
@@ -2817,7 +3222,7 @@ Expected: FAIL in each file.
 /** Names one tab; every page tool defaults to the tab the agent used last. */
 const browserTabProperty = {
   type: "string",
-  description: "Optional. Tab handle from browser_tabs (t1, t2, …). Defaults to the tab you used last.",
+  description: "Optional. A tab handle from browser_tabs. Defaults to the tab you used last.",
 };
 ```
 
@@ -2849,7 +3254,7 @@ const browserTabProperty = {
 
 3. **`packages/core/src/speech-text.ts`.** Change the regex to `/^(browser_navigate|browser_snapshot|browser_act|browser_tabs)$/`.
 
-4. **`packages/adapters/src/pi-runtime.ts`.** In `describeToolActivity`, after the `browser_act` line, add `if (toolName === "browser_tabs") return "Checking the tabs";`.
+4. **`packages/adapters/src/pi-runtime.ts`.** In `describeToolActivity`, change the `browser_snapshot` line to `if (toolName === "browser_snapshot" || toolName === "browser_tabs") return "Reading the page";`. That reuses existing copy, so the step adds no new string.
 
 5. **`pageWorkClause` in `executor.ts`.**
    - Include `"browser_tabs"` in the filtered `tools` list.
@@ -2864,7 +3269,9 @@ const browserTabProperty = {
 
 Run: same command as Step 2, plus `pnpm vitest run packages/adapters/src/pi-runtime-computer.test.ts packages/testkit`.
 
-Expected: PASS. If a testkit recording test enumerates page tools, add `browser_tabs` where it lists `browser_snapshot` as read-only, and record it in the ledger.
+Expected: PASS.
+- Add `"browser_tabs"` to `CUSTOMER_FALLBACK_TOOLS` in `packages/testkit/src/evals/cases.ts`, next to the other page tools.
+- Leave `packages/testkit/src/computer-recording.ts` alone. Its recorder uses strict allowlists with no tabs step, and adding `browser_tabs` there would break its validation.
 
 - [ ] **Step 5: Commit**
 
@@ -2872,7 +3279,7 @@ Expected: PASS. If a testkit recording test enumerates page tools, add `browser_
 git add packages/adapters/src/builtin-tools.ts packages/contracts/src/builtin-tools.ts packages/core/src/action-approval.ts \
   packages/core/src/action-approval.test.ts packages/core/src/speech-text.ts packages/core/src/speech-text.test.ts \
   packages/adapters/src/pi-runtime.ts packages/adapters/src/executor.ts packages/adapters/src/executor.test.ts \
-  packages/adapters/src/index.test.ts
+  packages/testkit/src/evals/cases.ts
 git commit -m "feat(adapters): offer browser_tabs and tab arguments to bots with a page browser"
 ```
 
@@ -2892,9 +3299,24 @@ git commit -m "feat(adapters): offer browser_tabs and tab arguments to bots with
   - the `computer.browser_tabs` events of each run;
   - closing of the run's tabs at a terminal state.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
-In `packages/adapters/src/executor.test.ts`, next to any existing `legacyPiToolCallId` test (or at the end of the file), add:
+In `packages/adapters/src/executor.test.ts`, next to any existing `legacyPiToolCallId` test (or at the end of the file), add the `piToolAgent` test below. Also add this test, beside the file's other loop-guard tests or at the end, importing `advanceToolCallLoopGuard` from `./tool-loop.js`:
+
+```ts
+it("never counts identical calls from different agents as one agent repeating itself", () => {
+  let streak = { key: "", count: 0 } as Parameters<typeof advanceToolCallLoopGuard>[0];
+  for (const agent of ["a", "b", "c", "d", "a", "b", "c"]) {
+    const next = advanceToolCallLoopGuard(streak, "browser_tabs", { agent, args: {} });
+    streak = next.streak;
+    expect(next.stuck).toBe(false);
+  }
+});
+```
+
+If `ToolCallStreak`'s initial value has a different shape, use the one the executor starts with: search `let toolCallStreak`. This test passes already. It pins the keying the executor's one-line change relies on.
+
+The piToolAgent test:
 
 ```ts
 describe("piToolAgent", () => {
@@ -2944,11 +3366,13 @@ export function piToolAgent(executionId: string): string {
 
    Import `MAIN_AGENT` from `./browser-tab-registry.js` and `RunBrowserTabs` from `./run-browser-tabs.js`. Add `browserTabsFromTool` to the existing `./browser-tools.js` import.
 
-2. **Create the run's tab service.** Right after `const workspaceCheckpoint = createRunWorkspaceCheckpoint(…);`, add:
+2. **Create the run's tab service.**
+   - Next to `let computerLease: ComputerExecutionLease | null = null;`, before the lifecycle `try`, declare `let runTabs: RunBrowserTabs | undefined;`. The `finally` that ends that `try` closes the run's tabs (item 5).
+   - Right after `const workspaceCheckpoint = createRunWorkspaceCheckpoint(…);`, add:
 
 ```ts
         // One tab registry per run: helpers run in this process, so it is the single owner map.
-        const runTabs = new RunBrowserTabs({
+        const tabService = new RunBrowserTabs({
           browser,
           computer,
           context,
@@ -2960,23 +3384,26 @@ export function piToolAgent(executionId: string): string {
               botId: bot.id,
               type: "computer.browser_tabs",
               runId,
+              // A cancelled run still reports the tabs it leaves behind.
+              allowCancelledRun: true,
               payload: redactConnectorPayload(view, [...runSecrets]) as Record<string, unknown>,
             });
           },
         });
+        runTabs = tabService;
 ```
 
-   `browser` is the run's browser provider, used today in the page-browser dispatch. If its variable is declared later than this point, move this block to just after that declaration. It must stay in a scope that both the dispatch and the terminal paths can see; record any move in the ledger.
+   Closures below use `tabService`, the `const`, since TypeScript does not narrow a `let` inside a closure.
 
 3. **The page-browser dispatch.** In the block beginning `if (PAGE_BROWSER_TOOL_NAMES.has(name)) {`:
    - Change `if (name !== "browser_snapshot") workspaceCheckpoint.markDirty();` to `if (name !== "browser_snapshot" && name !== "browser_tabs") workspaceCheckpoint.markDirty();`.
    - Add right after it:
 
 ```ts
-            const tabs = { run: runTabs, agent: piToolAgent(executionId) };
+            const tabs = { run: tabService, agent: piToolAgent(executionId) };
             if (name === "browser_tabs") {
               return finish(
-                redactConnectorPayload(await browserTabsFromTool(runTabs, tabs.agent), [
+                redactConnectorPayload(await browserTabsFromTool(tabService, tabs.agent), [
                   ...runSecrets,
                 ]),
               );
@@ -2991,16 +3418,37 @@ export function piToolAgent(executionId: string): string {
 4. **Subagent events.** In the `event.type === "subagent"` branch, before `await deps.events.append(`, add:
 
 ```ts
-              if (event.status === "running") runTabs.labelHelper(event.agentId, event.name);
+              // "running" repeats with each progress update; labelling is idempotent.
+              if (event.status === "running") tabService.labelHelper(event.agentId, event.name);
               if (event.status === "completed" || event.status === "failed") {
-                await runTabs.handBack(event.agentId);
+                await tabService.handBack(event.agentId);
               }
 ```
 
-5. **Terminal cleanup.**
-   - Immediately before `await workspaceCheckpoint.flush();` / `terminalCheckpointComplete = true;` on the success path, add `await runTabs.closeOpened();`.
-   - In the run's failure `catch` that calls `deps.events.finalizeRun` with a failure, add `await runTabs.closeOpened().catch(() => undefined);` before the finalize.
-   - Paused runs return earlier (`if (approvalPausePending || !leaseValid) return;`), so they never reach either line. Confirm this while editing. If any waiting path reaches these lines, guard the call so it runs only for a terminal status, and record it in the ledger.
+5. **Terminal cleanup, in one place.** Runs end along several paths: success, the loop guard's early completion, a failure, a cancel, which returns straight to `finally`, and a lost lease. Close tabs in one spot that covers them all: the top of the lifecycle `finally`, before the screen is released. Decide from the run's committed status:
+
+```ts
+      } finally {
+        if (runTabs) {
+          // Only a finished run tidies up: a paused one resumes with its tabs, and a
+          // lost lease means another worker now runs it.
+          const ended = await deps.prisma.run
+            .findUnique({ where: { id: runId }, select: { status: true } })
+            .catch(() => null);
+          if (ended && isTerminal(ended.status as RunStatus)) {
+            await runTabs.closeOpened(AbortSignal.timeout(15_000)).catch(() => undefined);
+          }
+        }
+        detachShutdown?.();
+        // …unchanged…
+```
+
+   - Import `isTerminal` from `@rakazo/core`, and the `RunStatus` type if it is not already imported.
+   - `closeOpened` takes its own signal because a cancelled run's context signal is already aborted.
+
+6. **The loop guard per agent.** At `advanceToolCallLoopGuard(toolCallStreak, event.name, event.args)`, pass `{ agent: piToolAgent(event.executionId), args: event.args }` as the arguments.
+   - Helpers' calls never reset the main agent's streak.
+   - With tabs, identical reads such as `browser_tabs {}` from different helpers are normal. Keyed this way they never count as one agent repeating itself, and the stop message still names the tool.
 
 - [ ] **Step 4: Run the executor tests and the type check**
 
@@ -3023,26 +3471,36 @@ git commit -m "feat(adapters): give each run a tab registry shared by its helper
 - Create: `apps/api/src/browser-tabs.ts`
 - Test: `apps/api/src/browser-tabs.test.ts`
 - Modify: `apps/api/src/computer-status.ts` (`toComputerStatus`)
-- Modify: `apps/api/src/router.ts` (`computerStatus`, the new handler)
+- Modify: `apps/api/src/router.ts` (`computerStatus` and the new handler)
 - Modify: `apps/api/src/thread-target.ts` (`threadSnapshot`)
+- Modify: `apps/api/src/thread-message-pages.ts` (`shouldForwardPeerThreadEvent` and `shouldForwardBackgroundThreadEvent`)
+- Test: `apps/api/src/thread-message-pages.test.ts`
 - Modify: `packages/contracts/src/rpc.ts` (`computer.showBrowserTab`)
+- Modify: `packages/db/prisma/schema.prisma` (`Run`: `@@index([botId, createdAt])`)
+- Create: `packages/db/prisma/migrations/20261014120000_run_bot_created_index/migration.sql`
+- Modify: `packages/db/src/events.ts` (the `allowCancelledRun` doc comment)
 
 **Interfaces:**
-- Consumes: Task 5's `BrowserTabsSchema`; the sandbox's `pageBrowser` (Task 3 commands).
+- Consumes:
+  - Task 5's `BrowserTabsSchema`;
+  - the sandbox's `pageBrowser` with Task 3's `activate`;
+  - Task 10's `computer.browser_tabs` events, which carry the run's own `threadId` and `runId`.
 - Produces:
-  - **The listing function:** `latestBrowserTabs(prisma, botId): Promise<BrowserTabs | undefined>`.
-  - **The pinning function:**
+  - `latestBrowserTabs(db, botId): Promise<BrowserTabs | undefined>`, where `db` is a `PrismaClient` or a transaction client.
+  - The pin call:
 
     ```ts
     showBrowserTab(
       deps: { prisma, sandbox, events },
-      input: { spaceId, botId, threadId: string | null, computer: ComputerRef, target: string | null },
+      input: { spaceId, botId, computer: ComputerRef, target: string | null },
       context: AdapterContext,
     ): Promise<void>
     ```
 
-  - **The RPC:** `computer.showBrowserTab({ botId, target: string | null }) → { ok: true }`.
-  - **The status field:** `toComputerStatus(botId, computer, busyBotName, browserTabs?)`.
+  - `computer.showBrowserTab({ botId, target: string | null }) → { ok: true }`.
+  - `toComputerStatus(botId, computer, busyBotName, browserTabs?)`.
+
+Where the tab list lives: in the **latest run's** own thread. A run can belong to a group or another thread, and event `seq` is counted per thread. So the pin echo goes to the run's thread, never to the bot's DM.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3065,7 +3523,7 @@ const tabs = {
 
 function prismaWith(payload: unknown) {
   return {
-    run: { findFirst: vi.fn().mockResolvedValue({ id: "run-1" }) },
+    run: { findFirst: vi.fn().mockResolvedValue({ id: "run-1", threadId: "group-thread" }) },
     event: { findFirst: vi.fn().mockResolvedValue(payload === undefined ? null : { payload }) },
   } as unknown as PrismaClient;
 }
@@ -3081,18 +3539,22 @@ const context = {
 } satisfies AdapterContext;
 
 describe("browser tabs for the computer view", () => {
-  it("reads the latest run's tab list and ignores a malformed one", async () => {
-    expect(await latestBrowserTabs(prismaWith(tabs), "bot-1")).toEqual(tabs);
+  it("reads the latest run's tab list by bot, and ignores a malformed one", async () => {
+    const prisma = prismaWith(tabs);
+    expect(await latestBrowserTabs(prisma, "bot-1")).toEqual(tabs);
+    expect(prisma.run.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { botId: "bot-1" } }),
+    );
     expect(await latestBrowserTabs(prismaWith({ tabs: "nope" }), "bot-1")).toBeUndefined();
     expect(await latestBrowserTabs(prismaWith(undefined), "bot-1")).toBeUndefined();
   });
 
-  it("pins a tab on the computer and records it on the latest run", async () => {
+  it("pins a tab on the computer and records it in the latest run's own thread", async () => {
     const pageBrowser = vi.fn().mockResolvedValue({ ok: true, front: "T2", pinned: "T2" });
     const append = vi.fn().mockResolvedValue({});
     await showBrowserTab(
       { prisma: prismaWith(tabs), sandbox: { pageBrowser } as never, events: { append } as never },
-      { spaceId: "s", botId: "bot-1", threadId: "thread-1", computer, target: "T2" },
+      { spaceId: "s", botId: "bot-1", computer, target: "T2" },
       context,
     );
     expect(pageBrowser).toHaveBeenCalledWith(
@@ -3102,7 +3564,7 @@ describe("browser tabs for the computer view", () => {
     );
     expect(append).toHaveBeenCalledWith({
       spaceId: "s",
-      threadId: "thread-1",
+      threadId: "group-thread",
       botId: "bot-1",
       type: "computer.browser_tabs",
       runId: "run-1",
@@ -3115,17 +3577,25 @@ describe("browser tabs for the computer view", () => {
     const pageBrowser = vi.fn().mockResolvedValue({ ok: true, front: null, pinned: null });
     const append = vi.fn().mockResolvedValue({});
     await showBrowserTab(
-      { prisma: prismaWith({ ...tabs, pinned: "T2" }), sandbox: { pageBrowser } as never, events: { append } as never },
-      { spaceId: "s", botId: "bot-1", threadId: "thread-1", computer, target: null },
+      {
+        prisma: prismaWith({ ...tabs, pinned: "T2" }),
+        sandbox: { pageBrowser } as never,
+        events: { append } as never,
+      },
+      { spaceId: "s", botId: "bot-1", computer, target: null },
       context,
     );
-    expect(pageBrowser).toHaveBeenCalledWith(computer, { command: "activate", target: null, pin: false }, context);
+    expect(pageBrowser).toHaveBeenCalledWith(
+      computer,
+      { command: "activate", target: null, pin: false },
+      context,
+    );
     expect(append.mock.calls[0]?.[0].payload).toMatchObject({ front: "T1", pinned: null });
 
     const none = vi.fn();
     await showBrowserTab(
       { prisma: prismaWith(tabs), sandbox: {} as never, events: { append: none } as never },
-      { spaceId: "s", botId: "bot-1", threadId: "thread-1", computer, target: "T2" },
+      { spaceId: "s", botId: "bot-1", computer, target: "T2" },
       context,
     );
     expect(none).not.toHaveBeenCalled();
@@ -3133,63 +3603,67 @@ describe("browser tabs for the computer view", () => {
 });
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+In `apps/api/src/thread-message-pages.test.ts`, add:
 
-Run: `pnpm vitest run apps/api/src/browser-tabs.test.ts`
+```ts
+it("forwards a peer or background run's browser tabs, which carry no message content", () => {
+  const event = { type: "computer.browser_tabs", payload: {} };
+  expect(shouldForwardPeerThreadEvent(event)).toBe(true);
+  expect(shouldForwardBackgroundThreadEvent(event)).toBe(true);
+});
+```
 
-Expected: FAIL; the module does not exist yet.
+- [ ] **Step 2: Run them to make sure they fail**
 
-- [ ] **Step 3: Implement the module**
+Run: `pnpm vitest run apps/api/src/browser-tabs.test.ts apps/api/src/thread-message-pages.test.ts`
 
-Create `apps/api/src/browser-tabs.ts`:
+Expected: FAIL. The module does not exist, and the filters drop the event.
+
+- [ ] **Step 3: Implement the module, the filters, the index and the doc comment**
+
+1. **Create `apps/api/src/browser-tabs.ts`:**
 
 ```ts
 import type { AdapterContext, ComputerRef, SandboxProvider } from "@rakazo/adapter-kit";
 import type { BrowserTabs } from "@rakazo/contracts";
 import { BrowserTabsSchema } from "@rakazo/contracts";
-import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import type { Prisma, ThreadEvents } from "@rakazo/db";
 
-async function latestRunTabs(prisma: PrismaClient, botId: string) {
-  const run = await prisma.run.findFirst({
+/** A client or a transaction: the thread snapshot reads this inside its own. */
+type Db = Pick<Prisma.TransactionClient, "run" | "event">;
+
+async function latestRunTabs(db: Db, botId: string) {
+  const run = await db.run.findFirst({
     where: { botId },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    select: { id: true },
+    select: { id: true, threadId: true },
   });
   if (!run) return undefined;
-  const event = await prisma.event.findFirst({
+  const event = await db.event.findFirst({
     where: { runId: run.id, type: "computer.browser_tabs" },
     orderBy: { seq: "desc" },
     select: { payload: true },
   });
   const parsed = BrowserTabsSchema.safeParse(event?.payload);
-  return parsed.success ? { runId: run.id, tabs: parsed.data } : undefined;
+  return parsed.success ? { runId: run.id, threadId: run.threadId, tabs: parsed.data } : undefined;
 }
 
 /** The tab strip as the bot's latest run left it, or nothing. */
-export async function latestBrowserTabs(
-  prisma: PrismaClient,
-  botId: string,
-): Promise<BrowserTabs | undefined> {
-  return (await latestRunTabs(prisma, botId))?.tabs;
+export async function latestBrowserTabs(db: Db, botId: string): Promise<BrowserTabs | undefined> {
+  return (await latestRunTabs(db, botId))?.tabs;
 }
 
 /**
  * Pin the viewer to a tab, or unpin with `target: null`, and record the result
- * where the strip reads it. The run's follow never moves a pinned view.
+ * where the strip reads it. The computer holds the pin; this only echoes it.
  */
 export async function showBrowserTab(
   deps: {
-    prisma: PrismaClient;
+    prisma: Db;
     sandbox: Pick<SandboxProvider, "pageBrowser">;
     events: Pick<ThreadEvents, "append">;
   },
-  input: {
-    spaceId: string;
-    botId: string;
-    threadId: string | null;
-    computer: ComputerRef;
-    target: string | null;
-  },
+  input: { spaceId: string; botId: string; computer: ComputerRef; target: string | null },
   context: AdapterContext,
 ): Promise<void> {
   if (!deps.sandbox.pageBrowser) return;
@@ -3198,12 +3672,12 @@ export async function showBrowserTab(
     { command: "activate", target: input.target, pin: input.target !== null },
     context,
   );
-  if (!reply.ok || !input.threadId) return;
+  if (!reply.ok) return;
   const latest = await latestRunTabs(deps.prisma, input.botId);
   if (!latest) return;
   await deps.events.append({
     spaceId: input.spaceId,
-    threadId: input.threadId,
+    threadId: latest.threadId,
     botId: input.botId,
     type: "computer.browser_tabs",
     runId: latest.runId,
@@ -3218,20 +3692,33 @@ export async function showBrowserTab(
 }
 ```
 
-Check that `SandboxProvider` is exported from `@rakazo/adapter-kit` and `ThreadEvents` from `@rakazo/db`; both are, as the router imports them. If `AppendEventInput.payload` is typed `Record<string, unknown>`, the spread object satisfies it.
+   Check that `Prisma` is exported from `@rakazo/db` (`thread-target.ts` imports it) and that `Run.threadId` is non-null in `schema.prisma`. If it is nullable, return `undefined` when it is null.
+
+2. **The forward filters.** In both `shouldForwardPeerThreadEvent` and `shouldForwardBackgroundThreadEvent` (`apps/api/src/thread-message-pages.ts`), add `event.type === "computer.browser_tabs" ||` to the first `if`'s list.
+
+3. **The index.** In `packages/db/prisma/schema.prisma`, under `model Run`, add `@@index([botId, createdAt])` after `@@index([spaceId, botId])`. Create `packages/db/prisma/migrations/20261014120000_run_bot_created_index/migration.sql`:
+
+```sql
+-- The computer view reads a bot's latest run on every status poll.
+CREATE INDEX "runs_botId_createdAt_idx" ON "runs"("botId", "createdAt");
+```
+
+   Confirm the SQL matches what Prisma would generate. Run `pnpm --filter @rakazo/db exec prisma migrate diff --from-schema-datamodel <schema before> --to-schema-datamodel prisma/schema.prisma --script`, or compare it with the page-decider migration's style. Then run `pnpm db:generate`.
+
+4. **The doc comment.** In `packages/db/src/events.ts`, change the `allowCancelledRun` doc comment to: `/** Allows writing to a run already cancelled: its terminal echo, and the computer state it left (browser tabs). Every other event stays rejected. */`
 
 - [ ] **Step 4: Run the tests**
 
-Run: `pnpm vitest run apps/api/src/browser-tabs.test.ts`
+Run: `pnpm exec biome check --write apps/api/src/browser-tabs.ts apps/api/src/browser-tabs.test.ts apps/api/src/thread-message-pages.ts apps/api/src/thread-message-pages.test.ts && pnpm vitest run apps/api/src/browser-tabs.test.ts apps/api/src/thread-message-pages.test.ts`
 
 Expected: PASS.
 
 - [ ] **Step 5: Wire the status, the snapshot and the RPC**
 
-1. **`toComputerStatus`** (`apps/api/src/computer-status.ts`).
-   - Add a fourth parameter, `browserTabs?: BrowserTabs`.
-   - End the returned object with `...(browserTabs ? { browserTabs } : {})`.
-   - Import `BrowserTabs` with `import type`.
+1. **`toComputerStatus`** (`apps/api/src/computer-status.ts`):
+   - add a fourth parameter, `browserTabs?: BrowserTabs`;
+   - end the returned object with `...(browserTabs ? { browserTabs } : {})`;
+   - add `import type { BrowserTabs } from "@rakazo/contracts"`.
 
 2. **`computerStatus`** (`apps/api/src/router.ts`). Load the tabs only for a running computer:
 
@@ -3241,10 +3728,10 @@ Expected: PASS.
   return toComputerStatus(botId, bot.computer, busyBotName, browserTabs);
 ```
 
-3. **`threadSnapshot`** (`apps/api/src/thread-target.ts`).
-   - In the `Promise.all` that resolves `busyBotName`, add a third element: `target.bot.computer?.state === "running" ? latestBrowserTabs(deps.prisma, target.botId) : Promise.resolve(undefined)`.
-   - Destructure it as `browserTabs`.
-   - Pass it as the fourth argument of `toComputerStatus`.
+3. **`threadSnapshot`** (`apps/api/src/thread-target.ts`). Read the tabs **inside** the existing `FOR SHARE` transaction, so the cursor and the tab list come from one commit:
+   - add `target.bot.computer?.state === "running" ? latestBrowserTabs(tx, target.botId) : undefined` to the transaction's `Promise.all`;
+   - return it with the transaction's result;
+   - pass it as the fourth argument of `toComputerStatus(target.botId, target.bot.computer, busyBotName, browserTabs)`.
 
 4. **The contract** (`packages/contracts/src/rpc.ts`). In `computer: { … }`, after `screenUrl`, add:
 
@@ -3254,7 +3741,7 @@ Expected: PASS.
       .output(z.object({ ok: z.literal(true) })),
 ```
 
-5. **The handler** (`apps/api/src/router.ts`). Next to `screenUrl`, add:
+5. **The handler** (`apps/api/src/router.ts`), next to `screenUrl`:
 
 ```ts
       showBrowserTab: authed.computer.showBrowserTab.handler(async ({ context, input }) => {
@@ -3268,7 +3755,6 @@ Expected: PASS.
           {
             spaceId: context.actor.spaceId,
             botId: bot.id,
-            threadId: bot.thread?.id ?? null,
             computer: toComputerRef(computer),
             target: input.target,
           },
@@ -3278,19 +3764,24 @@ Expected: PASS.
       }),
 ```
 
-   Import `latestBrowserTabs` and `showBrowserTab` from `./browser-tabs.js`. `repos`, `toComputerRef` and `computerContext` are already in scope where the other `computer.*` handlers use them. If `bot.thread` is not selected by `getBot`, use the same thread lookup the `takeover` handler uses, and record it in the ledger.
+   Import `latestBrowserTabs` and `showBrowserTab` from `./browser-tabs.js`. The handler checks access the way `screenUrl` does, through `getBot`. Pinning changes only what the viewer watches, so it needs no screen control.
 
-- [ ] **Step 6: Type check and the API tests**
+   Only the Docker sandbox has `pageBrowser`, so on the fake or emulator computer a pin does nothing. That is the explicit degrade; record it in the ledger and the PR.
 
-Run: `pnpm --filter @rakazo/contracts check && pnpm --filter @rakazo/api check && pnpm vitest run apps/api/src`
+- [ ] **Step 6: Type-check and run the API tests**
 
-Expected: PASS. If a router contract test enumerates the computer procedures, add `showBrowserTab` to it.
+Run: `pnpm --filter @rakazo/db check && pnpm --filter @rakazo/contracts check && pnpm --filter @rakazo/api check && pnpm vitest run apps/api/src`
+
+Expected: PASS.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add apps/api/src/browser-tabs.ts apps/api/src/browser-tabs.test.ts apps/api/src/computer-status.ts \
-  apps/api/src/router.ts apps/api/src/thread-target.ts packages/contracts/src/rpc.ts
+  apps/api/src/router.ts apps/api/src/thread-target.ts apps/api/src/thread-message-pages.ts \
+  apps/api/src/thread-message-pages.test.ts packages/contracts/src/rpc.ts \
+  packages/db/prisma/schema.prisma packages/db/prisma/migrations/20261014120000_run_bot_created_index \
+  packages/db/src/events.ts
 git commit -m "feat(api): serve the bot's browser tabs and let the viewer pin one"
 ```
 
@@ -3304,6 +3795,7 @@ git commit -m "feat(api): serve the bot's browser tabs and let the viewer pin on
 - Modify: `apps/web/src/components/computer/ComputerWorkspace.tsx`
 - Modify: `apps/web/src/pages/Shell.tsx` (the `<ComputerWorkspace … />` usage)
 - Modify: `apps/web/src/lib/thread-events.ts` (`reduceComputerStatus`, `isComputerStatusEvent`)
+- Modify: `apps/web/src/pages/Shell.tsx` (the live-event handler's `refreshComputerScreen` branch)
 - Test: `apps/web/src/lib/thread-events.test.ts`
 - Modify: the web locale catalogs (via `pnpm --filter @rakazo/web intl:extract`)
 - Test: `apps/web/e2e/computer-workspace.spec.ts`
@@ -3316,7 +3808,7 @@ git commit -m "feat(api): serve the bot's browser tabs and let the viewer pin on
 
 - [ ] **Step 1: Write the failing reducer test**
 
-In `apps/web/src/lib/thread-events.test.ts`, near the other `reduceComputerStatus` tests, add a test. Reuse the file's existing `ComputerStatus` fixture: the object with `terminalAvailable: true` around line 1734. Below, `status` stands for that fixture's variable name.
+In `apps/web/src/lib/thread-events.test.ts`, near the other `reduceComputerStatus` tests, add a test. The file's fixture is the `computer()` factory, around line 1718. Start the test with `const status = computer();`, and add `isComputerStatusEvent` to the file's imports from `./thread-events.js`.
 
 ```ts
 it("applies a bot's browser tabs to its computer status", () => {
@@ -3553,27 +4045,35 @@ In `apps/web/src/pages/Shell.tsx`, at the `<ComputerWorkspace` usage, pass:
 
 ```tsx
                 onShowBrowserTab={(target) => {
+                  // A pin only changes what this viewer watches; a failed one leaves the view as it was.
                   void rpc.computer
-                    .showBrowserTab({ botId: active.id, target })
-                    .catch((error) => setComputerError(errorText(error, t`Could not show that tab`)));
+                    .showBrowserTab({ botId: computerBot.id, target })
+                    .catch(() => undefined);
                 }}
 ```
 
-Use whatever bot ID that usage already passes as `botId`. If `setComputerError` or `errorText` are named differently in that scope, use the existing error path the `onTakeControl` callback uses.
+`computerBot` is the bot that usage already passes as `botId`; `active` can be undefined in a group view. There is deliberately no error path. The screen-error state would replace the live screen with "Retry screen", which is wrong for a failed pin.
 
-"Could not show that tab" is a new error string. It appears only on failure. Record it with the other new copy in the PR.
+In the same file, the live-event handler sends every `isComputerStatusEvent` to `refreshComputerScreen`, which fetches a fresh screen URL. For Docker computers that URL is sealed anew on each call, so the screen would reconnect on every tab event. Change that branch to:
+
+```tsx
+        } else if (isComputerStatusEvent(event) && event.type !== "computer.browser_tabs") {
+          void refreshComputerScreen(active.id).catch(() => undefined);
+        }
+```
+
+The status itself still updates: `reduceComputerStatus` applies the event wherever computer events are reduced.
 
 - [ ] **Step 7: Run the unit tests, extract the strings, and translate them**
 
 Run: `pnpm vitest run apps/web/src/components/computer apps/web/src/lib/thread-events.test.ts && pnpm --filter @rakazo/web intl:extract`
 
-Then fill the new `msgstr` entries in the de, ru and zh catalogs that `intl:extract` touched:
+Then fill the new `msgstr` entries in the `de`, `ru` and `zh-CN` catalogs that `intl:extract` touched. Leave the other locales' new entries empty, as earlier string additions did (for example commit 7d32e171). CI fails on catalogs that are not extracted.
 
-| String | de | ru | zh |
+| String | de | ru | zh-CN |
 |---|---|---|---|
 | "Tabs" | "Tabs" | "Вкладки" | "标签页" |
 | "Follow" | "Folgen" | "Следовать" | "跟随" |
-| "Could not show that tab" | "Dieser Tab konnte nicht angezeigt werden" | "Не удалось показать вкладку" | "无法显示该标签页" |
 
 Run `pnpm --filter @rakazo/web intl:compile` if the repo commits compiled catalogs. Check with `git status`.
 
@@ -3615,8 +4115,10 @@ test("the computer shows the bot's browser tabs and pins one", async ({ page }, 
     "true",
   );
   await captureScreenshot(page, testInfo, "computer-browser-tabs");
+  // Listen before clicking, or the request can be missed.
+  const pinned = page.waitForRequest("**/rpc/computer/showBrowserTab");
   await strip.getByRole("button", { name: /Reviews · Reddit/ }).click();
-  await expect(page.waitForRequest("**/rpc/computer/showBrowserTab")).resolves.toBeTruthy();
+  expect((await pinned).postDataJSON()).toMatchObject({ json: { target: "T3" } });
 });
 ```
 
@@ -3642,6 +4144,8 @@ Adjust the `apps/web/src/locales` path to wherever `intl:extract` wrote the cata
 
 ### Task 13: Mobile — the tabs menu
 
+A native menu, built with the `MenuView` primitive the repo already uses: `components/menu-picker.tsx` and `computer-maintenance-actions.tsx`. The front tab carries the system checkmark.
+
 **Files:**
 - Create: `apps/mobile/lib/computer-tabs.ts`
 - Test: `apps/mobile/lib/computer-tabs.test.ts`
@@ -3649,8 +4153,12 @@ Adjust the `apps/web/src/locales` path to wherever `intl:extract` wrote the cata
 - Modify: `apps/mobile/lib/locales/de.ts`, `ru.ts`, `zh.ts`
 
 **Interfaces:**
-- Consumes: `ComputerStatus.browserTabs`, `browserTabLabel`, and `computer/showBrowserTab`.
-- Produces: `browserTabActions(tabs: BrowserTabs | undefined, options: { follow: string; show: (target: string | null) => void }): Array<{ text: string; onPress: () => void }>`.
+- Consumes:
+  - `ComputerStatus.browserTabs` and `browserTabLabel` (Task 5);
+  - `computer/showBrowserTab` (Task 11).
+- Produces:
+  - `browserTabMenu(tabs: BrowserTabs | undefined, follow: string): Array<{ id: string; title: string; state: "on" | "off" }>`;
+  - `browserTabChoice(id: string): string | null | undefined`. It returns a target, `null` for Follow, or `undefined` for anything else.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3658,8 +4166,8 @@ Create `apps/mobile/lib/computer-tabs.test.ts`:
 
 ```ts
 import type { BrowserTabs } from "@rakazo/contracts";
-import { describe, expect, it, vi } from "vitest";
-import { browserTabActions } from "./computer-tabs";
+import { describe, expect, it } from "vitest";
+import { browserTabChoice, browserTabMenu } from "./computer-tabs";
 
 const tabs: BrowserTabs = {
   tabs: [
@@ -3672,33 +4180,36 @@ const tabs: BrowserTabs = {
 
 describe("browser tab menu", () => {
   it("is empty until there is more than one tab", () => {
-    expect(browserTabActions(undefined, { follow: "Follow", show: vi.fn() })).toEqual([]);
-    expect(browserTabActions({ ...tabs, tabs: [tabs.tabs[0]!] }, { follow: "Follow", show: vi.fn() })).toEqual([]);
+    expect(browserTabMenu(undefined, "Follow")).toEqual([]);
+    expect(browserTabMenu({ ...tabs, tabs: [tabs.tabs[0]!] }, "Follow")).toEqual([]);
   });
 
-  it("lists tabs with the shown one checked, and pins on press", () => {
-    const show = vi.fn();
-    const actions = browserTabActions(tabs, { follow: "Follow", show });
-    expect(actions.map((action) => action.text)).toEqual(["✓ Ada · Flights", "Hotels · hotels"]);
-    actions[1]?.onPress();
-    expect(show).toHaveBeenCalledWith("T2");
+  it("lists tabs with the shown one checked", () => {
+    expect(browserTabMenu(tabs, "Follow")).toEqual([
+      { id: "tab:T1", title: "Ada · Flights", state: "on" },
+      { id: "tab:T2", title: "Hotels · hotels", state: "off" },
+    ]);
   });
 
-  it("adds Follow while pinned, which unpins", () => {
-    const show = vi.fn();
-    const actions = browserTabActions({ ...tabs, pinned: "T2" }, { follow: "Follow", show });
-    expect(actions.map((action) => action.text)).toEqual(["Ada · Flights", "✓ Hotels · hotels", "Follow"]);
-    actions[2]?.onPress();
-    expect(show).toHaveBeenCalledWith(null);
+  it("adds Follow while pinned, and maps choices back", () => {
+    const menu = browserTabMenu({ ...tabs, pinned: "T2" }, "Follow");
+    expect(menu.map((item) => [item.title, item.state])).toEqual([
+      ["Ada · Flights", "off"],
+      ["Hotels · hotels", "on"],
+      ["Follow", "off"],
+    ]);
+    expect(browserTabChoice("tab:T2")).toBe("T2");
+    expect(browserTabChoice("follow")).toBeNull();
+    expect(browserTabChoice("other")).toBeUndefined();
   });
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [ ] **Step 2: Run it to make sure it fails**
 
 Run: `pnpm --filter @rakazo/mobile test -- computer-tabs`
 
-Expected: FAIL; the module does not exist yet.
+Expected: FAIL, because the module does not exist.
 
 - [ ] **Step 3: Implement**
 
@@ -3708,72 +4219,93 @@ Create `apps/mobile/lib/computer-tabs.ts`:
 import type { BrowserTabs } from "@rakazo/contracts";
 import { browserTabLabel } from "@rakazo/core";
 
+const TAB = "tab:";
+const FOLLOW = "follow";
+
 /** The native tabs menu: one item per tab, the shown one checked, and Follow while pinned. */
-export function browserTabActions(
+export function browserTabMenu(
   tabs: BrowserTabs | undefined,
-  { follow, show }: { follow: string; show: (target: string | null) => void },
-): Array<{ text: string; onPress: () => void }> {
+  follow: string,
+): Array<{ id: string; title: string; state: "on" | "off" }> {
   if (!tabs || tabs.tabs.length < 2) return [];
   const shown = tabs.pinned ?? tabs.front;
   return [
     ...tabs.tabs.map((tab) => ({
-      text: `${tab.target === shown ? "✓ " : ""}${browserTabLabel(tab)}`,
-      onPress: () => show(tab.target),
+      id: `${TAB}${tab.target}`,
+      title: browserTabLabel(tab),
+      state: tab.target === shown ? ("on" as const) : ("off" as const),
     })),
-    ...(tabs.pinned ? [{ text: follow, onPress: () => show(null) }] : []),
+    ...(tabs.pinned ? [{ id: FOLLOW, title: follow, state: "off" as const }] : []),
   ];
+}
+
+/** A chosen menu item: the tab to pin, null to follow again, undefined for anything else. */
+export function browserTabChoice(id: string): string | null | undefined {
+  if (id === FOLLOW) return null;
+  return id.startsWith(TAB) ? id.slice(TAB.length) : undefined;
 }
 ```
 
 In `apps/mobile/app/computer.tsx`:
 
-1. Import `browserTabActions` from `../lib/computer-tabs`, `presentMessageActionSheet` from `../lib/message-action-sheet`, and `NativeSymbol` from `../components/native-symbol`. Add `useResolvedAppearance` to the `../lib/native` import.
+1. **Imports.**
+   - `MenuView` from `@expo/ui/community/menu`;
+   - `browserTabChoice` and `browserTabMenu` from `../lib/computer-tabs`;
+   - add `useResolvedAppearance` to the `../lib/native` import.
 
-2. In the component body, add:
+2. **Component body.** Add:
 
 ```ts
   const colorScheme = useResolvedAppearance();
-  const tabActions = browserTabActions(computer?.browserTabs, {
-    follow: t("Follow"),
-    show: (target) => {
-      void rpc("computer/showBrowserTab", { botId, target }).catch((err) =>
-        setError(errorText(err, t("Could not show that tab"))),
-      );
-    },
-  });
+  const tabMenu = browserTabMenu(computer?.browserTabs, t("Follow"));
+  const showTab = (target: string | null) => {
+    if (!botId) return;
+    // A pin only changes what this viewer watches; a failed one leaves the view as it was.
+    void rpc("computer/showBrowserTab", { botId, target })
+      .then(() => refresh())
+      .catch(() => undefined);
+  };
 ```
 
-3. In the full-screen viewer's top bar, inside the row that holds the label and the "You have control" pill, add this after the pill:
+3. **The viewer's top bar.** In the right-hand control group, right before the "Close computer" `GlassIconButton`, add:
 
 ```tsx
-                  {tabActions.length > 0 ? (
-                    <Pressable
-                      accessibilityLabel={t("Tabs")}
-                      hitSlop={8}
-                      onPress={() =>
-                        presentMessageActionSheet({
-                          title: t("Tabs"),
-                          cancel: t("Cancel"),
-                          more: t("More"),
-                          colorScheme,
-                          actions: tabActions,
-                        })
-                      }
+                  {tabMenu.length > 0 ? (
+                    <MenuView
+                      actions={tabMenu}
+                      colorScheme={colorScheme}
+                      onPressAction={({ nativeEvent }) => {
+                        const choice = browserTabChoice(nativeEvent.event);
+                        if (choice !== undefined) showTab(choice);
+                      }}
+                      title={t("Tabs")}
                     >
-                      <NativeSymbol ios="square.on.square" android="copy-outline" size={19} />
-                    </Pressable>
+                      <GlassIconButton
+                        accessibilityLabel={t("Tabs")}
+                        onPress={() => undefined}
+                        ios="square.on.square"
+                        android="copy-outline"
+                        size={36}
+                        iconSize={16}
+                      />
+                    </MenuView>
                   ) : null}
 ```
 
-4. Add the three strings to each catalog, using the same translations as the web table in Task 12 Step 7:
-   - `apps/mobile/lib/locales/de.ts`, `ru.ts` and `zh.ts`;
-   - `"Tabs"`, `"Follow"`, `"Could not show that tab"`.
+   `MenuView` opens on press of its child, as it does in `computer-maintenance-actions.tsx`. If the child's own `onPress` swallows the press on a platform, use the plain view that file wraps instead, and record it in the ledger.
 
-- [ ] **Step 4: Run the mobile tests and check**
+4. **Catalogs.** Add `"Tabs"` and `"Follow"` to `apps/mobile/lib/locales/de.ts`, `ru.ts` and `zh.ts`:
 
-Run: `pnpm --filter @rakazo/mobile test && pnpm --filter @rakazo/mobile check`
+| String | de | ru | zh |
+|---|---|---|---|
+| Tabs | Tabs | Вкладки | 标签页 |
+| Follow | Folgen | Следовать | 跟随 |
 
-Expected: PASS. If `i18n.test.ts` checks that every `t()` key exists in the catalogs, it passes with the strings added.
+- [ ] **Step 4: Run the mobile tests and checks**
+
+Run: `pnpm exec biome check --write apps/mobile/lib/computer-tabs.ts apps/mobile/lib/computer-tabs.test.ts apps/mobile/app/computer.tsx && pnpm --filter @rakazo/mobile test && pnpm --filter @rakazo/mobile check`
+
+Expected: PASS. `i18n.test.ts` requires every `t()` key to exist in the catalogs, and the step above adds them.
 
 - [ ] **Step 5: Commit**
 
@@ -3793,7 +4325,7 @@ git commit -m "feat(mobile): pick which browser tab the computer view shows"
 
 - [ ] **Step 1: Run the full suite**
 
-Run: `pnpm lint && pnpm check && pnpm test && python3 infra/sandboxes/computer/test_page_browser.py`
+Run: `pnpm lint && pnpm check && pnpm test && python3 infra/sandboxes/computer/test_page_browser.py && pnpm --filter @rakazo/web intl:extract && git diff --exit-code apps/web/src/locales`
 
 Expected:
 - Lint and types are clean.
@@ -3806,8 +4338,10 @@ Confirm that any failure also fails on `main` before calling it pre-existing. Do
 Build the computer image and start the local stack the way `docs/self-host.md` describes. Then, with a bot on the Docker computer:
 1. **Two helpers at once.** Ask the bot something that makes it start two helpers browsing different sites at the same time. Expect two tabs in the strip, each labelled with its helper. Each helper's actions stay in its own tab, and the screen switches between them no faster than about every 1.5 s.
 2. **Pin and follow.** Click a chip. The view stays on that tab while the helpers keep working. Click Follow, and following resumes.
-3. **Hand-back and cleanup.** When the run finishes, the helpers' background tabs close, and the tab in front stays.
-4. **Hidden tabs.** Repeat Task 1's probe against the computer's own Chromium: `docker exec` into the container and run the probe against its CDP port. Confirm the background tab renders with the chosen `OPEN_IN_NEW_WINDOW` value.
+3. **Hand-back and cleanup.** When the run finishes, the helpers' background tabs close, and the tab in front stays. Repeat with **Stop** pressed mid-run: the tabs still close.
+4. **Pin while the run is active.** Pin a tab from the strip while helpers are browsing. The strip keeps showing Follow, and the screen stays put. Then click Follow, and following resumes.
+5. **Pause and resume.** Have the bot ask you something mid-browsing. Answer it, and confirm the bot keeps working in the same tabs by the same handles.
+6. **Hidden tabs.** Repeat Task 1's probe against the computer's own Chromium: `docker exec` into the container and run the probe against its CDP port. Confirm the background tab renders with the chosen `OPEN_IN_NEW_WINDOW` value.
 
 Record what was seen in the ledger, without hostnames, paths or account names.
 
@@ -3825,6 +4359,8 @@ git commit -m "docs: record what implementing browser tabs changed in its spec a
 - [ ] **Step 5: Hand off**
 
 Use superpowers:finishing-a-development-branch. Any PR description must:
-- quote the new copy ("Tabs", "Follow", "Could not show that tab") and justify each one;
+- quote the new copy ("Tabs", "Follow") and justify each one;
+- name the one schema change (the `runs(botId, createdAt)` index) and its reason;
+- state the offline degrade: on the fake and emulator computers, pinning does nothing;
 - link the CI screenshot `computer-browser-tabs`;
 - say that the mobile menu is native-only and not captured by CI.
