@@ -17,7 +17,9 @@ concurrency:
 
 jobs:
   publish:
+    # Only where the gallery's storage is configured: without it, publishing can only fail.
     if: >-
+      vars.S3_BUCKET != '' &&
       (github.event.workflow_run.conclusion == 'success' ||
        github.event.workflow_run.conclusion == 'failure' ||
        github.event.workflow_run.conclusion == 'timed_out') &&
