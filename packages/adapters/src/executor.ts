@@ -188,10 +188,12 @@ import {
   shellCommandEnvironment,
 } from "./bot-secrets.js";
 import { createBrowserProvider } from "./browser-provider-factory.js";
+import { MAIN_AGENT } from "./browser-tab-registry.js";
 import {
   browserActFromTool,
   browserNavigateFromTool,
   browserSnapshotFromTool,
+  browserTabsFromTool,
 } from "./browser-tools.js";
 import { agentConnectionTools, builtinAgentTools, sharedMemorySaveError } from "./builtin-tools.js";
 import { archiveSpawnedBot, spawnBot } from "./child-bots.js";
@@ -310,6 +312,7 @@ import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { assertSafeRemoteUrl } from "./remote-mcp.js";
 import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
+import { RunBrowserTabs } from "./run-browser-tabs.js";
 import {
   commitConsumedRunSecret,
   normalizeSecretAskPurpose,
@@ -3310,6 +3313,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         return;
       }
       let computerLease: ComputerExecutionLease | null = null;
+      // The run's tabs, closed in the lifecycle `finally` once the run is terminal.
+      let runTabs: RunBrowserTabs | undefined;
       try {
         computerLease = await acquireComputerExecutionLease(deps.prisma, {
           computerId: leaseTarget.computerId,
@@ -3767,6 +3772,26 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const workspaceCheckpoint = createRunWorkspaceCheckpoint(() =>
           checkpointRunComputerWorkspace(deps, storedComputer, computer, context),
         );
+        // One tab registry per run: helpers run in this process, so it is the single owner map.
+        const tabService = new RunBrowserTabs({
+          browser,
+          computer,
+          context,
+          botName: bot.name,
+          publish: async (view) => {
+            await deps.events.append({
+              spaceId: run.spaceId,
+              threadId: thread.id,
+              botId: bot.id,
+              type: "computer.browser_tabs",
+              runId,
+              // A cancelled run still reports the tabs it leaves behind.
+              allowCancelledRun: true,
+              payload: redactConnectorPayload(view, [...runSecrets]) as Record<string, unknown>,
+            });
+          },
+        });
+        runTabs = tabService;
         let currentTurnFiles: Awaited<ReturnType<typeof materializeCurrentTurnFiles>>;
         try {
           currentTurnFiles = deps.artifacts
@@ -4718,6 +4743,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 error: "Teaching is in progress. Stop teaching before using the computer.",
               };
             }
+            // With two tabs or more, desktop clicks land in whichever tab is in front.
+            const desktop = await tabService.forDesktop(piToolAgent(executionId));
+            if (desktop.error) return { error: desktop.error };
             const actions = parseComputerActions(args.actions);
             const visualActionKey = computerVisualActionKey(actions);
             if (unchangedVisualActionBlocked(unchangedVisualStreak, actions)) {
@@ -5231,6 +5259,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (name !== "browser_snapshot" && name !== "browser_tabs") {
               workspaceCheckpoint.markDirty();
             }
+            const tabs = { run: tabService, agent: piToolAgent(executionId) };
+            if (name === "browser_tabs") {
+              return finish(
+                redactConnectorPayload(await browserTabsFromTool(tabService, tabs.agent), [
+                  ...runSecrets,
+                ]),
+              );
+            }
+            // Fail closed: only browser_act may reach the act path below, which clicks.
+            if (
+              name !== "browser_navigate" &&
+              name !== "browser_snapshot" &&
+              name !== "browser_act"
+            ) {
+              return finish({ error: `Unknown page tool: ${name}` });
+            }
             // Pages can echo a filled login (e.g. a username field), so scrub every page result.
             const redactions = () => [...runSecrets];
             const tool =
@@ -5254,13 +5298,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       ? browserNavigateFromTool(browser, computer, context, args, {
                           decider,
                           redactions,
+                          tabs,
                         })
-                      : tool(browser, computer, context, args)),
+                      : tool(browser, computer, context, args, { tabs })),
                     redactions(),
                   )
                 : await browserActFromTool(browser, computer, context, args, {
                     redactions,
                     decider,
+                    tabs,
                     resolveSecretFill: async (step) => {
                       const resolved = await resolveLoginFill({
                         prisma: deps.prisma,
@@ -6905,7 +6951,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
               });
               pendingToolNames.push(event.name);
               tryFlushPendingTools();
-              const loopGuard = advanceToolCallLoopGuard(toolCallStreak, event.name, event.args);
+              // Keyed per agent: parallel helpers making the same read are not one agent repeating itself.
+              const loopGuard = advanceToolCallLoopGuard(toolCallStreak, event.name, {
+                agent: piToolAgent(event.executionId),
+                args: event.args,
+              });
               toolCallStreak = loopGuard.streak;
               if (loopGuard.stuck) {
                 approvedEffectReplays.assertDrained();
@@ -6997,6 +7047,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 }
               }
             } else if (event.type === "subagent") {
+              // "running" repeats with each progress update; labelling is idempotent.
+              if (event.status === "running") tabService.labelHelper(event.agentId, event.name);
+              if (event.status === "completed" || event.status === "failed") {
+                await tabService.handBack(event.agentId);
+              }
               const safeTask = redactSecrets(event.task, runSecrets);
               const safeProgress = event.progress
                 ? redactSecrets(event.progress, runSecrets)
@@ -7327,6 +7382,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
           throw new Error("Run setup failed; retrying");
         }
       } finally {
+        if (runTabs) {
+          // Only a finished run tidies up: a paused one resumes with its tabs, and a
+          // lost lease means another worker now runs it.
+          const ended = await deps.prisma.run
+            .findUnique({ where: { id: runId }, select: { status: true } })
+            .catch(() => null);
+          if (ended && isTerminal(ended.status as RunStatus)) {
+            // Its own signal: a cancelled run's context signal is already aborted.
+            await runTabs.closeOpened(AbortSignal.timeout(15_000)).catch(() => undefined);
+          }
+        }
         detachShutdown?.();
         clearInterval(heartbeat);
         if (!retainComputerLease) {
@@ -8289,6 +8355,25 @@ export function legacyPiToolCallId(executionId: string): string | undefined {
     // Other runtimes keep their existing opaque execution IDs.
   }
   return undefined;
+}
+
+/** Which agent of a run made a tool call: "main", or the helper's agent ID. */
+export function piToolAgent(executionId: string): string {
+  try {
+    const value: unknown = JSON.parse(executionId);
+    if (
+      Array.isArray(value) &&
+      value.length === 3 &&
+      value[0] === "pi-tool" &&
+      typeof value[1] === "string" &&
+      value[1].length > 0
+    ) {
+      return value[1];
+    }
+  } catch {
+    // Other runtimes have one agent per run.
+  }
+  return MAIN_AGENT;
 }
 
 export async function recordEffect(

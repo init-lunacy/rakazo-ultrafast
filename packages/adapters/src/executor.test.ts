@@ -13,6 +13,7 @@ import {
   missingTurnImagesInstruction,
   parseUpdateBotPatch,
   persistentComputerInstruction,
+  piToolAgent,
   runNotificationsEnabled,
   selectBuiltinToolsForRun,
   settleSteeringAttachmentLoads,
@@ -26,6 +27,7 @@ import {
 } from "./executor.js";
 import { UnavailableModelForAuthError } from "./model-selection.js";
 import { RetiredModelCredentialError, serializeModelSecret } from "./pi-oauth.js";
+import { advanceToolCallLoopGuard } from "./tool-loop.js";
 
 describe("bot tool permissions", () => {
   it("never lets self-edit change disabled tools alongside an allowed field", () => {
@@ -3110,5 +3112,23 @@ describe("ticket board tool capability", () => {
     }).map((tool) => tool.name);
     for (const name of ["message_bot", "handoff_to_bot", "message_agent"])
       expect(backgroundNames).not.toContain(name);
+  });
+});
+
+describe("piToolAgent", () => {
+  it("names the agent of a Pi tool call and defaults to the main agent", () => {
+    expect(piToolAgent(JSON.stringify(["pi-tool", "main", "call-1"]))).toBe("main");
+    const helper = JSON.stringify(["pi-tool", "main", "spawn-1"]);
+    expect(piToolAgent(JSON.stringify(["pi-tool", helper, "call-2"]))).toBe(helper);
+    expect(piToolAgent("opaque-provider-id")).toBe("main");
+  });
+
+  it("never counts identical calls from different agents as one agent repeating itself", () => {
+    let streak = { key: undefined, count: 0 } as Parameters<typeof advanceToolCallLoopGuard>[0];
+    for (const agent of ["a", "b", "c", "d", "a", "b", "c"]) {
+      const next = advanceToolCallLoopGuard(streak, "browser_tabs", { agent, args: {} });
+      streak = next.streak;
+      expect(next.stuck).toBe(false);
+    }
   });
 });
