@@ -195,6 +195,7 @@ export function shouldForwardPeerThreadEvent(event: {
     event.type === "run.failed" ||
     event.type === "run.cancelled" ||
     event.type === "run.waiting_input" ||
+    event.type === "computer.browser_tabs" ||
     event.type === "computer.takeover.requested"
   ) {
     return true;
@@ -233,6 +234,7 @@ export function shouldForwardBackgroundThreadEvent(event: {
     event.type === "run.failed" ||
     event.type === "run.cancelled" ||
     event.type === "run.waiting_input" ||
+    event.type === "computer.browser_tabs" ||
     event.type === "computer.takeover.requested"
   ) {
     return true;

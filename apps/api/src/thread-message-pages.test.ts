@@ -848,3 +848,9 @@ it("derives attachment metadata from a validated parent outside the loaded page"
   const page = await loadMessagePage(prisma, "thread", undefined, 1);
   expect(page.messages[0]?.replyPreview).toEqual({ role: "user", text: "", attachment: image });
 });
+
+it("forwards a peer or background run's browser tabs, which carry no message content", () => {
+  const event = { type: "computer.browser_tabs", payload: {} };
+  expect(shouldForwardPeerThreadEvent(event)).toBe(true);
+  expect(shouldForwardBackgroundThreadEvent(event)).toBe(true);
+});

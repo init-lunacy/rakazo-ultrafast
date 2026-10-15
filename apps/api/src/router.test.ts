@@ -1558,6 +1558,8 @@ describe("computer terminal and file transfer", () => {
       },
       computer: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       computerExecutionLease: { findUnique: vi.fn().mockResolvedValue(null) },
+      // A running computer's status reads the latest run's browser tabs.
+      run: { findFirst: vi.fn().mockResolvedValue(null) },
     } as unknown as PrismaClient;
     const deps = {
       prisma,
