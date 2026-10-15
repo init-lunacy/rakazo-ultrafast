@@ -15,6 +15,7 @@ import os
 import socket
 import struct
 import sys
+import subprocess
 import time
 import threading
 import urllib.request
@@ -71,6 +72,12 @@ def discover_ws_url(port: int) -> str:
 
 
 WORLD_NAME = "rakazo-page-browser"
+# Set by the hidden-tab spike: whether agent tabs open as their own windows, so
+# Chromium keeps rendering them while another tab is in front.
+OPEN_IN_NEW_WINDOW = True  # Task 1's result
+# One pin per screen, written only by `activate` with a pin, by atomic rename.
+PIN_DIR = "/tmp/rakazo"
+CLOSED_TAB = "That tab is closed."
 
 
 class CdpClient:
@@ -296,11 +303,104 @@ class CdpClient:
         raise TimeoutError(f"CDP call timed out: {method}")
 
 
-def attach_page(client: CdpClient) -> str:
-    targets = client.call("Target.getTargets").get("targetInfos") or []
-    pages = [t for t in targets if isinstance(t, dict) and t.get("type") == "page"]
+def page_targets(client: CdpClient) -> list[dict[str, Any]]:
+    infos = client.call("Target.getTargets").get("targetInfos") or []
+    return [t for t in infos if isinstance(t, dict) and t.get("type") == "page"]
+
+
+def list_tabs(client: CdpClient) -> dict[str, Any]:
+    tabs = []
+    for target in page_targets(client)[:64]:
+        tab = {"target": target["targetId"], "title": str(target.get("title") or "")[:200],
+               "url": str(target.get("url") or "")[:2048]}
+        if target.get("openerId"):
+            tab["openerId"] = target["openerId"]
+        tabs.append(tab)
+    return {"ok": True, "tabs": tabs}
+
+
+def attach_target(client: CdpClient, target: str) -> str:
+    if not any(t.get("targetId") == target for t in page_targets(client)):
+        raise RuntimeError(CLOSED_TAB)
+    session_id = client.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+    client.call("Page.enable", session_id=session_id)
+    ensure_world(client, session_id)
+    return session_id
+
+
+def opened_by(client: CdpClient, target: str, before: set[str]) -> list[str]:
+    return [t["targetId"] for t in page_targets(client)
+            if t.get("openerId") == target and t["targetId"] not in before]
+
+
+def pin_path() -> str:
+    return os.path.join(PIN_DIR, f"pinned-{display_num()}")
+
+
+def read_pin(live: set[str]) -> str | None:
+    try:
+        with open(pin_path(), encoding="utf-8") as handle:
+            value = handle.read().strip()
+    except OSError:
+        return None
+    return value if value in live else None
+
+
+def write_pin(target: str | None) -> None:
+    path = pin_path()
+    if target is None:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        return
+    os.makedirs(PIN_DIR, exist_ok=True)
+    temporary = f"{path}.{os.getpid()}"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        handle.write(target)
+    os.replace(temporary, path)
+
+
+def activate(client: CdpClient, target: str | None, pin: bool | None) -> dict[str, Any]:
+    if pin is True and not target:
+        raise RuntimeError("Pinning needs a target")
+    live = {t["targetId"] for t in page_targets(client)}
+    if target is not None and target not in live:
+        raise RuntimeError(CLOSED_TAB)
+    if pin is True:
+        write_pin(target)
+    elif pin is False:
+        write_pin(None)
+    pinned = read_pin(live)
+    front = None
+    if target is not None and (pin is True or pinned is None):
+        client.call("Target.activateTarget", {"targetId": target})
+        front = target
+    return {"ok": True, "front": front, "pinned": pinned}
+
+
+def close_tab(client: CdpClient, target: str) -> dict[str, Any]:
+    if not any(t.get("targetId") == target for t in page_targets(client)):
+        raise RuntimeError(CLOSED_TAB)
+    if not client.call("Target.closeTarget", {"targetId": target}).get("success", True):
+        raise RuntimeError("Could not close the tab")
+    # closeTarget returns once closing starts; the tab is listed until it is gone.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if not any(t.get("targetId") == target for t in page_targets(client)):
+            break
+        time.sleep(0.05)
+    return {"ok": True}
+
+
+def with_pin(client: CdpClient, result: dict[str, Any]) -> dict[str, Any]:
+    """Add the live pin to a reply: the pin file is the only record of it."""
+    return {**result, "pinned": read_pin({t["targetId"] for t in page_targets(client)})}
+
+
+def attach_page(client: CdpClient) -> tuple[str, str]:
     candidates = []
-    for page in pages[:32]:
+    for page in page_targets(client)[:32]:
         attached = client.call("Target.attachToTarget", {
             "targetId": page["targetId"], "flatten": True,
         })
@@ -310,17 +410,17 @@ def attach_page(client: CdpClient) -> str:
             ensure_world(client, session_id)
             if eval_json(client, session_id, 'document.visibilityState === "visible"'):
                 focused = eval_json(client, session_id, "document.hasFocus()")
-                candidates.append((session_id, focused))
+                candidates.append((session_id, page["targetId"], focused))
         except Exception:
             continue
-    focused = [session for session, focus in candidates if focus]
+    focused = [(session, target) for session, target, focus in candidates if focus]
     if len(focused) == 1:
         selected = focused[0]
     elif len(candidates) == 1:
-        selected = candidates[0][0]
+        selected = candidates[0][:2]
     else:
         raise RuntimeError("No unambiguous visible browser tab. Use desktop tools to select a tab.")
-    ensure_world(client, selected)
+    ensure_world(client, selected[0])
     return selected
 
 
@@ -420,7 +520,9 @@ EVAL_HELPERS = r"""
   }
   window.__rakazoPageBrowser = {
     snapshot(extended = false) {
-      refMap.clear();
+      // Another agent's read of this tab must not invalidate the refs its owner holds.
+      // Refs never repeat, and resolve() already refuses an element that left the page.
+      for (const [ref, el] of refMap) if (!el.isConnected) refMap.delete(ref);
       const elements = [];
       for (const el of document.querySelectorAll("body *")) {
         if (!isInteractive(el) || !visible(el)) continue;
@@ -517,17 +619,17 @@ EVAL_HELPERS = r"""
 """
 
 
-def eval_json(client: CdpClient, session_id: str, expression: str) -> Any:
-    result = client.call(
-        "Runtime.evaluate",
-        {
-            "expression": expression,
-            "contextId": client.context_id,
-            "returnByValue": True,
-            "awaitPromise": True,
-        },
-        session_id=session_id,
-    )
+def eval_json(client: CdpClient, session_id: str, expression: str, *, user_gesture: bool = False) -> Any:
+    params = {
+        "expression": expression,
+        "contextId": client.context_id,
+        "returnByValue": True,
+        "awaitPromise": True,
+    }
+    if user_gesture:
+        # An agent's click is deliberate: without this, the popup blocker drops new tabs.
+        params["userGesture"] = True
+    result = client.call("Runtime.evaluate", params, session_id=session_id)
     if result.get("exceptionDetails"):
         details = result["exceptionDetails"]
         text = (
@@ -545,9 +647,7 @@ def ensure_helpers(client: CdpClient, session_id: str) -> None:
 
 
 def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
-    parsed = urlsplit(url)
-    if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
-        raise RuntimeError("Only HTTP(S) URLs without embedded credentials are supported")
+    check_url(url)
     result = client.call("Page.navigate", {"url": url}, session_id=session_id, timeout_s=15.0)
     if result.get("errorText") or result.get("isDownload"):
         raise RuntimeError(result.get("errorText") or "Navigation started a download")
@@ -567,6 +667,46 @@ def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
             pass
         time.sleep(0.1)
     raise RuntimeError("Navigation did not settle; inspect the screen before continuing")
+
+
+def check_url(url: str) -> None:
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
+        raise RuntimeError("Only HTTP(S) URLs without embedded credentials are supported")
+
+
+def active_window() -> str | None:
+    """The X window in front. The helper runs with the screen's DISPLAY."""
+    try:
+        done = subprocess.run(["xdotool", "getactivewindow"], capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() or None
+
+
+def activate_window(window: str) -> None:
+    try:
+        subprocess.run(["xdotool", "windowactivate", window], capture_output=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def open_tab(client: CdpClient, url: str) -> dict[str, Any]:
+    check_url(url)
+    before = active_window()
+    target = client.call("Target.createTarget", {
+        "url": "about:blank", "background": True, "newWindow": OPEN_IN_NEW_WINDOW,
+    })["targetId"]
+    # A new window takes focus here; give the screen back to the tab the user was watching.
+    if before:
+        activate_window(before)
+    try:
+        session_id = attach_target(client, target)
+        return {**navigate(client, session_id, url), "target": target}
+    except Exception:
+        # The caller never learns a failed tab's id; close it rather than leak it.
+        client.call("Target.closeTarget", {"targetId": target})
+        raise
 
 
 def snapshot(client: CdpClient, session_id: str, extended: bool = False) -> dict[str, Any]:
@@ -629,7 +769,7 @@ def act(client: CdpClient, session_id: str, actions: list[dict[str, Any]]) -> di
             if step.get("origin"):
                 arguments += ", " + json.dumps(step["origin"])
             uncertain = True
-            data = eval_json(client, session_id, f"window.__rakazoPageBrowser.{kind}({arguments})")
+            data = eval_json(client, session_id, f"window.__rakazoPageBrowser.{kind}({arguments})", user_gesture=True)
             if not isinstance(data, dict):
                 raise RuntimeError("Action response unavailable")
             completed += 1
@@ -684,24 +824,52 @@ def run(argv: list[str]) -> int:
     if raw_args.strip():
         args = json.loads(raw_args)
     port = cdp_port()
+    # Set once an action is sent: only then may the page have changed.
+    dispatched = False
     try:
         wait_for_cdp(port)
         ws_url = discover_ws_url(port)
         client = CdpClient(ws_url)
         client.connect()
         try:
-            session_id = attach_page(client)
-            if command == "navigate":
-                result = navigate(client, session_id, str(args.get("url") or ""))
-            elif command == "snapshot":
-                result = snapshot(client, session_id, bool(args.get("extended")))
-            elif command == "screenshot":
-                result = screenshot(client, session_id)
-            elif command == "act":
-                actions = args.get("actions")
-                if not isinstance(actions, list):
-                    raise RuntimeError("actions must be an array")
-                result = act(client, session_id, actions)
+            if command == "tabs":
+                result = with_pin(client, list_tabs(client))
+            elif command == "open":
+                result = with_pin(client, open_tab(client, str(args.get("url") or "")))
+            elif command == "activate":
+                pin = args.get("pin")
+                result = activate(client, args.get("target"), pin if isinstance(pin, bool) else None)
+            elif command == "close":
+                result = close_tab(client, str(args.get("target") or ""))
+            elif command in ("navigate", "snapshot", "screenshot", "act"):
+                requested = args.get("target")
+                if isinstance(requested, str) and requested:
+                    target = requested
+                    session_id = attach_target(client, target)
+                else:
+                    session_id, target = attach_page(client)
+                before = ({t["targetId"] for t in page_targets(client)}
+                          if command in ("navigate", "act") else set())
+                if command == "navigate":
+                    result = navigate(client, session_id, str(args.get("url") or ""))
+                elif command == "snapshot":
+                    result = snapshot(client, session_id, bool(args.get("extended")))
+                elif command == "screenshot":
+                    result = screenshot(client, session_id)
+                else:
+                    actions = args.get("actions")
+                    if not isinstance(actions, list):
+                        raise RuntimeError("actions must be an array")
+                    dispatched = True
+                    result = act(client, session_id, actions)
+                result["target"] = target
+                if command in ("navigate", "act"):
+                    try:
+                        result["opened"] = opened_by(client, target, before)
+                    except Exception:  # noqa: BLE001
+                        result["opened"] = []
+                if command != "screenshot":
+                    result = with_pin(client, result)
             else:
                 result = {
                     "ok": False,
@@ -716,7 +884,7 @@ def run(argv: list[str]) -> int:
             client.close()
     except Exception as exc:  # noqa: BLE001
         print(json.dumps({"ok": False, "error": str(exc), "fallback": "computer_act",
-                              "uncertain": command == "act"}))
+                              "uncertain": dispatched}))
         return 0
 
 

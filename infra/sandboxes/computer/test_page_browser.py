@@ -4,8 +4,10 @@ import importlib.util
 from pathlib import Path
 import struct
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -173,6 +175,167 @@ class PageBrowserTest(unittest.TestCase):
         client.call = fake_call  # type: ignore[method-assign]
         helper.ensure_world(client, "session-a")
         self.assertEqual(client.context_id, 7)
+
+
+class FakeTargets:
+    """A CDP stand-in for browser-level target commands."""
+
+    def __init__(self, infos):
+        self.infos = infos
+        self.calls = []
+
+    def call(self, method, params=None, *, session_id=None, timeout_s=30.0):
+        self.calls.append((method, params))
+        if method == "Target.getTargets":
+            return {"targetInfos": self.infos}
+        if method in ("Target.activateTarget", "Page.enable"):
+            return {}
+        if method == "Target.closeTarget":
+            return {"success": True}
+        if method == "Target.createTarget":
+            return {"targetId": "T-new"}
+        if method == "Target.attachToTarget":
+            return {"sessionId": f"S-{params['targetId']}"}
+        raise AssertionError(f"unexpected CDP call: {method}")
+
+
+def page(target, url="https://example.test/", title="Example", opener=None):
+    info = {"targetId": target, "type": "page", "url": url, "title": title}
+    if opener:
+        info["openerId"] = opener
+    return info
+
+
+class TabCommandTest(unittest.TestCase):
+    def setUp(self):
+        self.pins = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.pins, True)
+        patcher = patch.object(helper, "PIN_DIR", self.pins)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # Never read or move a real X window from a unit test.
+        window = patch.object(helper, "active_window", return_value=None)
+        window.start()
+        self.addCleanup(window.stop)
+
+    def test_lists_page_tabs_only(self):
+        client = FakeTargets([
+            page("A"), page("B", opener="A"),
+            {"targetId": "W", "type": "service_worker", "url": "", "title": ""},
+        ])
+        self.assertEqual(helper.list_tabs(client), {"ok": True, "tabs": [
+            {"target": "A", "title": "Example", "url": "https://example.test/"},
+            {"target": "B", "title": "Example", "url": "https://example.test/", "openerId": "A"},
+        ]})
+
+    def test_attaching_a_closed_tab_fails_before_attaching(self):
+        client = FakeTargets([page("A")])
+        with self.assertRaisesRegex(RuntimeError, "That tab is closed."):
+            helper.attach_target(client, "gone")
+        self.assertNotIn("Target.attachToTarget", [method for method, _ in client.calls])
+
+    def test_reports_only_new_tabs_opened_by_the_acted_tab(self):
+        client = FakeTargets([page("A"), page("B", opener="A"), page("C", opener="A"),
+                              page("D", opener="X")])
+        self.assertEqual(helper.opened_by(client, "A", {"A", "B"}), ["C"])
+
+    def test_follow_activates_when_nothing_is_pinned(self):
+        client = FakeTargets([page("A"), page("B")])
+        self.assertEqual(helper.activate(client, "B", None),
+                         {"ok": True, "front": "B", "pinned": None})
+        self.assertIn(("Target.activateTarget", {"targetId": "B"}), client.calls)
+
+    def test_follow_does_not_move_a_pinned_view(self):
+        client = FakeTargets([page("A"), page("B")])
+        helper.activate(client, "A", True)
+        client.calls.clear()
+        self.assertEqual(helper.activate(client, "B", None),
+                         {"ok": True, "front": None, "pinned": "A"})
+        self.assertNotIn("Target.activateTarget", [method for method, _ in client.calls])
+
+    def test_a_pin_on_a_closed_tab_counts_as_unpinned(self):
+        helper.activate(FakeTargets([page("A"), page("B")]), "A", True)
+        client = FakeTargets([page("B")])
+        self.assertEqual(helper.activate(client, "B", None),
+                         {"ok": True, "front": "B", "pinned": None})
+
+    def test_unpin_without_a_target_changes_no_tab(self):
+        helper.activate(FakeTargets([page("A")]), "A", True)
+        client = FakeTargets([page("A")])
+        self.assertEqual(helper.activate(client, None, False),
+                         {"ok": True, "front": None, "pinned": None})
+        self.assertNotIn("Target.activateTarget", [method for method, _ in client.calls])
+
+    def test_pinning_needs_a_target(self):
+        with self.assertRaisesRegex(RuntimeError, "target"):
+            helper.activate(FakeTargets([page("A")]), None, True)
+
+    def test_open_rejects_a_bad_url_before_creating_a_tab(self):
+        client = FakeTargets([page("A")])
+        with self.assertRaisesRegex(RuntimeError, "credentials"):
+            helper.open_tab(client, "https://user:fake-password@example.test/")
+        self.assertEqual(client.calls, [])
+
+    def test_open_creates_a_background_tab_and_navigates_it(self):
+        client = FakeTargets([page("A"), page("T-new", url="about:blank", title="")])
+        with patch.object(helper, "ensure_world"), \
+                patch.object(helper, "navigate", return_value={"ok": True, "url": "https://example.test/", "title": "Example"}) as go:
+            result = helper.open_tab(client, "https://example.test/")
+        self.assertEqual(result, {"ok": True, "url": "https://example.test/", "title": "Example",
+                                  "target": "T-new"})
+        self.assertIn(("Target.createTarget", {"url": "about:blank", "background": True,
+                                               "newWindow": helper.OPEN_IN_NEW_WINDOW}), client.calls)
+        go.assert_called_once_with(client, "S-T-new", "https://example.test/")
+
+    def test_actions_run_as_a_user_gesture(self):
+        # Without one, Chromium's popup blocker drops target=_blank links and window.open.
+        with patch.object(helper, "ensure_helpers"), patch.object(helper, "snapshot", return_value={"ok": True}), \
+                patch.object(helper, "eval_json") as evaluate:
+            evaluate.side_effect = [True, {}]
+            helper.act(Mock(), "session", [{"kind": "click", "ref": "e1"}])
+        self.assertEqual(evaluate.call_args_list[1].kwargs, {"user_gesture": True})
+        self.assertEqual(evaluate.call_args_list[0].kwargs, {})
+
+    def test_close_waits_until_the_tab_is_gone(self):
+        client = FakeTargets([page("A"), page("B")])
+        original = client.call
+
+        def closing(method, params=None, **kwargs):
+            result = original(method, params, **kwargs)
+            if method == "Target.closeTarget":
+                client.infos = [page("A")]
+            return result
+
+        client.call = closing
+        self.assertEqual(helper.close_tab(client, "B"), {"ok": True})
+        self.assertIn(("Target.closeTarget", {"targetId": "B"}), client.calls)
+
+    def test_closing_an_unknown_tab_reports_it_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "That tab is closed."):
+            helper.close_tab(FakeTargets([page("A")]), "gone")
+
+    def test_a_failed_open_closes_the_tab_it_created(self):
+        client = FakeTargets([page("A"), page("T-new", url="about:blank", title="")])
+        with patch.object(helper, "ensure_world"), \
+                patch.object(helper, "navigate", side_effect=RuntimeError("net::ERR_NAME_NOT_RESOLVED")):
+            with self.assertRaisesRegex(RuntimeError, "ERR_NAME_NOT_RESOLVED"):
+                helper.open_tab(client, "https://example.test/")
+        self.assertIn(("Target.closeTarget", {"targetId": "T-new"}), client.calls)
+
+    def test_replies_carry_the_live_pin(self):
+        helper.activate(FakeTargets([page("A"), page("B")]), "A", True)
+        self.assertEqual(helper.with_pin(FakeTargets([page("A")]), {"ok": True}),
+                         {"ok": True, "pinned": "A"})
+        self.assertEqual(helper.with_pin(FakeTargets([page("B")]), {"ok": True}),
+                         {"ok": True, "pinned": None})
+
+    def test_open_gives_the_screen_back(self):
+        client = FakeTargets([page("A"), page("T-new", url="about:blank", title="")])
+        with patch.object(helper, "active_window", return_value="42"), \
+                patch.object(helper, "activate_window") as restore, patch.object(helper, "ensure_world"), \
+                patch.object(helper, "navigate", return_value={"ok": True, "url": "https://example.test/", "title": "Example"}):
+            helper.open_tab(client, "https://example.test/")
+        restore.assert_called_once_with("42")
 
 
 if __name__ == "__main__":
