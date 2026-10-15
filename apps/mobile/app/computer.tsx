@@ -14,6 +14,7 @@ import { WebView } from "react-native-webview";
 import { ComputerKeyboardBar } from "../components/computer-keyboard-bar";
 import { ComputerMaintenanceActions } from "../components/computer-maintenance-actions";
 import { ComputerModePicker } from "../components/computer-mode-picker";
+import { ComputerTabsMenu } from "../components/computer-tabs-menu";
 import { GlassIconButton } from "../components/glass-icon-button";
 import { NativeActionButton } from "../components/native-action-button";
 import { currentApiBase, rpc } from "../lib/api";
@@ -130,6 +131,13 @@ export default function Computer() {
     [botId],
   );
   const refresh = refreshController.refresh;
+  const showTab = (target: string | null) => {
+    if (!botId) return;
+    // A pin only changes what this viewer watches; a failed one leaves the view as it was.
+    void rpc("computer/showBrowserTab", { botId, target })
+      .then(() => refresh())
+      .catch(() => undefined);
+  };
   const refreshAfterMaintenance = useCallback(async () => {
     await refresh();
   }, [refresh]);
@@ -489,6 +497,7 @@ export default function Computer() {
                       }
                     />
                   )}
+                  <ComputerTabsMenu tabs={computer?.browserTabs} onShow={showTab} />
                   <GlassIconButton
                     accessibilityLabel={t("Close computer")}
                     onPress={() => setComputerOpen(false)}

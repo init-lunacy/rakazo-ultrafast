@@ -117,6 +117,8 @@ vi.mock("../components/computer-maintenance-actions", () => ({
 
 vi.mock("../components/computer-mode-picker", () => ({ ComputerModePicker: () => null }));
 
+vi.mock("../components/computer-tabs-menu", () => ({ ComputerTabsMenu: () => null }));
+
 vi.mock("./api", () => ({ currentApiBase: () => "https://api.example.test", rpc }));
 
 vi.mock("./i18n", () => {
