@@ -856,6 +856,25 @@ export const ComputerUpdateSchema = z.object({
 });
 export type ComputerUpdate = z.infer<typeof ComputerUpdateSchema>;
 
+/** One tab of a bot's browser as the user's tab strip shows it. */
+export const BrowserTabSchema = z.object({
+  /** The computer's id for the tab; used to pin it. */
+  target: z.string().min(1).max(128),
+  title: z.string().max(200),
+  url: z.string().max(2048),
+  /** Display name of the agent using the tab: the bot, or a helper's task label. */
+  owner: z.string().max(80).optional(),
+  purpose: z.string().max(120).optional(),
+});
+export const BrowserTabsSchema = z.object({
+  tabs: z.array(BrowserTabSchema).max(64),
+  /** The tab last brought to the front, as far as the run knows. */
+  front: z.string().max(128).nullable(),
+  /** The tab the viewer pinned; follow is off while one is. */
+  pinned: z.string().max(128).nullable(),
+});
+export type BrowserTabs = z.infer<typeof BrowserTabsSchema>;
+
 export const ComputerStatusSchema = z.object({
   botId: Id,
   mode: ComputerModeSchema,
@@ -871,6 +890,7 @@ export const ComputerStatusSchema = z.object({
   busyBotName: z.string().nullable(),
   canUpdate: z.boolean(),
   terminalAvailable: z.boolean(),
+  browserTabs: BrowserTabsSchema.optional(),
 });
 export type ComputerStatus = z.infer<typeof ComputerStatusSchema>;
 
