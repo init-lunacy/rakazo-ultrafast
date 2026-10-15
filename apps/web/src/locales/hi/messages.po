@@ -3984,6 +3984,10 @@ msgstr "इसे भेजें"
 msgid "Send reset link"
 msgstr "रीसेट लिंक भेजें"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Send with Enter"
+msgstr "Enter से भेजें"
+
 #: src/components/AskCard.tsx
 msgid "Sending…"
 msgstr "भेजा जा रहा है…"
