@@ -59,12 +59,6 @@ it("offers Follow only while pinned, which unpins", () => {
   expect(onShow).toHaveBeenCalledWith(null);
 });
 
-it("does not animate the indicator when reduced motion is requested", () => {
-  render(two);
-  const indicator = container.querySelector("[data-tab-indicator]");
-  expect(indicator?.className).toContain("motion-reduce:transition-none");
-});
-
 it("pins the tab already in front when it is clicked", () => {
   const { onShow } = render(two);
   const front = container.querySelector('[role="tab"][aria-selected="true"]') as HTMLElement;

@@ -446,9 +446,8 @@ two or more tabs.
     its chat card shows it.
   - The label is the tab's purpose, else the page title.
   - The URL is the chip's title and part of its accessible name.
-- **Front indicator.** An indicator under the front tab slides to the new front tab
-  with a CSS transform transition, and the strip scrolls it into view. There is no
-  transition under `prefers-reduced-motion`.
+- **Shown tab.** The strip is centered. The tab on screen is highlighted, with no
+  underline, and the strip scrolls it into view.
 - **Pinning.** Clicking a chip pins the view to that tab. While pinned, one
   **Follow** button appears, and it unpins.
 
