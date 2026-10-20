@@ -20,6 +20,9 @@ concurrency:
 jobs:
   update:
     name: Update pi packages and verify
+    # Forks take these bumps when they merge upstream; bumping on their own only adds
+    # lockfile conflicts to the next merge.
+    if: github.repository == 'elie222/rakazo'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

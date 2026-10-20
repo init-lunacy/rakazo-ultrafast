@@ -111,6 +111,14 @@ describe("Playwright artifact publication boundary", () => {
     );
   });
 
+  // The nightly run publishes from inside its E2E job, not through the workflow above.
+  it("publishes the nightly report only where the gallery's storage is configured", () => {
+    const e2e = readFileSync(path.join(repoRoot, ".github/workflows/playwright.yml"), "utf8");
+    expect(e2e).toContain(
+      "name: Publish Playwright visual report\n        if: always() && inputs.publish_report && vars.S3_BUCKET != ''",
+    );
+  });
+
   it.each([
     ["../escape.txt", 0o100644],
     ["nested/../../escape.txt", 0o100644],
