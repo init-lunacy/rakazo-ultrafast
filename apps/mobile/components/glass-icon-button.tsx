@@ -13,6 +13,7 @@ import { NativeSymbol } from "./native-symbol";
  * pressable inside a native menu would take the tap from it.
  */
 export function GlassIconButton({
+  testID,
   accessibilityLabel,
   onPress,
   ios,
@@ -24,6 +25,7 @@ export function GlassIconButton({
   selected,
   fallbackStyle,
 }: {
+  testID?: string;
   accessibilityLabel: string;
   onPress?: () => void;
   ios: string;
@@ -53,6 +55,7 @@ export function GlassIconButton({
     >
       {onPress ? (
         <Pressable
+          testID={testID}
           accessibilityRole="button"
           accessibilityLabel={accessibilityLabel}
           accessibilityState={selected === undefined ? undefined : { selected }}
@@ -69,6 +72,7 @@ export function GlassIconButton({
         </Pressable>
       ) : (
         <View
+          testID={testID}
           accessibilityRole="button"
           accessibilityLabel={accessibilityLabel}
           style={{ flex: 1, alignItems: "center", justifyContent: "center" }}

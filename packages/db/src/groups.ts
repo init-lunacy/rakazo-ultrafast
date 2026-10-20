@@ -6,6 +6,7 @@ import {
   type GroupMember,
   type SpaceGroup,
 } from "@rakazo/contracts";
+import { displayName } from "@rakazo/core";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { Prisma, PrismaClient } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
@@ -351,7 +352,7 @@ export function createGroupRepos(prisma: PrismaClient) {
           data: {
             spaceId: actor.spaceId,
             userId: actor.userId,
-            name: input.name.trim(),
+            name: displayName(input.name, ""),
           },
         });
         await tx.chatGroupMember.createMany({
@@ -381,6 +382,7 @@ export function createGroupRepos(prisma: PrismaClient) {
         groupId: string;
         name?: string;
         botIds?: string[];
+        expectedBotIds?: string[];
         pinned?: boolean;
         sectionId?: string | null;
       },
@@ -401,6 +403,16 @@ export function createGroupRepos(prisma: PrismaClient) {
           },
         });
         if (!current?.thread) throw new IsolationError();
+        if (input.expectedBotIds) {
+          const expected = new Set(input.expectedBotIds);
+          const active = current.members.filter((member) => member.bot.archivedAt === null);
+          if (
+            expected.size !== active.length ||
+            active.some((member) => !expected.has(member.botId))
+          ) {
+            throw new IsolationError("Group members changed. Refresh and try again.");
+          }
+        }
         if (
           !members &&
           !hasMinimumActiveMembers(
@@ -434,7 +446,7 @@ export function createGroupRepos(prisma: PrismaClient) {
         if (input.name !== undefined) {
           await tx.chatGroup.update({
             where: { id: input.groupId },
-            data: { name: input.name.trim() },
+            data: { name: displayName(input.name, "") },
           });
         }
         if (members) {
