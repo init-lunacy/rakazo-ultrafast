@@ -123,6 +123,8 @@ afterEach(() => {
 
 type SavePatch = {
   disabledBuiltinTools?: string[];
+  name?: string;
+  title?: string;
   pageDeciderProvider?: string | null;
   pageDeciderModel?: string | null;
 };
@@ -504,4 +506,30 @@ describe("BotSettings page decider", () => {
     );
     expect(decider()?.selectedOptions[0]?.textContent).toBe("Jev");
   });
+});
+
+it("omits projected identity values on unrelated saves but keeps explicit edits", async () => {
+  const onSave = vi.fn<(patch: SavePatch) => Promise<void>>(async () => undefined);
+  await renderSettings(onSave, { ...bot, name: "Бот", title: "" });
+  const save = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === "Save",
+  )!;
+  await act(async () => save.click());
+  await flush();
+  expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty("name");
+  expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty("title");
+  await act(async () => {
+    setField(container.querySelector<HTMLInputElement>('[id$="-name"]')!, "CustomerSupportBot2026");
+    setField(container.querySelector<HTMLInputElement>('[id$="-title"]')!, "Support");
+  });
+  await act(async () => save.click());
+  await flush();
+  expect(onSave.mock.calls[1]?.[0]).toMatchObject({
+    name: "CustomerSupportBot2026",
+    title: "Support",
+  });
+  await act(async () => save.click());
+  await flush();
+  expect(onSave.mock.calls[2]?.[0]).not.toHaveProperty("name");
+  expect(onSave.mock.calls[2]?.[0]).not.toHaveProperty("title");
 });

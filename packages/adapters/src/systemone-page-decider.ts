@@ -1,12 +1,12 @@
 import type {
   AdapterContext,
   AdapterDescriptor,
-  BrowserActKind,
   BrowserSnapshotNode,
   ComputerRef,
   PageDecider,
   PageDeciderCapabilities,
   PageDecision,
+  PageDecisionKind,
   PageDecisionRequest,
 } from "@rakazo/adapter-kit";
 import { PAGE_DECISION_MAX_ELEMENTS, PAGE_DECISION_MAX_EXCERPT_CHARS } from "@rakazo/adapter-kit";
@@ -27,7 +27,7 @@ function labelFor(element: BrowserSnapshotNode): string {
 }
 
 /** Jev names an element; what to do with it follows from what it is. */
-function kindFor(element: BrowserSnapshotNode): BrowserActKind {
+function kindFor(element: BrowserSnapshotNode): PageDecisionKind {
   const role = element.role.toLowerCase();
   return role === "textbox" || role === "searchbox" || element.tag === "textarea"
     ? "fill"

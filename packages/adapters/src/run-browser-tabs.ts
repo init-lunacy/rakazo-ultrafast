@@ -110,7 +110,8 @@ export class RunBrowserTabs {
   constructor(
     private readonly deps: {
       browser: BrowserProvider;
-      computer: ComputerRef;
+      /** The run's computer, started on first use; see lazyRunComputer. */
+      computer: { get(): Promise<ComputerRef>; readonly ready: ComputerRef | undefined };
       context: AdapterContext;
       botName: string;
       publish: (view: BrowserTabs) => Promise<void>;
@@ -136,11 +137,13 @@ export class RunBrowserTabs {
 
   /** Re-read the live tabs. A listing never drops a tab learned while it was in flight. */
   private async refresh(signal: AbortSignal): Promise<boolean> {
-    const { browser, computer, context } = this.deps;
+    const { browser, context } = this.deps;
     if (!browser.tabs) return false;
     const mark = this.registry.mark();
-    const listed = await browser
-      .tabs(computer, { signal }, { ...context, signal })
+    // A computer that fails to start answers like one that is not answering yet.
+    const listed = await this.deps.computer
+      .get()
+      .then((computer) => browser.tabs?.(computer, { signal }, { ...context, signal }))
       .catch(() => undefined);
     if (!listed || listed.fallback || listed.error) {
       if (listed?.error && NO_TAB_COMMANDS.test(listed.error)) this.supported = false;
@@ -236,10 +239,14 @@ export class RunBrowserTabs {
   /** Bring the agent's tab forward for its desktop actions; a refusal says why not. */
   private async showForDesktop(agent: string): Promise<string | undefined> {
     const mine = this.registry.lastTabOf(agent);
-    const { browser, computer, context } = this.deps;
+    const { browser, context } = this.deps;
     if (mine && browser.activateTab) {
       const shown = await browser
-        .activateTab(computer, { target: mine.target, signal: context.signal }, context)
+        .activateTab(
+          await this.deps.computer.get(),
+          { target: mine.target, signal: context.signal },
+          context,
+        )
         .catch(() => undefined);
       // Only a definite answer refuses: with the page browser down, the desktop is the way on.
       if (shown && !shown.fallback && !shown.error) {
@@ -320,7 +327,7 @@ export class RunBrowserTabs {
     url: string,
     purpose: string | undefined,
   ): Promise<BrowserNavigateResult> {
-    const { browser, computer, context } = this.deps;
+    const { browser, context } = this.deps;
     if (!browser.openTab) {
       return { url, title: "", fallback: "computer_act", error: TABS_NEED_UPDATE };
     }
@@ -329,6 +336,7 @@ export class RunBrowserTabs {
       // A new window takes focus while it opens: an unaddressed call must not find it.
       while (this.unaddressedCalls > 0) await this.changed();
       this.opening++;
+      const computer = await this.deps.computer.get();
       const result = await browser
         .openTab(computer, { url, signal: context.signal }, context)
         .finally(() => {
@@ -436,8 +444,10 @@ export class RunBrowserTabs {
    * with a signal of its own: a cancelled run's signal is already aborted.
    */
   async closeOpened(signal: AbortSignal): Promise<void> {
-    const { browser, computer, context } = this.deps;
-    if (!browser.closeTab || !this.registry.list().some((tab) => tab.opened)) return;
+    const { browser, context } = this.deps;
+    // Only a computer this run already started: tidying up never starts or wakes one.
+    const computer = this.deps.computer.ready;
+    if (!computer || !browser.closeTab || !this.registry.list().some((tab) => tab.opened)) return;
     // Decide from the live tabs: one the user closed must not count as still open.
     if (!(await this.refresh(signal))) return;
     // Leave the user looking at where the main agent finished; a pin still wins.
@@ -500,7 +510,7 @@ export class RunBrowserTabs {
    * an unaddressed call, and never while an agent's desktop actions hold the screen.
    */
   private async follow(target: string): Promise<void> {
-    const { browser, computer, context } = this.deps;
+    const { browser, context } = this.deps;
     if (
       !browser.activateTab ||
       this.registry.list().length < 2 ||
@@ -515,7 +525,7 @@ export class RunBrowserTabs {
       if (this.screenHolder !== undefined || !browser.activateTab) return;
       try {
         const result = await browser.activateTab(
-          computer,
+          await this.deps.computer.get(),
           { target, signal: context.signal },
           context,
         );

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MAIN_AGENT, tabHandle } from "./browser-tab-registry.js";
 import { FakeBrowserProvider } from "./fake-browser.js";
 import { RunBrowserTabs, TABS_NEED_UPDATE, TABS_NOT_ANSWERING } from "./run-browser-tabs.js";
+import { lazyRunComputer } from "./run-computer.js";
 
 const context: AdapterContext = {
   operationId: "1",
@@ -20,11 +21,15 @@ const pages = {
 };
 const [t1, t2, t3] = ["fake-1", "fake-2", "fake-3"].map((target) => tabHandle(target));
 
-function setup(browser = new FakeBrowserProvider({ pages }), now = () => 0) {
+function setup(
+  browser = new FakeBrowserProvider({ pages }),
+  now = () => 0,
+  start = async () => computer,
+) {
   const published: BrowserTabs[] = [];
   const tabs = new RunBrowserTabs({
     browser,
-    computer,
+    computer: lazyRunComputer(start),
     context,
     botName: "Ada",
     publish: async (view) => {
@@ -409,12 +414,30 @@ describe("run browser tabs", () => {
     // A fresh registry for the resumed run learns what the paused one opened.
     const resumed = setup(browser).tabs;
     resumed.restoreOpened(left);
+    // The resumed run uses the computer, so it is there to clean up.
+    await resumed.support();
     await resumed.closeOpened(new AbortController().signal);
     // The tab in front stays; the other one the run opened closes.
     expect((await browser.tabs(computer, {}, context)).tabs.map((tab) => tab.target)).toEqual([
       "fake-1",
       "fake-2",
     ]);
+  });
+
+  // A run that never touches its computer must not start one, even to tidy up.
+  it("starts no computer to close tabs after a resumed run that never used one", async () => {
+    const browser = new FakeBrowserProvider({ pages });
+    const before = setup(browser);
+    await before.tabs.support();
+    await helperTab(before.tabs);
+    const left = before.published.at(-1)!;
+    const start = vi.fn(async () => computer);
+    const listTabs = vi.spyOn(browser, "tabs");
+    const resumed = setup(browser, () => 0, start).tabs;
+    resumed.restoreOpened(left);
+    await resumed.closeOpened(new AbortController().signal);
+    expect(start).not.toHaveBeenCalled();
+    expect(listTabs).not.toHaveBeenCalled();
   });
 
   it("publishes tab addresses without their query or fragment, which can carry login codes", async () => {

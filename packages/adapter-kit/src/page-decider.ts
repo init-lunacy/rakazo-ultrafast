@@ -11,9 +11,12 @@ export interface PageDeciderCapabilities {
   vision: boolean;
 }
 
+/** What a decider may do to an element. An upload needs files, which only the model can name. */
+export type PageDecisionKind = Exclude<BrowserActKind, "upload">;
+
 export interface PageDecisionAttempt {
   ref: string;
-  kind: BrowserActKind;
+  kind: PageDecisionKind;
   /** Whether the page changed after this attempt. */
   changed: boolean;
 }
@@ -38,7 +41,7 @@ export interface PageDecisionRequest {
 
 export interface PageDecisionCandidate {
   ref: string;
-  kind: BrowserActKind;
+  kind: PageDecisionKind;
   confidence: number;
   /** How the candidate was found. Diagnostic only; the policy ignores it. */
   source?: "list" | "point";

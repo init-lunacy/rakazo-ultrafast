@@ -255,6 +255,9 @@ export class DockerSandboxProvider implements SandboxProvider {
     request: ScreenRequest,
     context: AdapterContext,
   ): Promise<ScreenSession> {
+    if (request.interactive && !request.controlToken) {
+      throw new Error("interactive screen requires a control token");
+    }
     const res = await fetch(this.url(`/computers/${computer.id}/screen-mode`), {
       method: "POST",
       headers: { ...this.headers(context, computer.botId), "content-type": "application/json" },
@@ -275,9 +278,15 @@ export class DockerSandboxProvider implements SandboxProvider {
       if ((await this.containerRunning(computer, context)) === false) {
         throw sandboxGoneError(computer);
       }
+      if (request.interactive) {
+        throw new Error(`sandbox screen mode failed: ${res.status} ${detail}`.trim());
+      }
       return { url: null, mimeType: "text/html", close: async () => undefined };
     }
     const body = await readSandboxJson<{ screenUrl?: string }>(res, context.signal);
+    if (request.interactive && !body.screenUrl) {
+      throw new Error("control screen failed to start");
+    }
     return {
       url: body.screenUrl ?? this.url(`/computers/${computer.id}/screen`),
       mimeType: "text/html",
@@ -518,7 +527,12 @@ export class DockerSandboxProvider implements SandboxProvider {
       const res = await withAbort(
         fetch(this.url(`/computers/${computer.id}/screen`), {
           method: "DELETE",
-          headers: this.headers(context, computer.botId),
+          headers: {
+            ...this.headers(context, computer.botId),
+            ...(context.keepScreenWarm && !context.cancelRunWork && !context.signal.aborted
+              ? { "x-rakazo-preserve-screen": "1" }
+              : {}),
+          },
           signal: deadline.signal,
         }),
         deadline.signal,
