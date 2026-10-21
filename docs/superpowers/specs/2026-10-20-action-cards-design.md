@@ -1,6 +1,6 @@
 # Action cards
 
-Status: design, awaiting review (revised 2026-10-21 after three self-reviews).
+Status: implemented on 2026-10-21, pending final review (design revised 2026-10-21 after three self-reviews).
 
 ## Why
 
@@ -353,6 +353,28 @@ All offline and deterministic, extending existing fixtures:
 | Web | `OfferCard` states; the Actions entry hidden at zero; jump to the source message | existing component test setup |
 | Mobile | card states, the list sheet, the notification route | existing mobile tests |
 | Web E2E | a chat with cards and the Actions list, with a screenshot for the PR | a new spec using `computer-browser-tabs.spec.ts`'s request mocking |
+
+## Corrections from planning and implementation
+
+Where this section and the text above differ, this section is what the code does.
+
+**Data.** `ActionOffer` gains `closingRunId`: a close takes effect only when the closing run completes. `userId` is a plain column, like `Run.userId`. Held cards keep the order the model gave them, and `replaceHeldActionOffers` takes the thread lock first, the same order as `finalizeRun`. Action card settings merge in one SQL statement, so two devices never overwrite each other.
+
+**Taking a card.** A card taken while its bot is busy is a held `SteeringMessage` with `originTrigger: "action_offer"`. `claimSteering` never takes it; it becomes a private `follow_up` continuation, and `runTookOutsideSteering` does not count the owner's queued card as outside content, so the continuation keeps fleet tools. The take claims the card, sends its task, and records the run and the block's "taken" state in one transaction, through `beforeSend` and `afterSend`. A tap racing the first replays the same message; any later tap gets `CONFLICT`. A queued card links to its message, and `takenRunId` is set only when a run started at once. Stopping the bot reopens a card whose queued task the stop dropped, and clears the message nonce so the card can be taken again.
+
+**Send options.** `queueBehindActiveRun` (which also refuses a bot waiting for the user) replaces the spec's `holdBehindActiveRun` and `refuseWhenWaiting`. The other options are `fullReplyContext`, `targetBotIds`, `beforeSend` and `afterSend`. A take passes no `releaseTakeover`. `prepareTurn` (model, then target, then teaching, the order `threads.send` used) is shared by `threads.send` and `actionOffers.take`; `threads.react`, `threads.followUp` and `endCall` keep their differing checks.
+
+**Refusals.** They carry `data.reason`: `card_closed` with `status`, `waiting_for_answer` with `botName`, or `left_group`. The apps render them in the user's language. A closed card just shows its state.
+
+**The tool.** `resume` and `call_end` runs do not get it. It redacts every nested string before encoding or cutting, refuses a card that still contains a secret, and refuses malformed offers. Clearing offers is allowed even when the open count is above a lowered cap. The save-skill source covers tool calls since the run last started or resumed; the step count reads the run's `agent.tool.called` events, so it survives a pause.
+
+**Save as a skill.** In a run started by a save-skill card, `skill_create` always needs approval: no "Always allow" and no automatic review. The recorded tool calls are untrusted text, so the user sees the skill before it is saved.
+
+**Publishing.** `FinalizeRunResult.publishedOffers` is optional and present only when cards opened. The spec's `handedOff` flag is `publishOffers`, false after a handoff or a loop-guard stop. A message holding only cards previews by its labels. Offer pushes follow the bot's `notifyOnFinish` and group rules through the unchanged `notifyRun`.
+
+**Screens.** The web card lives with the other message cards in `apps/web/src/pages/shell/message-cards.tsx`. "Open a chat at a message" is one helper, `chatMessagePath`, shared with the routine run history. The web list is a page at `/app/actions`, like Artifacts, opened from a sidebar row; `/app/actions` is reserved in `bootstrap-target`. The side panel opens only inside a chat. The mobile card is `components/OfferCard.tsx` with `NativeActionButton`. Mobile number settings use native menus of preset values through `MenuPicker`, with no stepper, and keep a saved value that is outside the presets. A taken card in the mobile thread opens its message.
+
+**Known limit.** Held cards of a parallel run in the same chat are not counted toward `openPerChat` until they open.
 
 ## Not in this build
 
