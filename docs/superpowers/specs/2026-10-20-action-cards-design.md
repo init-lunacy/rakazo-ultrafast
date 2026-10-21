@@ -119,7 +119,8 @@ preference.
   takenMessageId? }] }`. Status is mirrored from the table on every change;
   `takenMessageId` lets a taken card link to the message it sent.
   - `blocksToAgentHistoryText` renders it as `[offered: {id} {label}; …]`, so later
-    turns know what the bot offered and can close a card by id.
+    turns know what the bot offered and can close a card by id. Labels lose `[`, `]` and
+    `;` there, so a label cannot end the line or forge another card.
   - Quotes use the labels; speech text skips the block.
   - Older clients ignore unknown kinds (mobile picks blocks by kind; web ends in
     `return null`). A cards-only message may show as an empty bubble on an older app.
@@ -221,9 +222,9 @@ In `finalizeRunOnce` (`packages/db/src/events.ts`), inside the transaction that 
 final reply, when the run completed:
 
 1. Drop this run's held offers that have already expired (a paused run can sit for a day).
-2. **Merge exact repeats.** A held offer with the same kind, label and task as one of this
-   bot's open cards in the chat extends that card's expiry instead of becoming a new
-   card; the card's block is rewritten and `thread.message.updated` appended. Anything
+2. **Merge exact repeats.** A held task offer with the same label and task as one of this
+   bot's open task cards in the chat extends that card's expiry instead of becoming a new
+   card (save-skill cards never merge: each carries its own run's source); the card's block is rewritten and `thread.message.updated` appended. Anything
    else is a new card, so two different tasks with the same label are never merged and
    neither is lost. A routine whose emails changed offers a new card and closes the old
    one by id (its result lists the open cards); if it forgets, the per-chat cap stops it
@@ -301,11 +302,13 @@ text, not words.
 ### Web
 
 - **`OfferCard`** under the bot's message, from the vendored shadcn `Card` and `Button`:
-  the label as the button and the full task as muted text below it (one line, expandable),
-  with "Dismiss" on hover or focus. A taken card shows a check icon and links to the
-  message it sent; expired, closed and dismissed cards show the label in muted text.
-- **Sidebar:** an "Actions" entry with the open count, using the sidebar's existing item
-  component, shown only while the count is above zero. It opens the list in the existing
+  the label as the button and the full task as muted text below it, with "Dismiss" always
+  visible (touch screens have no hover). A taken card shows a check icon and links to the
+  message it sent, or is plain text when there is no message to open; expired, closed and
+  dismissed cards show the label in muted text. Dismiss shows the status the server
+  returns, so a card taken on another device reads as taken.
+- **Sidebar:** an "Actions" entry with the open count, following the bot rows' classes
+  (there is no shared item component), shown only while the count is above zero. It opens the list in the existing
   `ResizableSidePanel`: bot avatar and name, label, task, expiry, and the card's button. A
   row opens its chat and jumps to the source message with the existing `jumpToMessage`.
 - **Settings:** an "Action cards" group under Advanced in account settings.
@@ -360,7 +363,7 @@ Where this section and the text above differ, this section is what the code does
 
 **Data.** `ActionOffer` gains `closingRunId`: a close takes effect only when the closing run completes. `userId` is a plain column, like `Run.userId`. Held cards keep the order the model gave them, and `replaceHeldActionOffers` takes the thread lock first, the same order as `finalizeRun`. Action card settings merge in one SQL statement, so two devices never overwrite each other.
 
-**Taking a card.** A card taken while its bot is busy is a held `SteeringMessage` with `originTrigger: "action_offer"`. `claimSteering` never takes it; it becomes a private `follow_up` continuation, and `runTookOutsideSteering` does not count the owner's queued card as outside content, so the continuation keeps fleet tools. The take claims the card, sends its task, and records the run and the block's "taken" state in one transaction, through `beforeSend` and `afterSend`. A tap racing the first replays the same message; any later tap gets `CONFLICT`. A queued card links to its message, and `takenRunId` is set only when a run started at once. Stopping the bot reopens a card whose queued task the stop dropped, and clears the message nonce so the card can be taken again.
+**Taking a card.** A card taken while its bot is busy is a held `SteeringMessage` with `originTrigger: "action_offer"`. `claimSteering` never takes it; it becomes a private `follow_up` continuation, and `runTookOutsideSteering` does not count the owner's queued card as outside content, so the continuation keeps fleet tools. The take claims the card, sends its task, and records the run and the block's "taken" state in one transaction, through `beforeSend` and `afterSend`. A tap racing the first replays the same message; any later tap gets `CONFLICT`. A queued card links to its message, and `takenRunId` is set only when a run started at once. Stopping the bot reopens a card whose queued task the stop dropped, including one already handed to a follow-up run the stop cancels before it starts, and clears the message nonce so the card can be taken again. The reopen event names the card's own bot.
 
 **Send options.** `queueBehindActiveRun` (which also refuses a bot waiting for the user) replaces the spec's `holdBehindActiveRun` and `refuseWhenWaiting`. The other options are `fullReplyContext`, `targetBotIds`, `beforeSend` and `afterSend`. A take passes no `releaseTakeover`. `prepareTurn` (model, then target, then teaching, the order `threads.send` used) is shared by `threads.send` and `actionOffers.take`; `threads.react`, `threads.followUp` and `endCall` keep their differing checks.
 
@@ -368,7 +371,7 @@ Where this section and the text above differ, this section is what the code does
 
 **The tool.** `resume` and `call_end` runs do not get it. It redacts every nested string before encoding or cutting, refuses a card that still contains a secret, and refuses malformed offers. Clearing offers is allowed even when the open count is above a lowered cap. The save-skill source covers tool calls since the run last started or resumed; the step count reads the run's `agent.tool.called` events, so it survives a pause.
 
-**Save as a skill.** In a run started by a save-skill card, `skill_create` always needs approval: no "Always allow" and no automatic review. The recorded tool calls are untrusted text, so the user sees the skill before it is saved.
+**Save as a skill.** In a run started by a save-skill card, every skill-changing tool (`skill_create`, `skill_update`, `skill_delete`) always needs approval: no "Always allow" and no automatic review. The recorded tool calls are untrusted text, escaped inside their data fence, so the user sees each skill change before it happens.
 
 **Publishing.** `FinalizeRunResult.publishedOffers` is optional and present only when cards opened. The spec's `handedOff` flag is `publishOffers`, false after a handoff or a loop-guard stop. A message holding only cards previews by its labels. Offer pushes follow the bot's `notifyOnFinish` and group rules through the unchanged `notifyRun`.
 
