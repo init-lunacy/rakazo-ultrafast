@@ -1,6 +1,10 @@
 import { eventIterator, oc } from "@orpc/contract";
 import * as z from "zod";
-import { ActionOfferSettingsPatchSchema } from "./action-offers.js";
+import {
+  ActionOfferListItemSchema,
+  ActionOfferSettingsPatchSchema,
+  ActionOfferStatusSchema,
+} from "./action-offers.js";
 import { AiConsentQuerySchema, AiConsentStatusSchema } from "./ai-consent.js";
 import {
   ARTIFACT_DESCRIPTION_MAX_LENGTH,
@@ -898,6 +902,15 @@ export const appContract = {
       )
       .output(ActionApprovalRuleSchema),
     remove: oc.input(z.object({ id: Id })).output(z.object({ ok: z.literal(true) })),
+  },
+  actionOffers: {
+    /** The user's open cards across bots and groups, newest first. */
+    list: oc.output(z.array(ActionOfferListItemSchema)),
+    /** Start a card's task; runId is absent while it waits behind a busy bot. */
+    take: oc.input(z.object({ offerId: Id })).output(z.object({ runId: Id.optional() })),
+    dismiss: oc
+      .input(z.object({ offerId: Id }))
+      .output(z.object({ status: ActionOfferStatusSchema })),
   },
   autoReview: {
     get: oc.output(ActionAutoReviewSettingsSchema),

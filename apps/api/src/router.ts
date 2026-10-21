@@ -157,6 +157,7 @@ import {
   IntegrationProviderIdSchema,
   isDeletableMemoryDocument,
   OPENAI_COMPATIBLE_PROVIDER_ID,
+  parseActionOfferSettings,
   parseTicketRef,
   storedPiProviderIds,
   usableModelId,
@@ -177,6 +178,7 @@ import {
 } from "@rakazo/core";
 import type { BoardEvents, Board as BoardRow, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
+  ActionOfferNotFoundError,
   appendEventInTransaction,
   BotSectionNameConflictError,
   botProfileLabelsChanged,
@@ -188,6 +190,7 @@ import {
   claimEmptySpaceDeletionForMember,
   commitBotUpdate,
   comparePreferenceOrder,
+  countOpenActionOffers,
   createExternalConversationRepos,
   createGroupRepos,
   createRepos,
@@ -196,6 +199,7 @@ import {
   defaultModelCredentialCandidates,
   deleteEmptySpaceForMember,
   deleteUnreferencedCredentialSecret,
+  dismissActionOffer,
   ensureBoard,
   findDefaultModelCredential,
   findDefaultVoiceCredential,
@@ -208,6 +212,7 @@ import {
   IsolationError,
   issueMessagingLinkCode,
   listBoards,
+  listOpenActionOffers,
   listSpaceBackupModels,
   listTicketComments,
   lockOwnedGroup,
@@ -235,6 +240,7 @@ import {
   touchGroupUpdatedAt,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import { takeActionOffer } from "./action-offers.js";
 import { deleteAgentSecret, listAgentSecrets, putAgentSecret } from "./agent-secrets.js";
 import { createAgentSkillsService } from "./agent-skills.js";
 import { aiConsentStatus, allowAiConsent } from "./ai-consent.js";
@@ -296,6 +302,7 @@ import {
   shouldForwardBackgroundThreadEvent,
   shouldForwardPeerThreadEvent,
 } from "./thread-message-pages.js";
+import type { ThreadTarget } from "./thread-target.js";
 import {
   reactToThreadMessage,
   resolveThreadTarget,
@@ -866,13 +873,22 @@ export function createRouter(deps: RouterDeps) {
     },
     preferences: {
       update: authed.preferences.update.handler(async ({ context, input }): Promise<Me> => {
-        await deps.prisma.user.update({
-          where: { id: context.actor.userId },
-          data: {
-            ...(input.avatarStyle === undefined ? {} : { avatarStyle: input.avatarStyle }),
-            ...(input.timezone === undefined ? {} : { timezone: input.timezone }),
-          },
-        });
+        if (input.avatarStyle !== undefined || input.timezone !== undefined) {
+          await deps.prisma.user.update({
+            where: { id: context.actor.userId },
+            data: {
+              ...(input.avatarStyle === undefined ? {} : { avatarStyle: input.avatarStyle }),
+              ...(input.timezone === undefined ? {} : { timezone: input.timezone }),
+            },
+          });
+        }
+        if (input.actionOfferSettings !== undefined) {
+          // Merged in one statement, so two devices changing different settings never overwrite each other.
+          await deps.prisma.$executeRaw`
+            UPDATE "user"
+            SET "actionOfferSettings" = COALESCE("actionOfferSettings", '{}'::jsonb) || ${JSON.stringify(input.actionOfferSettings)}::jsonb
+            WHERE id = ${context.actor.userId}`;
+        }
         return meDto(deps, context.actor);
       }),
       adoptTimezone: authed.preferences.adoptTimezone.handler(
@@ -2268,13 +2284,7 @@ export function createRouter(deps: RouterDeps) {
         }
       }),
       send: authed.threads.send.handler(async ({ context, input }) => {
-        if ((await modelSetup(deps, context.actor)).needsModel) {
-          throw new ORPCError("BAD_REQUEST", { message: "Connect a model to start a run." });
-        }
-        const target = await resolveThreadTarget(deps.prisma, context.actor, input);
-        if (target.kind === "bot") {
-          await assertTeachingSendAllowed(deps.prisma, context.actor.spaceId, target.botId);
-        }
+        const target = await prepareTurn(deps, context.actor, input);
         return sendThreadMessage(
           deps,
           context.actor,
@@ -6016,6 +6026,55 @@ export function createRouter(deps: RouterDeps) {
         return { ok: true as const };
       }),
     },
+    actionOffers: {
+      list: authed.actionOffers.list.handler(async ({ context }) =>
+        listOpenActionOffers(deps.prisma, context.actor, new Date()),
+      ),
+      take: authed.actionOffers.take.handler(async ({ context, input }) => {
+        const offer = await deps.prisma.actionOffer.findFirst({
+          where: {
+            id: input.offerId,
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+          },
+          include: { thread: { select: { groupId: true } } },
+        });
+        if (!offer?.messageId) throw new ORPCError("NOT_FOUND", { message: "Unknown action card" });
+        const groupId = offer.thread.groupId;
+        const target = await prepareTurn(
+          deps,
+          context.actor,
+          groupId ? { groupId } : { botId: offer.botId },
+        );
+        return takeActionOffer(deps, context.actor, target, {
+          id: offer.id,
+          spaceId: offer.spaceId,
+          threadId: offer.threadId,
+          botId: offer.botId,
+          task: offer.task,
+          messageId: offer.messageId,
+          groupId,
+        });
+      }),
+      dismiss: authed.actionOffers.dismiss.handler(async ({ context, input }) => {
+        try {
+          const dismissed = await dismissActionOffer(deps.prisma, {
+            offerId: input.offerId,
+            ...context.actor,
+            now: new Date(),
+          });
+          if (dismissed.seq !== undefined) {
+            await deps.events.notify(dismissed.threadId, dismissed.seq);
+          }
+          return { status: dismissed.status };
+        } catch (error) {
+          if (error instanceof ActionOfferNotFoundError) {
+            throw new ORPCError("NOT_FOUND", { message: "Unknown action card" });
+          }
+          throw error;
+        }
+      }),
+    },
     approvalRules: {
       list: authed.approvalRules.list.handler(async ({ context }) => {
         const rows = await deps.prisma.actionApprovalRule.findMany({
@@ -6481,6 +6540,7 @@ async function spaceNavigationDto(
     externalConversations,
     contentBots,
     contentGroups,
+    offerCounts,
   ] = await Promise.all([
     repos.listBots(actor),
     groupRepos.listGroups(actor),
@@ -6501,6 +6561,7 @@ async function spaceNavigationDto(
       select: { spaceId: true },
       distinct: ["spaceId"],
     }),
+    countOpenActionOffers(deps.prisma, actor, new Date()),
   ]);
   const spacesWithContent = new Set([
     ...contentBots.map((row) => row.spaceId),
@@ -6520,8 +6581,14 @@ async function spaceNavigationDto(
     current: {
       id: actor.spaceId,
       name: currentMembership.space.name,
-      bots: currentBots,
-      groups: currentGroups,
+      bots: currentBots.map((bot) => ({
+        ...bot,
+        openOfferCount: offerCounts.byBot.get(bot.id) ?? 0,
+      })),
+      groups: currentGroups.map((group) => ({
+        ...group,
+        openOfferCount: offerCounts.byGroup.get(group.id) ?? 0,
+      })),
       externalConversations: externalConversations.filter(
         (conversation) => conversation.spaceId === actor.spaceId,
       ),
@@ -6656,12 +6723,29 @@ async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
     avatarStyle: user.avatarStyle === "robot" ? "robot" : "organic",
     timezone: user.timezone ?? null,
     billingEnabled: Boolean(deps.billing) && !actor.isDeploymentOwner,
+    actionOfferSettings: parseActionOfferSettings(user.actionOfferSettings),
   };
 }
 
 function requireBilling(deps: RouterDeps): BillingService {
   if (!deps.billing) throw new ORPCError("NOT_FOUND", { message: "Billing is not enabled" });
   return deps.billing;
+}
+
+/** Model, then target, then teaching: what a turn started from the user's own message checks first. */
+async function prepareTurn(
+  deps: RouterDeps,
+  actor: Actor,
+  input: { botId?: string; groupId?: string },
+): Promise<ThreadTarget> {
+  if ((await modelSetup(deps, actor)).needsModel) {
+    throw new ORPCError("BAD_REQUEST", { message: "Connect a model to start a run." });
+  }
+  const target = await resolveThreadTarget(deps.prisma, actor, input);
+  if (target.kind === "bot") {
+    await assertTeachingSendAllowed(deps.prisma, actor.spaceId, target.botId);
+  }
+  return target;
 }
 
 async function modelSetup(deps: RouterDeps, actor: Actor) {

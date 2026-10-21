@@ -2,9 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ComposioEmulator, ExpoPushProvider, loadPushToken } from "@rakazo/adapters";
-import type { appContract, Space, SpaceNavigation } from "@rakazo/contracts";
+import type { appContract, Me, Space, SpaceNavigation } from "@rakazo/contracts";
 import {
   claimEmptySpaceDeletionForMember,
+  createThreadMessage,
   deleteEmptySpaceForMember,
   pushSessionExpiresAt,
   releaseSpaceDeletionClaim,
@@ -172,6 +173,9 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ["connections/complete", { connectionId: "missing-connection" }],
       ["connections/revoke", { connectionId: "missing-connection" }],
       ["approvalRules/list"],
+      ["actionOffers/list"],
+      ["actionOffers/take", { offerId: "missing-offer" }],
+      ["actionOffers/dismiss", { offerId: "missing-offer" }],
       [
         "approvalRules/set",
         { effect: "require_approval", matchKind: "category", matchValue: "email" },
@@ -715,6 +719,92 @@ describeWithDatabase("API authorization and resource isolation", () => {
     expect(
       await handles.prisma.actionApprovalRule.findUnique({ where: { id: ownerRule.id } }),
     ).not.toBeNull();
+  });
+
+  it("keeps action cards private to each user in a shared Space", async () => {
+    const owner = await signup(app, `card-owner-${stamp}@rakazo.test`, "Card Owner");
+    const member = await signup(app, `card-member-${stamp}@rakazo.test`, "Card Member");
+    const ownerActor = await rpc<Actor>(app, owner, "me");
+    const memberActor = await rpc<Actor>(app, member, "me");
+
+    await handles.prisma.member.deleteMany({ where: { userId: memberActor.userId } });
+    await handles.prisma.member.create({
+      data: {
+        id: `card-member-${stamp}`,
+        organizationId: ownerActor.spaceId,
+        userId: memberActor.userId,
+        role: "member",
+        createdAt: new Date(),
+      },
+    });
+    const bot = await rpc<Bot>(app, owner, "bots/create", botInput("Card Bot"));
+    const thread = await handles.prisma.thread.findFirstOrThrow({ where: { botId: bot.id } });
+    const task = await handles.prisma.task.create({
+      data: {
+        spaceId: ownerActor.spaceId,
+        userId: ownerActor.userId,
+        botId: bot.id,
+        threadId: thread.id,
+        prompt: "x",
+        status: "completed",
+      },
+    });
+    const run = await handles.prisma.run.create({
+      data: {
+        spaceId: ownerActor.spaceId,
+        userId: ownerActor.userId,
+        botId: bot.id,
+        threadId: thread.id,
+        taskId: task.id,
+        status: "completed",
+        trigger: "user",
+      },
+    });
+    const message = await createThreadMessage(handles.prisma, {
+      threadId: thread.id,
+      role: "bot",
+      botId: bot.id,
+      blocks: [],
+    });
+    const offer = await handles.prisma.actionOffer.create({
+      data: {
+        spaceId: ownerActor.spaceId,
+        userId: ownerActor.userId,
+        threadId: thread.id,
+        botId: bot.id,
+        runId: run.id,
+        messageId: message.id,
+        kind: "task",
+        label: "Owner's",
+        task: "x",
+        status: "open",
+        expiresAt: new Date(Date.now() + 3_600_000),
+      },
+    });
+    expect(await rpc<unknown[]>(app, member, "actionOffers/list")).toEqual([]);
+    await expectDenied(app, member, "actionOffers/take", { offerId: offer.id });
+    await expectDenied(app, member, "actionOffers/dismiss", { offerId: offer.id });
+    expect(
+      (await handles.prisma.actionOffer.findUniqueOrThrow({ where: { id: offer.id } })).status,
+    ).toBe("open");
+    expect(await rpc<Array<{ id: string }>>(app, owner, "actionOffers/list")).toEqual([
+      expect.objectContaining({ id: offer.id, label: "Owner's", messageId: message.id }),
+    ]);
+  });
+
+  it("merges a partial settings update and returns full settings", async () => {
+    const cookie = await signup(app, `card-settings-${stamp}@rakazo.test`, "Card Settings");
+    await rpc(app, cookie, "preferences/update", { actionOfferSettings: { perReply: 5 } });
+    const me = await rpc<Me>(app, cookie, "preferences/update", {
+      actionOfferSettings: { openPerChat: 9 },
+    });
+    expect(me.actionOfferSettings).toEqual({
+      enabled: true,
+      perReply: 5,
+      openPerChat: 9,
+      defaultLifetimeDays: 3,
+      saveSkillMinSteps: 3,
+    });
   });
 
   it("keeps space data and computers behind the selected space boundary", async () => {
