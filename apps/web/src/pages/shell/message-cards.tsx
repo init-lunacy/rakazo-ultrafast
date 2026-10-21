@@ -1,7 +1,7 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { ActionOfferCard, ActionOfferStatus, MessageBlock } from "@rakazo/contracts";
 import { abortableDelay, effectiveOfferStatus } from "@rakazo/core";
-import { Button, cn, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
+import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
 import { Check, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { BuiCard, SuccessPop } from "../../components/ai/primitives";
@@ -605,19 +605,28 @@ export function OfferCard({
   const [settled, setSettled] = useState<ActionOfferStatus | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(false);
   // The server's update wins over the local result (a stop can reopen a queued card).
   useEffect(() => setSettled(null), [card.status]);
   const status = settled ?? effectiveOfferStatus(card, now);
   const label = card.kind === "save_skill" ? t`Save as a skill` : card.label;
 
   if (status === "taken") {
+    const takenMessageId = card.takenMessageId;
+    const takenClassName = "inline-flex items-center gap-1.5 text-sm text-muted-foreground";
+    if (!takenMessageId || !onJumpToMessage) {
+      return (
+        <p data-offer-status="taken" className={takenClassName}>
+          <Check className="size-4" aria-hidden />
+          {label}
+        </p>
+      );
+    }
     return (
       <button
         type="button"
         data-offer-status="taken"
-        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground"
-        onClick={() => card.takenMessageId && onJumpToMessage?.(card.takenMessageId)}
+        className={takenClassName}
+        onClick={() => onJumpToMessage(takenMessageId)}
       >
         <Check className="size-4" aria-hidden />
         {label}
@@ -636,8 +645,13 @@ export function OfferCard({
     setPending(true);
     setError(null);
     try {
-      await rpc.actionOffers[action]({ offerId: card.id });
-      setSettled(action === "take" ? "taken" : "dismissed");
+      if (action === "take") {
+        await rpc.actionOffers.take({ offerId: card.id });
+        setSettled("taken");
+      } else {
+        // A card taken on another device stays taken.
+        setSettled((await rpc.actionOffers.dismiss({ offerId: card.id })).status);
+      }
     } catch (err) {
       const data = (
         err as { data?: { reason?: string; status?: ActionOfferStatus; botName?: string } }
@@ -669,14 +683,7 @@ export function OfferCard({
           <X />
         </Button>
       </div>
-      <button
-        type="button"
-        aria-expanded={expanded}
-        className={cn("text-start text-sm text-muted-foreground", !expanded && "line-clamp-1")}
-        onClick={() => setExpanded((open) => !open)}
-      >
-        {card.task}
-      </button>
+      <p className="text-sm text-muted-foreground">{card.task}</p>
       {error ? (
         <p role="alert" className="text-sm text-destructive">
           {error}

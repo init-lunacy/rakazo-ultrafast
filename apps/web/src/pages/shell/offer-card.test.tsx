@@ -33,11 +33,13 @@ beforeEach(() => {
 });
 afterEach(() => container?.remove());
 
-function render(next: ActionOfferCard, onJump = vi.fn()) {
+function render(next: ActionOfferCard, onJump: ((id: string) => void) | null = vi.fn()) {
   container = document.createElement("div");
   document.body.append(container);
   act(() =>
-    createRoot(container).render(<OfferCard card={next} now={now} onJumpToMessage={onJump} />),
+    createRoot(container).render(
+      <OfferCard card={next} now={now} onJumpToMessage={onJump ?? undefined} />,
+    ),
   );
   return onJump;
 }
@@ -48,7 +50,11 @@ const button = (name: string) =>
 
 it("shows the full task, takes the card, and shows it done at once", async () => {
   render(card);
-  expect(container.textContent).toContain("Book the Lisbon hotel we compared.");
+  const task = [...container.querySelectorAll("p")].find(
+    (p) => p.textContent === "Book the Lisbon hotel we compared.",
+  );
+  expect(task?.className).not.toContain("line-clamp");
+  expect(button("Book the Lisbon hotel we compared.")).toBeUndefined();
   await act(async () => button("Book the hotel")!.click());
   expect(api.take).toHaveBeenCalledWith({ offerId: "offer-1" });
   expect(container.querySelector('[data-offer-status="taken"]')).not.toBeNull();
@@ -61,6 +67,14 @@ it("dismisses with an always-visible control", async () => {
   await act(async () => dismiss.click());
   expect(api.dismiss).toHaveBeenCalledWith({ offerId: "offer-1" });
   expect(container.querySelector('[data-offer-status="dismissed"]')).not.toBeNull();
+});
+
+it("shows the server's status when a dismiss finds the card taken elsewhere", async () => {
+  api.dismiss.mockResolvedValueOnce({ status: "taken" });
+  render(card);
+  await act(async () => button("Dismiss")!.click());
+  expect(container.querySelector('[data-offer-status="taken"]')).not.toBeNull();
+  expect(container.querySelector('[data-offer-status="dismissed"]')).toBeNull();
 });
 
 it("shows a closed card quietly and explains a waiting bot in the user's language", async () => {
@@ -96,6 +110,17 @@ it("labels a save-skill card in the user's language, and links a taken card to i
   await act(async () => button("Book the hotel")!.click());
   expect(onJump).toHaveBeenCalledWith("msg-9");
   expect(api.take).not.toHaveBeenCalled();
+});
+
+it("shows a taken card with nowhere to jump as plain text", () => {
+  render({ ...card, status: "taken" });
+  expect(container.querySelectorAll("button")).toHaveLength(0);
+  container.remove();
+  render({ ...card, status: "taken", takenMessageId: "msg-9" }, null);
+  expect(container.querySelectorAll("button")).toHaveLength(0);
+  const taken = container.querySelector('[data-offer-status="taken"]');
+  expect(taken?.textContent).toBe("Book the hotel");
+  expect(taken?.querySelector("svg")).not.toBeNull();
 });
 
 it("mutes an expired card", () => {

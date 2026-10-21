@@ -57,8 +57,16 @@ export function OfferCard({
     setPending(true);
     setError(null);
     try {
-      await rpc(`actionOffers/${action}`, { offerId: card.id });
-      setSettled(action === "take" ? "taken" : "dismissed");
+      if (action === "take") {
+        await rpc("actionOffers/take", { offerId: card.id });
+        setSettled("taken");
+      } else {
+        // A card taken on another device stays taken.
+        const { status } = await rpc<{ status: ActionOfferStatus }>("actionOffers/dismiss", {
+          offerId: card.id,
+        });
+        setSettled(status);
+      }
     } catch (err) {
       const data = (
         err as { data?: { reason?: string; status?: ActionOfferStatus; botName?: string } }

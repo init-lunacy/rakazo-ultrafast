@@ -88,7 +88,7 @@ vi.mock("./native", () => ({
 }));
 
 vi.mock("../components/native-symbol", () => ({
-  NativeSymbol: () => null,
+  NativeSymbol: ({ ios }: { ios: string }) => <i data-symbol={ios} />,
 }));
 
 import type { ActionOfferCard } from "@rakazo/contracts";
@@ -157,6 +157,15 @@ describe("OfferCard", () => {
     await press("menu:dismiss");
     expect(rpc).toHaveBeenCalledWith("actionOffers/dismiss", { offerId: "offer-1" });
     expect(view.textContent).not.toContain("Book the Lisbon hotel we compared.");
+    expect(view.querySelector('[data-symbol="checkmark"]')).toBeNull();
+  });
+
+  it("shows the server's status when a dismiss finds the card taken elsewhere", async () => {
+    rpc.mockResolvedValue({ status: "taken" });
+    const { container: view, press } = renderOffer(card);
+    await press("menu:dismiss");
+    expect(view.textContent).toBe("Book the hotel");
+    expect(view.querySelector('[data-symbol="checkmark"]')).not.toBeNull();
   });
 
   it("shows a taken card as done and opens the message it sent", async () => {

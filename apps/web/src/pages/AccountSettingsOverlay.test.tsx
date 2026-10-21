@@ -305,3 +305,51 @@ it("saves action card settings from Advanced", async () => {
     vi.unstubAllGlobals();
   }
 });
+
+it("puts action card settings back to the saved values when a save fails", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const onActionOfferSettingsChange = vi.fn(async () => {
+    throw new Error("offline");
+  });
+  try {
+    await act(async () => {
+      root.render(
+        <GeneralSettingsPanels
+          name="Jamie"
+          avatarStyle="robot"
+          onAvatarStyleChange={async () => undefined}
+          actionOfferSettings={DEFAULT_ACTION_OFFER_SETTINGS}
+          onActionOfferSettingsChange={onActionOfferSettingsChange}
+        />,
+      );
+    });
+    const toggle = container.querySelector<HTMLElement>('[data-testid="action-offers-toggle"]');
+    if (!toggle) throw new Error("Missing action cards toggle");
+    await act(async () => toggle.click());
+    expect(onActionOfferSettingsChange).toHaveBeenCalledWith({ enabled: false });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    const perReply = container.querySelector<HTMLInputElement>(
+      '[data-testid="action-offers-per-reply"]',
+    );
+    if (!perReply) throw new Error("Missing cards per reply field");
+    const saved = String(DEFAULT_ACTION_OFFER_SETTINGS.perReply);
+    const next = saved === "5" ? "6" : "5";
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        perReply,
+        next,
+      );
+      perReply.dispatchEvent(new Event("input", { bubbles: true }));
+      perReply.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(onActionOfferSettingsChange).toHaveBeenCalledWith({ perReply: Number(next) });
+    expect(perReply.value).toBe(saved);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  }
+});

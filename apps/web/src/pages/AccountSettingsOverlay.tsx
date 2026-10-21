@@ -363,7 +363,10 @@ export function GeneralSettingsPanels({
                 data-testid="action-offers-toggle"
                 className="mt-0.5"
                 checked={actionOfferSettings.enabled}
-                onCheckedChange={(enabled) => void onActionOfferSettingsChange({ enabled })}
+                // The switch follows the saved value, so a failed save leaves it unchanged.
+                onCheckedChange={(enabled) =>
+                  void onActionOfferSettingsChange({ enabled }).catch(() => undefined)
+                }
               />
               <Label
                 htmlFor={actionOffersId}
@@ -733,7 +736,9 @@ function OfferNumber(props: {
             Math.max(props.min, Math.round(Number(draft) || props.value)),
           );
           setDraft(String(next));
-          if (next !== props.value) void props.onSave(next);
+          if (next === props.value) return;
+          const saved = props.value;
+          props.onSave(next).catch(() => setDraft(String(saved)));
         }}
       />
     </div>
