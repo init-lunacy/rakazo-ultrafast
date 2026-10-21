@@ -1,6 +1,7 @@
 import type { RealtimeFanout } from "@rakazo/adapter-kit";
 import type { BotSecretDestination, MessageBlock, ProductEvent } from "@rakazo/contracts";
 import {
+  ACTION_OFFER_STEERING_ORIGIN,
   BOT_INSTRUCTIONS_MAX_LENGTH,
   encodeLoginSecret,
   LoginSecretValue,
@@ -1618,7 +1619,10 @@ export async function createPendingSteeringRun(
           ? "webhook"
           : origin === "private" &&
               batch.every(
-                (item) => item.originTrigger === null && !hasChannelMessage(item.message.blocks),
+                (item) =>
+                  (item.originTrigger === null ||
+                    item.originTrigger === ACTION_OFFER_STEERING_ORIGIN) &&
+                  !hasChannelMessage(item.message.blocks),
               )
             ? "follow_up"
             : "messaging",
@@ -1655,6 +1659,30 @@ function continuationModelPin(
     thinkingLevel: first.thinkingLevel ?? null,
     modelPinned: true,
   };
+}
+
+/** A channel or webhook message this run took in mid-turn; the owner's queued cards do not count. */
+export async function runTookOutsideSteering(
+  prisma: PrismaClient,
+  runId: string,
+): Promise<boolean> {
+  const found = await prisma.steeringMessage.findFirst({
+    where: {
+      runId,
+      claimedAt: { not: null },
+      OR: [
+        {
+          AND: [
+            { originTrigger: { not: null } },
+            { originTrigger: { not: ACTION_OFFER_STEERING_ORIGIN } },
+          ],
+        },
+        { message: { blocks: { array_contains: [{ kind: "channel_message" }] } } },
+      ],
+    },
+    select: { id: true },
+  });
+  return found !== null;
 }
 
 function hasChannelMessage(blocks: unknown): boolean {

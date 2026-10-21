@@ -124,6 +124,7 @@ import {
   recordUsage,
   reserveInstructionProposal,
   retireModelCredential,
+  runTookOutsideSteering,
   SpaceLimitError,
   searchHistory,
   settleReleasedTakeoverCards,
@@ -4724,21 +4725,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
             if (!live?.fleetManagement) return { error: "This tool is disabled for this bot." };
             if (!ownerStartedRun) return { error: "Fleet tools need a run you started." };
-            // Channel and webhook text this run took in mid-turn is not the owner's. Rows queued
-            // before origins were recorded are recognized by their channel message.
-            const outside =
-              fleetWrite &&
-              (await deps.prisma.steeringMessage.findFirst({
-                where: {
-                  runId,
-                  claimedAt: { not: null },
-                  OR: [
-                    { originTrigger: { not: null } },
-                    { message: { blocks: { array_contains: [{ kind: "channel_message" }] } } },
-                  ],
-                },
-                select: { id: true },
-              }));
+            // Channel and webhook text this run took in mid-turn is not the owner's.
+            const outside = fleetWrite && (await runTookOutsideSteering(deps.prisma, runId));
             if (outside)
               return {
                 error:

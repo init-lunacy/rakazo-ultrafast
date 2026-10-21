@@ -1,4 +1,5 @@
 import type { MessageBlock } from "@rakazo/contracts";
+import { ACTION_OFFER_STEERING_ORIGIN } from "@rakazo/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   ActionOfferConflictError,
@@ -10,7 +11,7 @@ import {
 } from "./action-offers.js";
 import type { PrismaClient } from "./client.js";
 import { createDb } from "./client.js";
-import { finalizeRun } from "./events.js";
+import { claimSteering, finalizeRun, runTookOutsideSteering } from "./events.js";
 import { createThreadMessage } from "./messages.js";
 import { provisionMessagingIdentity } from "./messaging.js";
 import { previewFromBlocks } from "./thread-listing.js";
@@ -341,5 +342,42 @@ describePostgres("action offers (PostgreSQL)", () => {
     const result = await completeRun(fixture, [{ kind: "text", text: "Done." }]);
     expect(result.publishedOffers).toBeUndefined();
     expect(await prisma.actionOffer.count({ where: { runId: fixture.run.id } })).toBe(0);
+  });
+
+  it("runs a queued card after the busy run as its own follow-up, never as steering", async () => {
+    const busy = await runningRun();
+    const message = await createThreadMessage(prisma, {
+      threadId: ids.threadId,
+      role: "user",
+      blocks: [{ kind: "text", text: "Book the hotel." }],
+    });
+    await prisma.steeringMessage.create({
+      data: {
+        messageId: message.id,
+        botId: ids.botId,
+        userId: ids.userId,
+        runId: null,
+        originTrigger: ACTION_OFFER_STEERING_ORIGIN,
+      },
+    });
+    const claimed = await claimSteering(prisma, {
+      threadId: ids.threadId,
+      botId: ids.botId,
+      runId: busy.run.id,
+      leaseOwner: "worker-1",
+      leaseFence: 1,
+      seenIds: [],
+    });
+    expect(JSON.stringify(claimed)).not.toContain(message.id);
+    const result = await completeRun(busy, [{ kind: "text", text: "Done." }]);
+    expect(result.continuationRunId).toEqual(expect.any(String));
+    const next = await prisma.run.findUniqueOrThrow({ where: { id: result.continuationRunId! } });
+    expect(next.trigger).toBe("follow_up");
+    expect(next.sourceMessageId).toBe(message.id);
+    await prisma.steeringMessage.updateMany({
+      where: { messageId: message.id },
+      data: { runId: next.id, claimedAt: new Date() },
+    });
+    expect(await runTookOutsideSteering(prisma, next.id)).toBe(false);
   });
 });
