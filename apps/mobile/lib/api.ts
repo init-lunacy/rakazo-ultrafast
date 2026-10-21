@@ -970,7 +970,7 @@ export type MobileBot = Pick<
   | "autoSpeak"
   | "fleetManagement"
 > &
-  Partial<Pick<Bot, "parentBotId" | "spaceId" | "instructions">>;
+  Partial<Pick<Bot, "parentBotId" | "spaceId" | "instructions" | "openOfferCount">>;
 
 export type MobileBotSection = BotSection;
 
@@ -987,6 +987,7 @@ export type MobileMe = Pick<
   | "needsModel"
   | "avatarStyle"
   | "isDeploymentOwner"
+  | "actionOfferSettings"
 >;
 
 export type MobileModel = ModelCatalogEntry;
@@ -1021,7 +1022,7 @@ export type MobileGroup = Pick<
   | "updatedAt"
   | "members"
 > &
-  Partial<Pick<Group, "spaceId">>;
+  Partial<Pick<Group, "spaceId" | "openOfferCount">>;
 
 export type MobileSpace = Space;
 export type MobileSpaceNavigation = SpaceNavigation;

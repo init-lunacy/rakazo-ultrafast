@@ -315,6 +315,16 @@ export default function Layout() {
                           sheetExpandsWhenScrolledToEdge: false,
                         }}
                       />
+                      <Stack.Screen
+                        name="actions"
+                        options={{
+                          headerShown: false,
+                          presentation: Platform.OS === "ios" ? "formSheet" : "card",
+                          sheetAllowedDetents: [1],
+                          sheetGrabberVisible: false,
+                          sheetExpandsWhenScrolledToEdge: false,
+                        }}
+                      />
                       <Stack.Screen name="sign-in" options={{ headerShown: false }} />
                       <Stack.Screen
                         name="(settings)"
