@@ -23,7 +23,7 @@ export function buildApprovalAskBlock(
   toolName: string,
   args: Record<string, unknown>,
   secrets: string[],
-  options?: { reviewReason?: string; summary?: FleetCardSummary },
+  options?: { reviewReason?: string; summary?: FleetCardSummary; allowAlways?: boolean },
 ): MessageBlock {
   if (options?.summary) {
     // Built from what was resolved before the effect was recorded, not from what the model typed.
@@ -87,7 +87,7 @@ export function buildApprovalAskBlock(
             { id: "allow", label: "Create space", outcome: "created" },
             { id: "deny", label: "Cancel", outcome: "cancelled" },
           ]
-        : toolRequiresExplicitApproval(toolName)
+        : toolRequiresExplicitApproval(toolName) || options?.allowAlways === false
           ? [
               { id: "allow", label: "Allow once" },
               { id: "deny", label: "Deny" },

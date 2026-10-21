@@ -162,6 +162,22 @@ describe("fleet approval cards", () => {
     );
   });
 
+  it("leaves out Always allow when the approval is mandatory for this run", () => {
+    const block = buildApprovalAskBlock("effect-1", "gmail_send", { to: "a@example.test" }, [], {
+      allowAlways: false,
+    });
+    expect(block.kind === "ask" ? block.actions?.map((action) => action.id) : []).toEqual([
+      "allow",
+      "deny",
+    ]);
+    const ordinary = buildApprovalAskBlock("effect-2", "gmail_send", { to: "a@example.test" }, []);
+    expect(ordinary.kind === "ask" ? ordinary.actions?.map((action) => action.id) : []).toEqual([
+      "allow",
+      "always",
+      "deny",
+    ]);
+  });
+
   it("never offers always allow on a tool that needs explicit approval", () => {
     const block = buildApprovalAskBlock("effect-1", "create_group", { name: "Launch" }, []);
     if (block.kind !== "ask") throw new Error("expected ask block");

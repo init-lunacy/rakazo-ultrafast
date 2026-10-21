@@ -5168,7 +5168,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   name,
                   name === "propose_instructions_update" ? { ...args, botId: bot.id } : args,
                   runSecrets,
-                  { reviewReason, summary: fleetSummary },
+                  { reviewReason, summary: fleetSummary, allowAlways: !requiresMandatoryApproval },
                 ),
               ],
             });
