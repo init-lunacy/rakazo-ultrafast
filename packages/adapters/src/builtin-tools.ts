@@ -1085,7 +1085,6 @@ export const builtinAgentTools: ConnectorTool[] = [
       required: ["offers"],
     },
   },
-
   {
     name: "call_user",
     description:

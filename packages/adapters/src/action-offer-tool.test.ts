@@ -11,6 +11,7 @@ import type { ToolCallRecord } from "./action-offer-tool.js";
 import {
   actionOffersAllowedForRun,
   offerActionsFromTool,
+  recordToolCall,
   SAVE_SKILL_LABEL,
   skillSourceDigest,
 } from "./action-offer-tool.js";
@@ -158,5 +159,47 @@ describe("offer_actions", () => {
       "resume",
     ])
       expect(allowed(trigger)).toBe(false);
+  });
+});
+
+describe("offer_actions guards", () => {
+  it("never keeps a secret in the skill source, however long or escaped", () => {
+    const long = `L${"s3cret".repeat(500)}`;
+    const awkward = 'line one\nsays "quoted" \\ end';
+    const calls: ToolCallRecord[] = [];
+    recordToolCall(calls, "shell", { command: `echo ${long}` }, [long, awkward]);
+    recordToolCall(calls, "api", { body: { notes: [awkward] } }, [long, awkward]);
+    const source = skillSourceDigest(calls, []).join("\n");
+    expect(source).not.toContain(long.slice(0, 40));
+    expect(source).not.toContain("line one");
+    expect(source).not.toContain("quoted");
+    expect(source).toContain("[redacted]");
+  });
+
+  it("refuses non-object offers, secret-bearing cards and over-length redactions", async () => {
+    expect(await call({ offers: [null] })).toMatchObject({
+      error: expect.stringContaining("object"),
+    });
+    // Redaction can leave text that is itself a secret; such a card is never stored.
+    const leaky = await call(
+      { offers: [{ label: "L", task: "x" }] },
+      { secrets: ["x", "[redacted]"] },
+    );
+    expect(leaky).toMatchObject({ error: expect.stringContaining("credential") });
+    expect(store.replaceHeldActionOffers).not.toHaveBeenCalled();
+    const longSecret = "k".repeat(2_000);
+    const long = await call(
+      { offers: [{ label: "L", task: `use ${longSecret}` }] },
+      { secrets: [longSecret] },
+    );
+    expect(long).toMatchObject({ ok: true });
+  });
+
+  it("always allows clearing or closing when the chat is over the cap", async () => {
+    store.openActionOffersInChat.mockResolvedValue(
+      Array.from({ length: 9 }, (_, i) => ({ id: `o${i}`, label: `Open ${i}` })),
+    );
+    expect(await call({ offers: [] })).toMatchObject({ ok: true });
+    expect(await call({ offers: [], close: ["o0"] })).toMatchObject({ ok: true });
   });
 });

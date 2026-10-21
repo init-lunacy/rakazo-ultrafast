@@ -6152,7 +6152,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }),
             );
           }
-
           if (name === "call_user") {
             if (
               messagingChannelRun ||
@@ -7788,7 +7787,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 payload: { name: event.name, executionId: event.executionId },
               });
               pendingToolNames.push(event.name);
-              recordToolCall(runToolCalls, event.name, event.args);
+              recordToolCall(runToolCalls, event.name, event.args, runSecrets);
               tryFlushPendingTools();
               // One streak per agent: parallel helpers neither reset nor trip each other's.
               const loopGuard = advanceAgentLoopGuard(
@@ -8938,7 +8937,6 @@ export function userTurnInstructions(parts: {
     parts.offersActions
       ? "When there is a clear next step you could take on request, offer it with offer_actions instead of asking in text."
       : undefined,
-
     parts.pluginLine,
     parts.agentSkillsLine,
     parts.taughtSkillsLine,

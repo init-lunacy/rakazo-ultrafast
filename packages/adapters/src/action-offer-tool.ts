@@ -1,6 +1,6 @@
 import type { ActionOfferKind, ActionOfferSettings } from "@rakazo/contracts";
 import { ACTION_OFFER_LIMITS, IsoDate } from "@rakazo/contracts";
-import { redactSecrets } from "@rakazo/core";
+import { containsSecret, redactSecrets } from "@rakazo/core";
 import type { HeldActionOfferInput, PrismaClient } from "@rakazo/db";
 import { openActionOffersInChat, replaceHeldActionOffers } from "@rakazo/db";
 
@@ -30,15 +30,35 @@ export function actionOffersAllowedForRun(options: {
 const valueText = (value: unknown) =>
   typeof value === "string" ? value : (JSON.stringify(value) ?? "");
 
+/** Redacts every string leaf, so a secret is caught before JSON escaping or cutting can disguise it. */
+function redactLeaves(value: unknown, secrets: string[]): unknown {
+  if (typeof value === "string") return redactSecrets(value, secrets);
+  if (Array.isArray(value)) return value.map((item) => redactLeaves(item, secrets));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, redactLeaves(item, secrets)]),
+    );
+  }
+  return value;
+}
+
 /** Keeps a run's calls for a save-skill offer, bounded so a long run holds little memory. */
-export function recordToolCall(calls: ToolCallRecord[], name: string, args: unknown): void {
+export function recordToolCall(
+  calls: ToolCallRecord[],
+  name: string,
+  args: unknown,
+  secrets: string[],
+): void {
   if (calls.length >= RECORDED.calls) return;
   const entries =
     args && typeof args === "object" ? Object.entries(args as Record<string, unknown>) : [];
   calls.push({
     name,
     args: Object.fromEntries(
-      entries.map(([key, value]) => [key, valueText(value).slice(0, RECORDED.valueChars)]),
+      entries.map(([key, value]) => [
+        key,
+        valueText(redactLeaves(value, secrets)).slice(0, RECORDED.valueChars),
+      ]),
     ),
   });
 }
@@ -88,6 +108,9 @@ export async function offerActionsFromTool(
   const offers = Array.isArray(input.args.offers) ? (input.args.offers as OfferArg[]) : null;
   const close = Array.isArray(input.args.close) ? [...new Set(input.args.close.map(String))] : [];
   if (!offers) return { error: "offers must be a list; send [] to only close cards." };
+  if (offers.some((offer) => !offer || typeof offer !== "object" || Array.isArray(offer))) {
+    return { error: "Each offer must be an object with a label and a task." };
+  }
   if (offers.length > input.settings.perReply) {
     return {
       error: `Offer at most ${input.settings.perReply} cards in one reply; keep the most useful.`,
@@ -107,7 +130,11 @@ export async function offerActionsFromTool(
       openCards: open,
     };
   }
-  if (open.length - close.length + offers.length > input.settings.openPerChat) {
+  // Clearing this run's offers or only closing cards is always allowed.
+  if (
+    offers.length > 0 &&
+    open.length - close.length + offers.length > input.settings.openPerChat
+  ) {
     return {
       error: `This chat would have more than ${input.settings.openPerChat} open cards. Name the ones this offer supersedes in close, or offer fewer.`,
       openCards: open,
@@ -131,8 +158,17 @@ export async function offerActionsFromTool(
       });
       continue;
     }
-    const label = typeof offer.label === "string" ? offer.label.trim() : "";
-    const task = typeof offer.task === "string" ? offer.task.trim() : "";
+    const label = redactSecrets(
+      typeof offer.label === "string" ? offer.label.trim() : "",
+      input.secrets,
+    );
+    const task = redactSecrets(
+      typeof offer.task === "string" ? offer.task.trim() : "",
+      input.secrets,
+    );
+    if (containsSecret(label, input.secrets) || containsSecret(task, input.secrets)) {
+      return { error: "A card still contains a credential. Never put credentials in cards." };
+    }
     if (!label || label.length > ACTION_OFFER_LIMITS.labelMaxChars) {
       return { error: `Each label needs 1 to ${ACTION_OFFER_LIMITS.labelMaxChars} characters.` };
     }
@@ -143,8 +179,8 @@ export async function offerActionsFromTool(
     }
     held.push({
       kind,
-      label: redactSecrets(label, input.secrets),
-      task: redactSecrets(task, input.secrets),
+      label,
+      task,
       expiresAt: expiresAt.date,
     });
   }
