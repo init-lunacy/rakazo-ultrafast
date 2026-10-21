@@ -30,7 +30,9 @@ export function withOfferUpdates(
 
 /** Later turns see what the bot offered, with ids it can name to close a card. */
 export function actionOfferHistoryText(offers: readonly ActionOfferCard[]): string {
-  return `[offered: ${offers.map((offer) => `${offer.id} ${offer.label}`).join("; ")}]`;
+  // A label cannot end the line or add a card of its own.
+  const entries = offers.map((offer) => `${offer.id} ${offer.label.replace(/[[\];]/g, "")}`);
+  return `[offered: ${entries.join("; ")}]`;
 }
 
 export function offerPushBody(labels: readonly string[]): string {
