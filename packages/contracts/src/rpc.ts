@@ -1,5 +1,6 @@
 import { eventIterator, oc } from "@orpc/contract";
 import * as z from "zod";
+import { ActionOfferSettingsPatchSchema } from "./action-offers.js";
 import { AiConsentQuerySchema, AiConsentStatusSchema } from "./ai-consent.js";
 import {
   ARTIFACT_DESCRIPTION_MAX_LENGTH,
@@ -201,10 +202,15 @@ export const appContract = {
           .object({
             avatarStyle: AvatarStyleSchema.optional(),
             timezone: TimeZoneSchema.nullable().optional(),
+            actionOfferSettings: ActionOfferSettingsPatchSchema.optional(),
           })
-          .refine((input) => input.avatarStyle !== undefined || input.timezone !== undefined, {
-            message: "Nothing to update",
-          }),
+          .refine(
+            (input) =>
+              input.avatarStyle !== undefined ||
+              input.timezone !== undefined ||
+              input.actionOfferSettings !== undefined,
+            { message: "Nothing to update" },
+          ),
       )
       .output(MeSchema),
     /** Saves a detected timezone only while none is saved, so it never replaces a choice. */

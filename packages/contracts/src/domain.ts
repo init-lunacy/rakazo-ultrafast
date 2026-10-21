@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { ActionOfferSettingsSchema } from "./action-offers.js";
 import { AGENT_SECRET_NAME_PATTERN } from "./agent-secret-name.js";
 import { BotAvatarValueSchema } from "./bot-avatar.js";
 import { DisabledBuiltinToolsSchema } from "./builtin-tools.js";
@@ -122,6 +123,8 @@ export const BotSchema = z.object({
     })
     .nullable()
     .optional(),
+  /** Open action cards in this chat; absent means none. */
+  openOfferCount: z.number().int().nonnegative().optional(),
 });
 export type Bot = z.infer<typeof BotSchema>;
 
@@ -167,6 +170,8 @@ export const GroupSchema = z.object({
   unread: z.boolean(),
   updatedAt: z.string(),
   createdAt: z.string(),
+  /** Open action cards in this chat; absent means none. */
+  openOfferCount: z.number().int().nonnegative().optional(),
 });
 export type Group = z.infer<typeof GroupSchema>;
 
@@ -1485,6 +1490,8 @@ export const MeSchema = z.object({
    * Absent from servers that predate it.
    */
   timezone: z.string().nullable().optional(),
+  /** Absent from older servers; read it through parseActionOfferSettings. */
+  actionOfferSettings: ActionOfferSettingsSchema.optional(),
   /** True when this deployment bills and the user is not the deployment owner. */
   billingEnabled: z.boolean(),
 });

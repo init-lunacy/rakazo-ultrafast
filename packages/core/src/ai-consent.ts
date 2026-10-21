@@ -35,6 +35,7 @@ export function aiDataUsesForProcedure(procedure: string, input?: unknown): AiDa
       "routines/create",
       "routines/update",
       "routines/testRun",
+      "actionOffers/take",
     ].includes(path)
   )
     return ["model", "memory"];

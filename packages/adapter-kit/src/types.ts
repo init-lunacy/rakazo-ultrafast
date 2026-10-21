@@ -701,13 +701,15 @@ export interface ArtifactPut {
 }
 
 export interface NotificationMessage {
-  kind: "completion" | "failure" | "help" | "takeover";
+  kind: "completion" | "failure" | "help" | "takeover" | "offer";
   title: string;
   body: string;
   botId: string;
   threadId: string;
   /** Group chat that owns threadId, so a tap does not open the bot's direct thread. */
   groupId?: string;
+  /** The message to open at, for an offer push. */
+  messageId?: string;
 }
 
 /** A product-authored transactional email, independent of its delivery vendor. */
