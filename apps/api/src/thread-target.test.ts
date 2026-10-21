@@ -3620,7 +3620,10 @@ describe("stopThreadRuns", () => {
         ]),
         findUnique: vi.fn().mockResolvedValue({ status: "cancelled" }),
       },
-      steeringMessage: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      steeringMessage: {
+        findMany: vi.fn().mockResolvedValue([]),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       computer: {
         // Production team ownership is lease-only: Computer.executionRunId stays null.
         findMany: vi.fn().mockImplementation(async ({ where }: { where: { OR?: unknown[] } }) => {
@@ -3756,7 +3759,10 @@ describe("stopThreadRuns", () => {
         updateManyAndReturn: vi.fn().mockResolvedValue([{ id: "run-a", botId: "bot-a" }]),
         findUnique: vi.fn().mockResolvedValue({ status: "cancelled" }),
       },
-      steeringMessage: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      steeringMessage: {
+        findMany: vi.fn().mockResolvedValue([]),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       computer: {
         // Selected via lease for cancelled run A, but legacy columns still name
         // unrelated live run B. Legacy teardown must not cancel/release B.
@@ -3867,7 +3873,10 @@ describe("stopThreadRuns", () => {
         // appendEventInTransaction re-reads the run after the flip.
         findUnique: vi.fn().mockResolvedValue({ status: "cancelled" }),
       },
-      steeringMessage: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      steeringMessage: {
+        findMany: vi.fn().mockResolvedValue([]),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       computer: { findMany: vi.fn().mockResolvedValue([]) },
       computerExecutionLease: { findMany: vi.fn().mockResolvedValue([]) },
       event: {
@@ -3952,7 +3961,10 @@ describe("stopThreadRuns", () => {
         updateManyAndReturn: vi.fn().mockResolvedValue([]),
         findUnique: vi.fn(),
       },
-      steeringMessage: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      steeringMessage: {
+        findMany: vi.fn().mockResolvedValue([]),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       computer: { findMany: vi.fn() },
       computerExecutionLease: { findMany: vi.fn() },
       event: { create: vi.fn(), deleteMany: vi.fn() },
