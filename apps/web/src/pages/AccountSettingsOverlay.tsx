@@ -1,5 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { AccountSecurity, AvatarStyle } from "@rakazo/contracts";
+import type { AccountSecurity, ActionOfferSettings, AvatarStyle } from "@rakazo/contracts";
 import { accountDisplay } from "@rakazo/core";
 import {
   BotAvatar,
@@ -14,7 +14,7 @@ import {
   Toggle,
 } from "@rakazo/ui-web";
 import type { RefObject } from "react";
-import { useId, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { Link } from "react-router-dom";
 import { AccountAccess } from "../components/AccountAccess";
 import { SuccessPop } from "../components/ai/primitives";
@@ -64,6 +64,8 @@ export type SettingsGeneralProps = {
   messagingEnabled?: boolean;
   onOpenMessaging?: () => void;
   isDeploymentOwner?: boolean;
+  actionOfferSettings: ActionOfferSettings;
+  onActionOfferSettingsChange: (patch: Partial<ActionOfferSettings>) => Promise<void>;
 };
 
 export function GeneralSettingsPanels({
@@ -76,6 +78,8 @@ export function GeneralSettingsPanels({
   messagingEnabled = false,
   onOpenMessaging,
   isDeploymentOwner = false,
+  actionOfferSettings,
+  onActionOfferSettingsChange,
 }: SettingsGeneralProps) {
   const { t } = useLingui();
   const account = accountDisplay({ name, email }, t`You`);
@@ -95,6 +99,7 @@ export function GeneralSettingsPanels({
     () => getResponseStreamingPreference() === "on",
   );
   const streamRepliesId = useId();
+  const actionOffersId = useId();
   const [showToolActivity, setShowToolActivity] = useState(
     () => getToolActivityPreference() === "on",
   );
@@ -348,6 +353,58 @@ export function GeneralSettingsPanels({
               <Trans>Stream replies</Trans>
             </Label>
           </div>
+          <fieldset className="flex flex-col gap-3 pt-5">
+            <legend className="text-[14px] font-medium text-foreground">
+              <Trans>Action cards</Trans>
+            </legend>
+            <div className="flex items-start gap-3">
+              <Switch
+                id={actionOffersId}
+                data-testid="action-offers-toggle"
+                className="mt-0.5"
+                checked={actionOfferSettings.enabled}
+                onCheckedChange={(enabled) => void onActionOfferSettingsChange({ enabled })}
+              />
+              <Label
+                htmlFor={actionOffersId}
+                className="text-[14px] font-normal text-foreground/75"
+              >
+                <Trans>Offer next steps</Trans>
+              </Label>
+            </div>
+            <OfferNumber
+              testId="action-offers-per-reply"
+              label={t`Cards per reply`}
+              min={1}
+              max={10}
+              value={actionOfferSettings.perReply}
+              onSave={(perReply) => onActionOfferSettingsChange({ perReply })}
+            />
+            <OfferNumber
+              testId="action-offers-open-per-chat"
+              label={t`Open cards per chat`}
+              min={1}
+              max={20}
+              value={actionOfferSettings.openPerChat}
+              onSave={(openPerChat) => onActionOfferSettingsChange({ openPerChat })}
+            />
+            <OfferNumber
+              testId="action-offers-lifetime"
+              label={t`Keep cards for (days)`}
+              min={1}
+              max={30}
+              value={actionOfferSettings.defaultLifetimeDays}
+              onSave={(defaultLifetimeDays) => onActionOfferSettingsChange({ defaultLifetimeDays })}
+            />
+            <OfferNumber
+              testId="action-offers-skill-steps"
+              label={t`Steps before offering to save a skill`}
+              min={1}
+              max={50}
+              value={actionOfferSettings.saveSkillMinSteps}
+              onSave={(saveSkillMinSteps) => onActionOfferSettingsChange({ saveSkillMinSteps })}
+            />
+          </fieldset>
           <div className="flex items-start gap-3 pt-4">
             <Switch
               id={showToolActivityId}
@@ -640,5 +697,45 @@ function UiLocalePicker({
       value={value}
       onChange={onChange}
     />
+  );
+}
+
+/** A bounded whole number, saved when the field loses focus. */
+function OfferNumber(props: {
+  testId: string;
+  label: string;
+  min: number;
+  max: number;
+  value: number;
+  onSave: (value: number) => Promise<void>;
+}) {
+  const id = useId();
+  const [draft, setDraft] = useState(String(props.value));
+  useEffect(() => setDraft(String(props.value)), [props.value]);
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <Label htmlFor={id} className="text-[14px] font-normal text-foreground/75">
+        {props.label}
+      </Label>
+      <Input
+        id={id}
+        data-testid={props.testId}
+        type="number"
+        inputMode="numeric"
+        min={props.min}
+        max={props.max}
+        className="w-20"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          const next = Math.min(
+            props.max,
+            Math.max(props.min, Math.round(Number(draft) || props.value)),
+          );
+          setDraft(String(next));
+          if (next !== props.value) void props.onSave(next);
+        }}
+      />
+    </div>
   );
 }

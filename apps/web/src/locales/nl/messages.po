@@ -345,6 +345,15 @@ msgstr "Accountmenu voor {name}"
 msgid "Accounts"
 msgstr "Accounts"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Action cards"
+msgstr ""
+
+#: src/pages/Actions.tsx
+#: src/pages/Shell.tsx
+msgid "Actions"
+msgstr ""
+
 #. placeholder {0}: bot.name
 #. placeholder {0}: group.spaceName
 #. placeholder {0}: sectionMenu.section.name
@@ -602,6 +611,11 @@ msgstr "Antwoorden"
 msgctxt "incoming call"
 msgid "Answer"
 msgstr "Antwoorden"
+
+#. placeholder {0}: data.botName ?? ""
+#: src/pages/shell/message-cards.tsx
+msgid "Answer {0}'s question first."
+msgstr ""
 
 #: src/components/AskCard.tsx
 msgid "Answered"
@@ -876,6 +890,7 @@ msgstr "Te koppelen bot"
 msgid "Bot's model"
 msgstr "Model van de bot"
 
+#: src/pages/Actions.tsx
 #: src/pages/Artifacts.tsx
 msgid "Bots"
 msgstr "Bots"
@@ -972,6 +987,10 @@ msgstr "Geannuleerd"
 #: src/pages/Artifacts.tsx
 msgid "Card view"
 msgstr "Kaartweergave"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Cards per reply"
+msgstr ""
 
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Change password"
@@ -2729,6 +2748,10 @@ msgstr "Spring naar het beantwoorde bericht: {excerpt}"
 msgid "just now"
 msgstr "zojuist"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Keep cards for (days)"
+msgstr ""
+
 #: src/pages/shell/dialogs.tsx
 msgid "Keep memories"
 msgstr "Herinneringen bewaren"
@@ -3429,6 +3452,10 @@ msgstr "OAuth verlopen"
 msgid "Off"
 msgstr ""
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Offer next steps"
+msgstr ""
+
 #: src/pages/RoutineEditor.tsx
 msgid "On a schedule"
 msgstr "Op een schema"
@@ -3468,6 +3495,10 @@ msgstr "Open <0>{0}</0> om de aanmelding af te ronden."
 #: src/pages/Shell.tsx
 msgid "Open call"
 msgstr "Gesprek openen"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Open cards per chat"
+msgstr ""
 
 #. placeholder {0}: call.botName
 #: src/components/call/CallCard.tsx
@@ -4128,6 +4159,10 @@ msgstr "Draait wanneer deze bot een geverifieerd bericht van deze aanbieder ontv
 msgid "Save"
 msgstr "Opslaan"
 
+#: src/pages/shell/message-cards.tsx
+msgid "Save as a skill"
+msgstr ""
+
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Save backups"
 msgstr "Back-ups opslaan"
@@ -4544,6 +4579,10 @@ msgstr "Status"
 msgid "Steps"
 msgstr "Stappen"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Steps before offering to save a skill"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Stop"
 msgstr "Stoppen"
@@ -4664,6 +4703,10 @@ msgstr "Aanmelding testen"
 #: src/components/ModelConnectionPreflightNotice.tsx
 msgid "Testing…"
 msgstr "Bezig met testen…"
+
+#: src/pages/shell/message-cards.tsx
+msgid "That bot has left this group."
+msgstr ""
 
 #: src/components/SoftwareUpdateSection.tsx
 msgid "The API did not come back. Refresh this page."

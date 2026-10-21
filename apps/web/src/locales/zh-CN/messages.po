@@ -345,6 +345,15 @@ msgstr "{name} 的账户菜单"
 msgid "Accounts"
 msgstr ""
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Action cards"
+msgstr ""
+
+#: src/pages/Actions.tsx
+#: src/pages/Shell.tsx
+msgid "Actions"
+msgstr ""
+
 #. placeholder {0}: bot.name
 #. placeholder {0}: group.spaceName
 #. placeholder {0}: sectionMenu.section.name
@@ -602,6 +611,11 @@ msgstr "回答"
 msgctxt "incoming call"
 msgid "Answer"
 msgstr "回答"
+
+#. placeholder {0}: data.botName ?? ""
+#: src/pages/shell/message-cards.tsx
+msgid "Answer {0}'s question first."
+msgstr ""
 
 #: src/components/AskCard.tsx
 msgid "Answered"
@@ -876,6 +890,7 @@ msgstr "要关联的 Bot"
 msgid "Bot's model"
 msgstr "Bot 的模型"
 
+#: src/pages/Actions.tsx
 #: src/pages/Artifacts.tsx
 msgid "Bots"
 msgstr ""
@@ -971,6 +986,10 @@ msgstr "已取消"
 
 #: src/pages/Artifacts.tsx
 msgid "Card view"
+msgstr ""
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Cards per reply"
 msgstr ""
 
 #: src/pages/AccountSettingsOverlay.tsx
@@ -2729,6 +2748,10 @@ msgstr "跳转到回复的消息：{excerpt}"
 msgid "just now"
 msgstr "刚刚"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Keep cards for (days)"
+msgstr ""
+
 #: src/pages/shell/dialogs.tsx
 msgid "Keep memories"
 msgstr "保留记忆"
@@ -3429,6 +3452,10 @@ msgstr ""
 msgid "Off"
 msgstr ""
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Offer next steps"
+msgstr ""
+
 #: src/pages/RoutineEditor.tsx
 msgid "On a schedule"
 msgstr "按计划"
@@ -3467,6 +3494,10 @@ msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Open call"
+msgstr ""
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Open cards per chat"
 msgstr ""
 
 #. placeholder {0}: call.botName
@@ -4128,6 +4159,10 @@ msgstr ""
 msgid "Save"
 msgstr "保存"
 
+#: src/pages/shell/message-cards.tsx
+msgid "Save as a skill"
+msgstr ""
+
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Save backups"
 msgstr "保存备用模型"
@@ -4544,6 +4579,10 @@ msgstr ""
 msgid "Steps"
 msgstr "步骤"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Steps before offering to save a skill"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Stop"
 msgstr "停止"
@@ -4664,6 +4703,10 @@ msgstr "测试登录"
 #: src/components/ModelConnectionPreflightNotice.tsx
 msgid "Testing…"
 msgstr "正在测试…"
+
+#: src/pages/shell/message-cards.tsx
+msgid "That bot has left this group."
+msgstr ""
 
 #: src/components/SoftwareUpdateSection.tsx
 msgid "The API did not come back. Refresh this page."

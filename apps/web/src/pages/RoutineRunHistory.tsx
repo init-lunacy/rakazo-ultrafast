@@ -5,6 +5,7 @@ import { Button } from "@rakazo/ui-web";
 import { ChevronDown } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { chatMessagePath } from "../lib/chat-message-path";
 import { rpc } from "../lib/rpc";
 import { translateRunError } from "../lib/run-error";
 import { formatToolActivityDuration } from "../lib/tool-activity-view";
@@ -201,9 +202,11 @@ export function RoutineRunHistory({ routineId }: { routineId: string }) {
                   )
                 : null;
             const chatTo = run.messageId
-              ? run.groupId
-                ? `/app/g/${encodeURIComponent(run.groupId)}?m=${encodeURIComponent(run.messageId)}`
-                : `/app/${encodeURIComponent(run.botId)}?m=${encodeURIComponent(run.messageId)}`
+              ? chatMessagePath({
+                  botId: run.botId,
+                  groupId: run.groupId ?? null,
+                  messageId: run.messageId,
+                })
               : null;
             return (
               <li key={run.id} className="py-2.5 text-[13px]" data-testid="routine-run-row">
