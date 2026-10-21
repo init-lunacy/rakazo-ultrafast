@@ -18,3 +18,8 @@ export const OFFER_SETTING_CHOICES = {
   defaultLifetimeDays: [1, 3, 7, 14, 30],
   saveSkillMinSteps: [1, 3, 5, 10, 20],
 } as const;
+
+/** The preset choices, plus the saved value when it is not one of them (set elsewhere). */
+export function offerSettingChoices(preset: readonly number[], value: number): number[] {
+  return preset.includes(value) ? [...preset] : [...preset, value].sort((a, b) => a - b);
+}

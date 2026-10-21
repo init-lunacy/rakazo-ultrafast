@@ -30,12 +30,8 @@ export function OfferCard({
   const label = card.kind === "save_skill" ? t("Save as a skill") : card.label;
 
   if (status === "taken") {
-    return (
-      <Pressable
-        accessibilityRole="button"
-        onPress={() => card.takenMessageId && onOpenMessage?.(card.takenMessageId)}
-        style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
-      >
+    const done = (
+      <>
         <NativeSymbol
           ios="checkmark"
           android="checkmark"
@@ -43,12 +39,21 @@ export function OfferCard({
           color={tokens.mutedForeground}
         />
         <Text style={{ color: tokens.mutedForeground }}>{label}</Text>
+      </>
+    );
+    const row = { flexDirection: "row", alignItems: "center", gap: 6 } as const;
+    const messageId = card.takenMessageId;
+    if (!messageId || !onOpenMessage) return <View style={row}>{done}</View>;
+    return (
+      <Pressable accessibilityRole="button" onPress={() => onOpenMessage(messageId)} style={row}>
+        {done}
       </Pressable>
     );
   }
   if (status !== "open") return <Text style={{ color: tokens.mutedForeground }}>{label}</Text>;
 
   async function send(action: "take" | "dismiss") {
+    if (pending) return;
     setPending(true);
     setError(null);
     try {

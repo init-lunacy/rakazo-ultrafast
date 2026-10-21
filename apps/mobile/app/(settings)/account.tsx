@@ -30,7 +30,7 @@ import {
   SettingsSwitch,
   useStackedSettings,
 } from "../../components/settings-group";
-import { OFFER_SETTING_CHOICES } from "../../lib/action-offers";
+import { OFFER_SETTING_CHOICES, offerSettingChoices } from "../../lib/action-offers";
 import type { MobileMe } from "../../lib/api";
 import {
   currentApiBase,
@@ -897,7 +897,10 @@ function OfferChoiceRow(props: {
     <MenuPicker
       label={props.title}
       value={String(props.value)}
-      choices={props.choices.map((choice) => ({ key: String(choice), label: String(choice) }))}
+      choices={offerSettingChoices(props.choices, props.value).map((choice) => ({
+        key: String(choice),
+        label: String(choice),
+      }))}
       onChange={(key) => props.onChoose(Number(key))}
     />
   );

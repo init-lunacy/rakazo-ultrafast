@@ -153,9 +153,10 @@ describe("OfferCard", () => {
 
   it("dismisses from the card's menu", async () => {
     rpc.mockResolvedValue({ status: "dismissed" });
-    const { press } = renderOffer(card);
+    const { container: view, press } = renderOffer(card);
     await press("menu:dismiss");
     expect(rpc).toHaveBeenCalledWith("actionOffers/dismiss", { offerId: "offer-1" });
+    expect(view.textContent).not.toContain("Book the Lisbon hotel we compared.");
   });
 
   it("shows a taken card as done and opens the message it sent", async () => {
@@ -169,6 +170,12 @@ describe("OfferCard", () => {
     expect(rpc).not.toHaveBeenCalled();
   });
 
+  it("shows a taken card without a message as plain text, not a button", () => {
+    const { container: view } = renderOffer({ ...card, status: "taken" });
+    expect(view.querySelector("button")).toBeNull();
+    expect(view.textContent).toContain("Book the hotel");
+  });
+
   it("treats a card another device took as done, without an error", async () => {
     rpc.mockRejectedValue(
       Object.assign(new Error("x"), { data: { reason: "card_closed", status: "taken" } }),
@@ -176,5 +183,6 @@ describe("OfferCard", () => {
     const { container: view, press } = renderOffer(card);
     await press("Book the hotel");
     expect(view.querySelector('[role="alert"]')).toBeNull();
+    expect(view.textContent).not.toContain("Book the Lisbon hotel we compared.");
   });
 });

@@ -3283,6 +3283,7 @@ const MessageRow = memo(function MessageRow({
                 onPreviewImage={actions.previewImage}
                 peerReplies={peerReplies}
                 onTogglePeerReplies={actions.togglePeerReplies}
+                onJumpToMessage={actions.jump}
                 actionProps={actionProps}
               />
             </ThreadReadOnlyContext.Provider>
@@ -3339,6 +3340,7 @@ const MessageBubble = memo(function MessageBubble({
   onPreviewImage,
   peerReplies,
   onTogglePeerReplies,
+  onJumpToMessage,
   actionProps,
 }: {
   botId: string;
@@ -3356,6 +3358,7 @@ const MessageBubble = memo(function MessageBubble({
   onPreviewImage: (target: ImageArtifactPreviewTarget) => void;
   peerReplies?: "collapsed" | "expanded";
   onTogglePeerReplies: (markerId: string) => void;
+  onJumpToMessage?: (messageId: string) => void;
   actionProps: MessageActionProps;
 }) {
   const colorScheme = useResolvedAppearance();
@@ -4036,7 +4039,7 @@ const MessageBubble = memo(function MessageBubble({
         )
         .flatMap((block) => block.offers)
         .map((card) => (
-          <OfferCard key={card.id} card={card} />
+          <OfferCard key={card.id} card={card} onOpenMessage={onJumpToMessage} />
         ))}
       {computerBlocks.map((block, index) => (
         <ComputerCard
