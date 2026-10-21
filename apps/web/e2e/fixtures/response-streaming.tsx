@@ -1,6 +1,7 @@
 import { I18nProvider } from "@lingui/react";
 import { ChatMarkdown } from "@rakazo/chat-ui/web";
 import type { ProductEvent, ThreadMessage, ThreadSnapshot } from "@rakazo/contracts";
+import { DEFAULT_ACTION_OFFER_SETTINGS } from "@rakazo/contracts";
 import { isToolActivityBlock, withLiveStreamingProgress } from "@rakazo/core";
 import { DEFAULT_GROK_BOT_COLOR } from "@rakazo/ui-web";
 import { createRoot } from "react-dom/client";
@@ -203,6 +204,8 @@ function SettingsFixture() {
         email="owner@example.test"
         name="Owner"
         avatarStyle="robot"
+        actionOfferSettings={DEFAULT_ACTION_OFFER_SETTINGS}
+        onActionOfferSettingsChange={() => Promise.resolve()}
         onAvatarStyleChange={() => Promise.resolve()}
         memoryConfig={null}
         onMemoryConfigChange={() => {}}

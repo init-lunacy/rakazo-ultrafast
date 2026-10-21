@@ -1,6 +1,7 @@
 import { I18nProvider } from "@lingui/react";
 import { ChatMarkdown } from "@rakazo/chat-ui/web";
 import type { Bot, Me, ModelCatalogEntry } from "@rakazo/contracts";
+import { DEFAULT_ACTION_OFFER_SETTINGS } from "@rakazo/contracts";
 import { defaultCronPreset } from "@rakazo/core";
 import { BotAvatar, Button } from "@rakazo/ui-web";
 import { ArrowUp, Bell, LayoutGrid, Monitor, PanelLeftClose, Plus, Search } from "lucide-react";
@@ -493,6 +494,8 @@ function SubscriptionShot() {
         name="Ada"
         initialSection="models"
         avatarStyle="robot"
+        actionOfferSettings={DEFAULT_ACTION_OFFER_SETTINGS}
+        onActionOfferSettingsChange={() => Promise.resolve()}
         onAvatarStyleChange={async () => undefined}
         memoryConfig={null}
         onMemoryConfigChange={() => undefined}
