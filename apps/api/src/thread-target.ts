@@ -915,7 +915,10 @@ export async function sendThreadMessage(
 
       const members = await lockAndLoadGroupMembers(tx, actor, target);
       // After the group lock, so a take locks group then thread like every group send.
-      await options.beforeSend?.(tx);
+      if (options.beforeSend) {
+        await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR UPDATE`;
+        await options.beforeSend(tx);
+      }
       const memberBotIds = members.map((member) => member.botId);
       const mentionTargets = splitMentionTargets(input.mentions);
       if (options.targetBotIds?.some((botId) => !memberBotIds.includes(botId))) {
@@ -964,7 +967,7 @@ export async function sendThreadMessage(
         for (const botId of targetBotIds) {
           assertNotWaitingForUser(
             activeRuns.filter((run) => run.botId === botId),
-            members.find((member) => member.botId === botId)?.name ?? "The bot",
+            members.find((member) => member.botId === botId)!.name,
           );
         }
       }
@@ -1368,22 +1371,29 @@ export async function stopThreadRuns(
     );
     let reopenedSeq: number | null = null;
     if (reopened.length > 0) {
-      await tx.actionOffer.updateMany({
+      const reopenedOffers = await tx.actionOffer.updateManyAndReturn({
         where: { id: { in: reopened }, status: "taken", takenRunId: null },
         data: { status: "open" },
+        select: { id: true },
+      });
+      const reopenedIds = reopenedOffers.map((offer) => offer.id);
+      // The dead message keeps its history but frees the nonce, so a later take sends afresh.
+      await tx.message.updateMany({
+        where: { threadId: target.threadId, clientNonce: { in: reopenedIds } },
+        data: { clientNonce: null },
       });
       reopenedSeq = await mirrorActionOffersInTransaction(tx, {
         spaceId: actor.spaceId,
         threadId: target.threadId,
         botId: botIds[0]!,
         updates: new Map(
-          reopened.map((id) => [id, { status: "open" as const, takenMessageId: undefined }]),
+          reopenedIds.map((id) => [id, { status: "open" as const, takenMessageId: undefined }]),
         ),
       });
     }
     await tx.steeringMessage.deleteMany({
       where: {
-        botId: { in: target.kind === "bot" ? [target.botId] : target.memberBotIds },
+        botId: { in: botIds },
         message: { threadId: target.threadId },
       },
     });
