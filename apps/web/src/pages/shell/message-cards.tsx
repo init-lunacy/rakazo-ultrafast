@@ -1,8 +1,8 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { MessageBlock } from "@rakazo/contracts";
-import { abortableDelay } from "@rakazo/core";
-import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
-import { X } from "lucide-react";
+import type { ActionOfferCard, ActionOfferStatus, MessageBlock } from "@rakazo/contracts";
+import { abortableDelay, effectiveOfferStatus } from "@rakazo/core";
+import { Button, cn, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
+import { Check, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { BuiCard, SuccessPop } from "../../components/ai/primitives";
 import type { ArtifactTarget } from "../../lib/artifact-open";
@@ -588,5 +588,100 @@ export function ArtifactImage({
         </Dialog>
       ) : null}
     </div>
+  );
+}
+
+/** One action card. Its state arrives with the message; after a tap it shows the result at once. */
+export function OfferCard({
+  card,
+  onJumpToMessage,
+  now = new Date(),
+}: {
+  card: ActionOfferCard;
+  onJumpToMessage?: (messageId: string) => void;
+  now?: Date;
+}) {
+  const { t } = useLingui();
+  const [settled, setSettled] = useState<ActionOfferStatus | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  // The server's update wins over the local result (a stop can reopen a queued card).
+  useEffect(() => setSettled(null), [card.status]);
+  const status = settled ?? effectiveOfferStatus(card, now);
+  const label = card.kind === "save_skill" ? t`Save as a skill` : card.label;
+
+  if (status === "taken") {
+    return (
+      <button
+        type="button"
+        data-offer-status="taken"
+        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground"
+        onClick={() => card.takenMessageId && onJumpToMessage?.(card.takenMessageId)}
+      >
+        <Check className="size-4" aria-hidden />
+        {label}
+      </button>
+    );
+  }
+  if (status !== "open") {
+    return (
+      <p data-offer-status={status} className="text-sm text-muted-foreground">
+        {label}
+      </p>
+    );
+  }
+
+  async function run(action: "take" | "dismiss") {
+    setPending(true);
+    setError(null);
+    try {
+      await rpc.actionOffers[action]({ offerId: card.id });
+      setSettled(action === "take" ? "taken" : "dismissed");
+    } catch (err) {
+      const data = (
+        err as { data?: { reason?: string; status?: ActionOfferStatus; botName?: string } }
+      ).data;
+      if (data?.reason === "card_closed" && data.status) setSettled(data.status);
+      else if (data?.reason === "waiting_for_answer")
+        setError(t`Answer ${data.botName ?? ""}'s question first.`);
+      else if (data?.reason === "left_group") setError(t`That bot has left this group.`);
+      else setError(errorText(err));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <BuiCard className="flex max-w-xl flex-col gap-2 p-3">
+      <div className="flex items-start gap-2">
+        <Button size="sm" disabled={pending} onClick={() => void run("take")}>
+          {label}
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={t`Dismiss`}
+          disabled={pending}
+          className="ms-auto text-muted-foreground"
+          onClick={() => void run("dismiss")}
+        >
+          <X />
+        </Button>
+      </div>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        className={cn("text-start text-sm text-muted-foreground", !expanded && "line-clamp-1")}
+        onClick={() => setExpanded((open) => !open)}
+      >
+        {card.task}
+      </button>
+      {error ? (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </BuiCard>
   );
 }

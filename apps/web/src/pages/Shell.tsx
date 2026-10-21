@@ -324,6 +324,7 @@ import {
   ChartBlockView,
   ChoiceCard,
   McpApprovalCard,
+  OfferCard,
 } from "./shell/message-cards";
 import type { RosterDropTarget } from "./shell/roster-drop";
 import { resolveRosterDrop } from "./shell/roster-drop";
@@ -7489,6 +7490,15 @@ const MessageView = memo(function MessageView({
           );
         }
         if (block.kind === "cloud_agent") return <CloudAgentCard key={i} block={block} />;
+        if (block.kind === "action_offer") {
+          return (
+            <div key={i} className="flex flex-col gap-2">
+              {block.offers.map((card) => (
+                <OfferCard key={card.id} card={card} onJumpToMessage={onJumpToMessage} />
+              ))}
+            </div>
+          );
+        }
         if (block.kind === "skill_draft") {
           return (
             <div key={i} className="flex justify-start">
