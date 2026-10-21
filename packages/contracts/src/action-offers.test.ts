@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_ACTION_OFFER_SETTINGS,
-  MessageBlock,
-  parseActionOfferSettings,
-} from "./index.js";
+import { DEFAULT_ACTION_OFFER_SETTINGS, MessageBlock, parseActionOfferSettings } from "./index.js";
 import { appContract } from "./rpc.js";
 
 describe("action offer settings", () => {
@@ -48,7 +44,8 @@ describe("action_offer block", () => {
     };
     expect(MessageBlock.safeParse({ kind: "action_offer", offers: [card] }).success).toBe(true);
     expect(
-      MessageBlock.safeParse({ kind: "action_offer", offers: [{ ...card, status: "gone" }] }).success,
+      MessageBlock.safeParse({ kind: "action_offer", offers: [{ ...card, status: "gone" }] })
+        .success,
     ).toBe(false);
   });
 });

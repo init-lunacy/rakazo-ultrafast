@@ -4237,14 +4237,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
         const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
-        const actionOfferSettings = parseActionOfferSettings(
-          (
-            await deps.prisma.user.findUnique({
-              where: { id: run.userId },
-              select: { actionOfferSettings: true },
-            })
-          )?.actionOfferSettings,
-        );
+        let userPreferences: { timezone: string | null; actionOfferSettings: unknown } | null =
+          null;
+        try {
+          userPreferences = await deps.prisma.user.findUnique({
+            where: { id: run.userId },
+            select: { timezone: true, actionOfferSettings: true },
+          });
+        } catch {
+          // Timezone and card settings are optional; a lookup failure must not prevent a run.
+        }
+        const actionOfferSettings = parseActionOfferSettings(userPreferences?.actionOfferSettings);
 
         const builtins = [
           ...selectBuiltinToolsForRun({
@@ -4838,7 +4841,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           // the command once, rather than letting an allow rule or reviewer schedule it.
           const commandWatch =
             name === "schedule_create" && commandWatchFromTool(args.watch) !== undefined;
-          // The saved run's tool calls are untrusted text: the user sees the skill before it exists.
+          // The saved run's tool calls are untrusted text: the user approves each skill change.
           const saveSkillReview = saveSkillRunRequiresApproval(name, saveSkillSource !== null);
           const requiresApprovalByDefault =
             commandWatch ||
@@ -7274,17 +7277,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
           { exposedToolNames: new Set(tools.map((tool) => tool.name)) },
         );
         const replyContext = await loadReplyContext(deps.prisma, thread.id, run.sourceMessageId);
-        let userTimeZone: string | null | undefined;
-        try {
-          userTimeZone = (
-            await deps.prisma.user.findUnique({
-              where: { id: run.userId },
-              select: { timezone: true },
-            })
-          )?.timezone;
-        } catch {
-          // Timezone is optional context; a lookup failure must not prevent a run.
-        }
         const prompt = [
           replyContext,
           run.trigger === "reaction" && replyContext ? undefined : basePrompt,
@@ -7294,7 +7286,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           // A hang-up turn is read, not heard: no spoken-reply constraint.
           voiceCall && !callEndRun ? voiceCallInstruction(disabledBuiltinTools) : undefined,
           // Per-turn, not in the system prompt: the timestamp changes every call and would break the cacheable prefix.
-          formatCurrentTimeInstruction(new Date(), userTimeZone),
+          formatCurrentTimeInstruction(new Date(), userPreferences?.timezone),
         ]
           .filter(Boolean)
           .join("\n\n");
