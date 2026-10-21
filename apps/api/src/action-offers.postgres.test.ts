@@ -5,6 +5,7 @@ import {
   createDb,
   createThreadEvents,
   createThreadMessage,
+  finalizeRun,
   provisionMessagingIdentity,
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -209,6 +210,102 @@ describePostgres("taking an action card (PostgreSQL)", () => {
       status: "taken",
       takenRunId: again.runId,
     });
+  });
+
+  it("reopens a queued card whose follow-up run was created but not started when stopped", async () => {
+    const { offer } = await openCard();
+    const t = await prisma.task.create({ data: { ...ids, prompt: "busy", status: "running" } });
+    const busy = await prisma.run.create({
+      data: {
+        ...ids,
+        taskId: t.id,
+        status: "running",
+        trigger: "user",
+        startedAt: new Date(),
+        leaseOwner: "worker-1",
+        leaseFence: 1,
+      },
+    });
+    const attempt = await prisma.attempt.create({
+      data: { runId: busy.id, fence: 1, status: "running" },
+    });
+    expect((await take(offer)).runId).toBeUndefined();
+    const finished = await finalizeRun(prisma, {
+      ...ids,
+      runId: busy.id,
+      taskId: t.id,
+      attemptId: attempt.id,
+      leaseOwner: "worker-1",
+      leaseFence: 1,
+      outcome: "completed",
+      blocks: [{ kind: "text", text: "Done." }],
+      markUnread: false,
+    });
+    const continuationRunId = finished?.continuationRunId;
+    expect(continuationRunId).toEqual(expect.any(String));
+    const sent = await sentFor(ids.threadId, offer.id);
+    expect(await prisma.steeringMessage.findFirst({ where: { messageId: sent.id } })).toMatchObject(
+      { runId: continuationRunId, claimedAt: null },
+    );
+    await stopThreadRuns(
+      { ...deps(), sandbox: {} as unknown as SandboxProvider },
+      actor,
+      await resolveThreadTarget(prisma, actor, { botId: ids.botId }),
+    );
+    expect((await prisma.actionOffer.findUniqueOrThrow({ where: { id: offer.id } })).status).toBe(
+      "open",
+    );
+    expect((await take(offer)).runId).toEqual(expect.any(String));
+  });
+
+  it("names the card's own bot when a group stop reopens it", async () => {
+    const second = await prisma.bot.create({
+      data: { spaceId: ids.spaceId, userId: ids.userId, name: "Planner", color: "blue" },
+    });
+    const group = await prisma.chatGroup.create({
+      data: {
+        spaceId: ids.spaceId,
+        userId: ids.userId,
+        name: "Stop",
+        members: { create: [{ botId: ids.botId }, { botId: second.id }] },
+      },
+    });
+    const thread = await prisma.thread.create({
+      data: { spaceId: ids.spaceId, userId: ids.userId, groupId: group.id },
+    });
+    const { offer, message } = await openCard("Book it.", {
+      botId: second.id,
+      threadId: thread.id,
+      groupId: group.id,
+    });
+    const t = await prisma.task.create({
+      data: { ...ids, botId: second.id, threadId: thread.id, prompt: "busy", status: "running" },
+    });
+    await prisma.run.create({
+      data: {
+        ...ids,
+        botId: second.id,
+        threadId: thread.id,
+        taskId: t.id,
+        status: "running",
+        trigger: "user",
+        startedAt: new Date(),
+      },
+    });
+    expect((await take(offer)).runId).toBeUndefined();
+    const target = await resolveThreadTarget(prisma, actor, { groupId: group.id });
+    await stopThreadRuns({ ...deps(), sandbox: {} as unknown as SandboxProvider }, actor, target);
+    expect((await prisma.actionOffer.findUniqueOrThrow({ where: { id: offer.id } })).status).toBe(
+      "open",
+    );
+    const updates = await prisma.event.findMany({
+      where: { threadId: thread.id, type: "thread.message.updated" },
+      orderBy: { seq: "desc" },
+    });
+    const reopen = updates.find(
+      (event) => (event.payload as { messageId?: string }).messageId === message.id,
+    );
+    expect(reopen?.botId).toBe(second.id);
   });
 
   it("refuses while the bot waits for an answer, and leaves the card open", async () => {

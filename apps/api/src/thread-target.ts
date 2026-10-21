@@ -1356,12 +1356,13 @@ export async function stopThreadRuns(
     });
     const ids = cancelled.map((run) => run.id);
     const botIds = target.kind === "bot" ? [target.botId] : target.memberBotIds;
-    // A dropped queued task would otherwise lose its card silently, so the card reopens.
+    // A dropped queued task would otherwise lose its card silently, so the card reopens:
+    // still waiting, or handed to a follow-up run this stop cancels before it started.
     const dropped = await tx.steeringMessage.findMany({
       where: {
         botId: { in: botIds },
         message: { threadId: target.threadId },
-        runId: null,
+        OR: [{ runId: null }, { runId: { in: ids }, claimedAt: null }],
         originTrigger: ACTION_OFFER_STEERING_ORIGIN,
       },
       select: { message: { select: { clientNonce: true } } },
@@ -1374,22 +1375,29 @@ export async function stopThreadRuns(
       const reopenedOffers = await tx.actionOffer.updateManyAndReturn({
         where: { id: { in: reopened }, status: "taken", takenRunId: null },
         data: { status: "open" },
-        select: { id: true },
+        select: { id: true, botId: true },
       });
-      const reopenedIds = reopenedOffers.map((offer) => offer.id);
       // The dead message keeps its history but frees the nonce, so a later take sends afresh.
       await tx.message.updateMany({
-        where: { threadId: target.threadId, clientNonce: { in: reopenedIds } },
+        where: {
+          threadId: target.threadId,
+          clientNonce: { in: reopenedOffers.map((offer) => offer.id) },
+        },
         data: { clientNonce: null },
       });
-      reopenedSeq = await mirrorActionOffersInTransaction(tx, {
-        spaceId: actor.spaceId,
-        threadId: target.threadId,
-        botId: botIds[0]!,
-        updates: new Map(
-          reopenedIds.map((id) => [id, { status: "open" as const, takenMessageId: undefined }]),
-        ),
-      });
+      for (const botId of new Set(reopenedOffers.map((offer) => offer.botId))) {
+        const seq = await mirrorActionOffersInTransaction(tx, {
+          spaceId: actor.spaceId,
+          threadId: target.threadId,
+          botId,
+          updates: new Map(
+            reopenedOffers
+              .filter((offer) => offer.botId === botId)
+              .map((offer) => [offer.id, { status: "open" as const, takenMessageId: undefined }]),
+          ),
+        });
+        reopenedSeq = seq ?? reopenedSeq;
+      }
     }
     await tx.steeringMessage.deleteMany({
       where: {
