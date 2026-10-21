@@ -1,5 +1,6 @@
 import { I18nProvider } from "@lingui/react";
 import type { MessageBlock } from "@rakazo/contracts";
+import { DEFAULT_ACTION_OFFER_SETTINGS } from "@rakazo/contracts";
 import { useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -112,6 +113,8 @@ function SettingsFixture() {
         email="owner@example.test"
         name="Owner"
         avatarStyle="robot"
+        actionOfferSettings={DEFAULT_ACTION_OFFER_SETTINGS}
+        onActionOfferSettingsChange={() => Promise.resolve()}
         onAvatarStyleChange={() => Promise.resolve()}
         memoryConfig={null}
         onMemoryConfigChange={() => {}}
