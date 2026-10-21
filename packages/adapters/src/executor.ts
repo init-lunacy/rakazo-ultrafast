@@ -54,6 +54,7 @@ import {
   HistorySearchInputSchema,
   isAttachmentImageMimeType,
   OPENAI_COMPATIBLE_PROVIDER_ID,
+  parseActionOfferSettings,
 } from "@rakazo/contracts";
 import type { ActionApprovalRule, ToolCallStreak } from "@rakazo/core";
 import {
@@ -72,6 +73,7 @@ import {
   displayName,
   endsSentence,
   expandSkillReferencesInPrompt,
+  extractForcedSkillName,
   formatSkillRunPrompt,
   formatSkillsCatalogInstruction,
   humanizeToolName,
@@ -133,6 +135,12 @@ import {
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { parse as parseShellCommand } from "shell-quote";
+import type { ToolCallRecord } from "./action-offer-tool.js";
+import {
+  actionOffersAllowedForRun,
+  offerActionsFromTool,
+  recordToolCall,
+} from "./action-offer-tool.js";
 import {
   connectAgent,
   messageConnectedAgent,
@@ -4199,6 +4207,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             : null;
         // Calls carry no schema flag: the sending client encodes them in the clientNonce.
         const sourceClientNonce = sourceMessage?.clientNonce ?? null;
+        // Set when the run was started by a save-as-skill card (looked up later).
+        const saveSkillSource: string[] | null = null;
         // A follow-up can be queued by a bot (group handoffs); only the user's own counts.
         const ownerStartedRun = isOwnerStartedRun(run.trigger, sourceMessage?.role === "user");
         // A hang-up run has no source message: its own nonce carries the call it closes.
@@ -4209,6 +4219,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
         const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
+        const actionOfferSettings = parseActionOfferSettings(
+          (
+            await deps.prisma.user.findUnique({
+              where: { id: run.userId },
+              select: { actionOfferSettings: true },
+            })
+          )?.actionOfferSettings,
+        );
+
         const builtins = [
           ...selectBuiltinToolsForRun({
             ticketBoardEnabled: deps.ticketBoardEnabled,
@@ -4227,6 +4246,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             disabledBuiltinTools: bot.disabledBuiltinTools,
             fleetManagement: bot.fleetManagement,
             followUpFromUser: sourceMessage?.role === "user",
+            actionOffersEnabled: actionOfferSettings.enabled,
           }),
           // Cross-owner agent connections only exist for chat-linked bots.
           ...(hasMessagingIdentity && !isBackgroundRunTrigger(run.trigger)
@@ -4387,6 +4407,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let lastProgressAt = 0;
         let hasStreamedText = false;
         const toolCallStreaks = new Map<string, ToolCallStreak>();
+        /** This run's calls since it started or resumed, for a save-skill offer's source. */
+        const runToolCalls: ToolCallRecord[] = [];
         // Set by a tool call: the next text starts a new assistant turn and needs a break
         // from the earlier text that stayed in this reply (held-back narration).
         let assistantTurnBreakPending = false;
@@ -6100,6 +6122,37 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
             return finish(created);
           }
+          if (name === "offer_actions") {
+            if (isSubagentToolExecution(executionId)) {
+              return finish({ error: "Only the main agent offers cards; tell it what to offer." });
+            }
+            const stepCount = await deps.prisma.event.count({
+              where: {
+                runId,
+                type: "agent.tool.called",
+                NOT: { payload: { path: ["name"], equals: "offer_actions" } },
+              },
+            });
+            return finish(
+              await offerActionsFromTool(deps.prisma, {
+                args,
+                run: { id: runId, spaceId: run.spaceId, userId: run.userId },
+                botId: bot.id,
+                threadId: thread.id,
+                settings: actionOfferSettings,
+                secrets: runSecrets,
+                toolCalls: runToolCalls,
+                stepCount,
+                ranSkill:
+                  Boolean(invokedSkill) ||
+                  Boolean(extractForcedSkillName(taskPrompt)) ||
+                  runToolCalls.some((entry) => entry.name === "skill_read"),
+                startedBySaveSkillCard: Boolean(saveSkillSource),
+                now: new Date(),
+              }),
+            );
+          }
+
           if (name === "call_user") {
             if (
               messagingChannelRun ||
@@ -7383,6 +7436,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 replyGuidance: runReplyGuidance(run.trigger),
                 disabledBuiltinTools,
                 offeredFleetTools: offeredFleetTools(builtins),
+                offersActions: builtins.some((tool) => tool.name === "offer_actions"),
               })
                 .filter((instruction): instruction is string => Boolean(instruction))
                 .join("\n\n"),
@@ -7734,6 +7788,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 payload: { name: event.name, executionId: event.executionId },
               });
               pendingToolNames.push(event.name);
+              recordToolCall(runToolCalls, event.name, event.args);
               tryFlushPendingTools();
               // One streak per agent: parallel helpers neither reset nor trip each other's.
               const loopGuard = advanceAgentLoopGuard(
@@ -8464,6 +8519,8 @@ export function selectBuiltinToolsForRun(options: {
   fleetManagement?: boolean;
   /** A follow-up run whose source message the user wrote. */
   followUpFromUser?: boolean;
+  /** The user has action cards switched on. */
+  actionOffersEnabled?: boolean;
 }) {
   const disabled = disabledBuiltinToolSet(options.disabledBuiltinTools);
   const fleetToolsAllowed = isOwnerStartedRun(options.trigger, Boolean(options.followUpFromUser));
@@ -8487,6 +8544,8 @@ export function selectBuiltinToolsForRun(options: {
       !disabled.has(tool.name) &&
       (!FLEET_TOOL_NAMES_SET.has(tool.name) ||
         (Boolean(options.fleetManagement) && fleetToolsAllowed)) &&
+      (tool.name !== "offer_actions" ||
+        (Boolean(options.actionOffersEnabled) && actionOffersAllowedForRun(options))) &&
       (options.mediaImagesEnabled || tool.name !== "generate_image") &&
       (options.mediaVideoEnabled || tool.name !== "generate_video") &&
       (options.ticketBoardEnabled ||
@@ -8838,6 +8897,8 @@ export function userTurnInstructions(parts: {
   disabledBuiltinTools?: ReadonlySet<string>;
   /** The fleet tools the run was offered (see offeredFleetTools). */
   offeredFleetTools?: readonly string[];
+  /** offer_actions was offered to this run. */
+  offersActions?: boolean;
 }): (string | undefined)[] {
   return [
     parts.botInstructions,
@@ -8874,6 +8935,10 @@ export function userTurnInstructions(parts: {
       "archive_bot safely archives a bot this bot created, and only that bot. Use it when the user asks to remove that bot or when it is finished and unused. The user can restore it or permanently delete it later. confirm_name must exactly match its name.",
     ),
     fleetClause(parts.offeredFleetTools),
+    parts.offersActions
+      ? "When there is a clear next step you could take on request, offer it with offer_actions instead of asking in text."
+      : undefined,
+
     parts.pluginLine,
     parts.agentSkillsLine,
     parts.taughtSkillsLine,
