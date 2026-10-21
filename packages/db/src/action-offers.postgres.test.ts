@@ -1,3 +1,4 @@
+import type { MessageBlock } from "@rakazo/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   ActionOfferConflictError,
@@ -9,8 +10,10 @@ import {
 } from "./action-offers.js";
 import type { PrismaClient } from "./client.js";
 import { createDb } from "./client.js";
+import { finalizeRun } from "./events.js";
 import { createThreadMessage } from "./messages.js";
 import { provisionMessagingIdentity } from "./messaging.js";
+import { previewFromBlocks } from "./thread-listing.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describePostgres =
@@ -194,5 +197,149 @@ describePostgres("action offers (PostgreSQL)", () => {
 
   it("exports the conflict error with the card's status", () => {
     expect(new ActionOfferConflictError("taken").status).toBe("taken");
+  });
+
+  async function completeRun(
+    fixture: Awaited<ReturnType<typeof runningRun>>,
+    blocks: MessageBlock[],
+    publishOffers = true,
+  ) {
+    const result = await finalizeRun(prisma, {
+      ...ids,
+      runId: fixture.run.id,
+      taskId: fixture.task.id,
+      attemptId: fixture.attempt.id,
+      leaseOwner: "worker-1",
+      leaseFence: 1,
+      outcome: "completed",
+      blocks,
+      publishOffers,
+    });
+    if (!result) throw new Error("Run was not finalized");
+    return result;
+  }
+
+  const soon = () => new Date(Date.now() + 24 * hour);
+
+  it("opens a completed run's cards on its final reply, in the same transaction", async () => {
+    const fixture = await runningRun();
+    await replaceHeldActionOffers(prisma, {
+      ...ids,
+      runId: fixture.run.id,
+      offers: [{ kind: "task", label: "Book the hotel", task: "Book it.", expiresAt: soon() }],
+      close: [],
+    });
+    const result = await completeRun(fixture, [{ kind: "text", text: "Found it." }]);
+    const reply = await prisma.message.findFirstOrThrow({
+      where: { runId: fixture.run.id, role: "bot" },
+    });
+    const blocks = reply.blocks as MessageBlock[];
+    expect(blocks.map((block) => block.kind)).toEqual(["text", "action_offer"]);
+    expect(result.publishedOffers).toEqual([
+      { id: expect.any(String), label: "Book the hotel", messageId: reply.id },
+    ]);
+    expect(
+      previewFromBlocks([{ kind: "action_offer", offers: [{ label: "Book the hotel" }] }]),
+    ).toBe("Book the hotel");
+    expect(
+      await prisma.actionOffer.count({
+        where: { runId: fixture.run.id, status: "open", messageId: reply.id },
+      }),
+    ).toBe(1);
+  });
+
+  it("posts a cards-only message when a completed run had nothing to say", async () => {
+    const fixture = await runningRun("routine");
+    await replaceHeldActionOffers(prisma, {
+      ...ids,
+      runId: fixture.run.id,
+      offers: [{ kind: "task", label: "Answer 3 emails", task: "Answer them.", expiresAt: soon() }],
+      close: [],
+    });
+    const result = await completeRun(fixture, []);
+    const message = await prisma.message.findUniqueOrThrow({
+      where: { id: result.publishedOffers![0]!.messageId },
+    });
+    expect((await prisma.thread.findUniqueOrThrow({ where: { id: ids.threadId } })).unread).toBe(
+      true,
+    );
+    expect((message.blocks as MessageBlock[]).map((block) => block.kind)).toEqual(["action_offer"]);
+  });
+
+  it("keeps cards held after a failure or without publishOffers, and never closes what they asked", async () => {
+    const [old] = await openCards(["Pay the bill"]);
+    const failed = await runningRun();
+    await replaceHeldActionOffers(prisma, {
+      ...ids,
+      runId: failed.run.id,
+      offers: [{ kind: "task", label: "Never shown", task: "x", expiresAt: soon() }],
+      close: [old!.id],
+    });
+    await finalizeRun(prisma, {
+      ...ids,
+      runId: failed.run.id,
+      taskId: failed.task.id,
+      attemptId: failed.attempt.id,
+      leaseOwner: "worker-1",
+      leaseFence: 1,
+      outcome: "failed",
+      error: "boom",
+    });
+    const handedOff = await runningRun();
+    await replaceHeldActionOffers(prisma, {
+      ...ids,
+      runId: handedOff.run.id,
+      offers: [{ kind: "task", label: "Also never shown", task: "y", expiresAt: soon() }],
+      close: [old!.id],
+    });
+    const result = await completeRun(handedOff, [], false);
+    expect(result.publishedOffers).toBeUndefined();
+    expect((await prisma.actionOffer.findUniqueOrThrow({ where: { id: old!.id } })).status).toBe(
+      "open",
+    );
+    expect(
+      await prisma.actionOffer.count({
+        where: { runId: { in: [failed.run.id, handedOff.run.id] }, status: "held" },
+      }),
+    ).toBe(2);
+  });
+
+  it("merges an exact repeat, keeps a same-label different task apart, and applies close", async () => {
+    const [repeat, other, closing] = await openCards(["Check prices", "Reply to Sam", "Old offer"]);
+    const fixture = await runningRun();
+    const later = new Date(Date.now() + 48 * hour);
+    await replaceHeldActionOffers(prisma, {
+      ...ids,
+      runId: fixture.run.id,
+      offers: [
+        { kind: "task", label: "Check prices", task: "Check prices.", expiresAt: later },
+        { kind: "task", label: "Reply to Sam", task: "Reply about the invoice.", expiresAt: later },
+      ],
+      close: [closing!.id],
+    });
+    const result = await completeRun(fixture, [{ kind: "text", text: "Done." }]);
+    expect(result.publishedOffers?.map((offer) => offer.label)).toEqual(["Reply to Sam"]);
+    const rows = await prisma.actionOffer.findMany({
+      where: { id: { in: [repeat!.id, other!.id, closing!.id] } },
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    expect(byId.get(repeat!.id)?.expiresAt.getTime()).toBe(later.getTime());
+    expect(byId.get(other!.id)?.status).toBe("open");
+    expect(byId.get(closing!.id)?.status).toBe("closed");
+  });
+
+  it("drops held cards that expired while the run waited", async () => {
+    const fixture = await runningRun();
+    await replaceHeldActionOffers(prisma, {
+      ...ids,
+      runId: fixture.run.id,
+      offers: [
+        { kind: "task", label: "Too late", task: "z", expiresAt: new Date(Date.now() - 1000) },
+      ],
+      close: [],
+    });
+    const result = await completeRun(fixture, [{ kind: "text", text: "Done." }]);
+    expect(result.publishedOffers).toBeUndefined();
+    expect(await prisma.actionOffer.count({ where: { runId: fixture.run.id } })).toBe(0);
   });
 });

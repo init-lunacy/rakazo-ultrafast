@@ -1,4 +1,5 @@
 import type {
+  ActionOfferCard,
   ActionOfferKind,
   ActionOfferListItem,
   ActionOfferStatus,
@@ -233,4 +234,74 @@ export async function dismissActionOffer(
       ...(seq === null ? {} : { seq }),
     };
   });
+}
+
+/**
+ * Called by finalizeRunOnce for a completed run, under its thread lock. Expired held
+ * cards are dropped, exact repeats extend the open card they repeat, cards the run
+ * asked to close are closed, and the rest open. Their message is attached by the caller.
+ */
+export async function publishRunActionOffersInTransaction(
+  tx: Prisma.TransactionClient,
+  input: { spaceId: string; threadId: string; botId: string; runId: string; now: Date },
+): Promise<{ opened: ActionOfferCard[]; seq: number | null }> {
+  await tx.actionOffer.deleteMany({
+    where: { runId: input.runId, status: "held", expiresAt: { lte: input.now } },
+  });
+  const held = await tx.actionOffer.findMany({
+    where: { runId: input.runId, status: "held" },
+    orderBy: { createdAt: "asc" },
+  });
+  const open = await tx.actionOffer.findMany({
+    where: {
+      threadId: input.threadId,
+      botId: input.botId,
+      status: "open",
+      expiresAt: { gt: input.now },
+    },
+  });
+  const updates = new Map<string, ActionOfferCardUpdate>();
+  const opening = [];
+  for (const offer of held) {
+    const repeat = open.find(
+      (card) =>
+        card.kind === offer.kind &&
+        card.label === offer.label &&
+        card.task === offer.task &&
+        card.closingRunId !== input.runId,
+    );
+    if (!repeat) {
+      opening.push(offer);
+      continue;
+    }
+    const expiresAt = new Date(Math.max(repeat.expiresAt.getTime(), offer.expiresAt.getTime()));
+    await tx.actionOffer.update({ where: { id: repeat.id }, data: { expiresAt } });
+    await tx.actionOffer.delete({ where: { id: offer.id } });
+    updates.set(repeat.id, { expiresAt: expiresAt.toISOString() });
+  }
+  for (const card of open.filter((card) => card.closingRunId === input.runId)) {
+    await tx.actionOffer.update({
+      where: { id: card.id },
+      data: { status: "closed", closingRunId: null },
+    });
+    updates.set(card.id, { status: "closed" });
+  }
+  if (opening.length > 0) {
+    await tx.actionOffer.updateMany({
+      where: { id: { in: opening.map((offer) => offer.id) } },
+      data: { status: "open" },
+    });
+  }
+  const seq = await mirrorActionOffersInTransaction(tx, { ...input, updates });
+  return {
+    opened: opening.map((offer) => ({
+      id: offer.id,
+      kind: offer.kind as ActionOfferCard["kind"],
+      label: offer.label,
+      task: offer.task,
+      expiresAt: offer.expiresAt.toISOString(),
+      status: "open" as const,
+    })),
+    seq,
+  };
 }
