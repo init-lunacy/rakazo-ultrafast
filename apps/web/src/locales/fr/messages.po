@@ -345,6 +345,15 @@ msgstr "Menu du compte de {name}"
 msgid "Accounts"
 msgstr "Comptes"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Action cards"
+msgstr ""
+
+#: src/pages/Actions.tsx
+#: src/pages/Shell.tsx
+msgid "Actions"
+msgstr ""
+
 #. placeholder {0}: bot.name
 #. placeholder {0}: group.spaceName
 #. placeholder {0}: sectionMenu.section.name
@@ -602,6 +611,11 @@ msgstr "Répondre"
 msgctxt "incoming call"
 msgid "Answer"
 msgstr "Répondre"
+
+#. placeholder {0}: data.botName ?? ""
+#: src/pages/shell/message-cards.tsx
+msgid "Answer {0}'s question first."
+msgstr ""
 
 #: src/components/AskCard.tsx
 msgid "Answered"
@@ -876,6 +890,7 @@ msgstr "Bot à connecter"
 msgid "Bot's model"
 msgstr "Modèle du bot"
 
+#: src/pages/Actions.tsx
 #: src/pages/Artifacts.tsx
 msgid "Bots"
 msgstr "Bots"
@@ -972,6 +987,10 @@ msgstr "Annulé"
 #: src/pages/Artifacts.tsx
 msgid "Card view"
 msgstr "Vue en cartes"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Cards per reply"
+msgstr ""
 
 #: src/pages/AccountSettingsOverlay.tsx
 msgid "Change password"
@@ -2729,6 +2748,10 @@ msgstr "Aller au message cité : {excerpt}"
 msgid "just now"
 msgstr "à l'instant"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Keep cards for (days)"
+msgstr ""
+
 #: src/pages/shell/dialogs.tsx
 msgid "Keep memories"
 msgstr "Conserver les mémoires"
@@ -3429,6 +3452,10 @@ msgstr "OAuth expiré"
 msgid "Off"
 msgstr ""
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Offer next steps"
+msgstr ""
+
 #: src/pages/RoutineEditor.tsx
 msgid "On a schedule"
 msgstr "Sur planification"
@@ -3468,6 +3495,10 @@ msgstr ""
 #: src/pages/Shell.tsx
 msgid "Open call"
 msgstr "Ouvrir l’appel"
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Open cards per chat"
+msgstr ""
 
 #. placeholder {0}: call.botName
 #: src/components/call/CallCard.tsx
@@ -4128,6 +4159,10 @@ msgstr "S'exécute lorsque ce bot reçoit un message vérifié de ce fournisseur
 msgid "Save"
 msgstr "Enregistrer"
 
+#: src/pages/shell/message-cards.tsx
+msgid "Save as a skill"
+msgstr ""
+
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Save backups"
 msgstr "Enregistrer les modèles de secours"
@@ -4544,6 +4579,10 @@ msgstr ""
 msgid "Steps"
 msgstr "Étapes"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Steps before offering to save a skill"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Stop"
 msgstr "Arrêter"
@@ -4664,6 +4703,10 @@ msgstr "Tester la connexion"
 #: src/components/ModelConnectionPreflightNotice.tsx
 msgid "Testing…"
 msgstr "Test en cours…"
+
+#: src/pages/shell/message-cards.tsx
+msgid "That bot has left this group."
+msgstr ""
 
 #: src/components/SoftwareUpdateSection.tsx
 msgid "The API did not come back. Refresh this page."

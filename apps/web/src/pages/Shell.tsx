@@ -31,6 +31,7 @@ import {
   canReactToThreadMessage,
   MESSAGE_REACTIONS,
   normalizeCreateBotProfile,
+  parseActionOfferSettings,
 } from "@rakazo/contracts";
 import type { ComposerMention, FoldedTranscript, SlashActionId } from "@rakazo/core";
 import {
@@ -52,6 +53,7 @@ import {
   mentionChipKey,
   nestRosterByParent,
   normalizeRunError,
+  openOfferTotal,
   plainTextFromMarkdown,
   projectMessageReactions,
   reorderBotTo,
@@ -117,6 +119,7 @@ import {
   TextQuote,
   Trash2,
   X,
+  Zap,
 } from "lucide-react";
 import type { ClipboardEvent, DragEvent, MutableRefObject, RefObject } from "react";
 import {
@@ -324,6 +327,7 @@ import {
   ChartBlockView,
   ChoiceCard,
   McpApprovalCard,
+  OfferCard,
 } from "./shell/message-cards";
 import type { RosterDropTarget } from "./shell/roster-drop";
 import { resolveRosterDrop } from "./shell/roster-drop";
@@ -1699,6 +1703,7 @@ function SpaceShell() {
           : [];
     return sidebarGroupsForSpaces(sidebarSpaces, query);
   }, [bootstrapMe, botSections, bots, groups, spaces, query]);
+  const openOffers = openOfferTotal(bots, groups);
 
   const spaceSwitchRequest = useRef(0);
   useEffect(
@@ -3259,6 +3264,23 @@ function SpaceShell() {
                     else navigate(`/app/${run.botId}`);
                   }}
                 />
+              ) : null}
+              {openOffers > 0 ? (
+                <button
+                  type="button"
+                  data-testid="sidebar-actions"
+                  onClick={() => {
+                    setMobileSidebarOpen(false);
+                    navigate("/app/actions");
+                  }}
+                  className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-start text-[14px] text-foreground hover:bg-sidebar-accent"
+                >
+                  <Zap className="size-4 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">
+                    <Trans>Actions</Trans>
+                  </span>
+                  <span className="text-xs text-muted-foreground tabular-nums">{openOffers}</span>
+                </button>
               ) : null}
               {sidebarGroups.map((group) => {
                 const collapsed = Boolean(group.title) && collapsedSidebarSections.has(group.key);
@@ -4985,6 +5007,13 @@ function SpaceShell() {
               );
             }}
             timezone={bootstrapMe?.timezone ?? null}
+            actionOfferSettings={parseActionOfferSettings(bootstrapMe?.actionOfferSettings)}
+            onActionOfferSettingsChange={async (patch) => {
+              const nextMe = await rpc.preferences.update({ actionOfferSettings: patch });
+              setBootstrapMe((prev) =>
+                prev ? { ...prev, actionOfferSettings: nextMe.actionOfferSettings } : nextMe,
+              );
+            }}
             onTimezoneChange={async (timezone) => {
               const nextMe = await rpc.preferences.update({ timezone });
               setBootstrapMe((prev) => (prev ? { ...prev, timezone: nextMe.timezone } : nextMe));
@@ -7489,6 +7518,15 @@ const MessageView = memo(function MessageView({
           );
         }
         if (block.kind === "cloud_agent") return <CloudAgentCard key={i} block={block} />;
+        if (block.kind === "action_offer") {
+          return (
+            <div key={i} className="flex flex-col gap-2">
+              {block.offers.map((card) => (
+                <OfferCard key={card.id} card={card} onJumpToMessage={onJumpToMessage} />
+              ))}
+            </div>
+          );
+        }
         if (block.kind === "skill_draft") {
           return (
             <div key={i} className="flex justify-start">

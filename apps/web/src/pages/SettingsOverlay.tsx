@@ -1,5 +1,5 @@
 import { useLingui } from "@lingui/react/macro";
-import type { AvatarStyle, SpaceMemoryConfig } from "@rakazo/contracts";
+import type { ActionOfferSettings, AvatarStyle, SpaceMemoryConfig } from "@rakazo/contracts";
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
 import {
   Brain,
@@ -71,6 +71,8 @@ export function SettingsOverlay({
   onAvatarStyleChange,
   timezone,
   onTimezoneChange,
+  actionOfferSettings,
+  onActionOfferSettingsChange,
   isDeploymentOwner = false,
   billingEnabled = false,
   sandboxProvider,
@@ -102,6 +104,8 @@ export function SettingsOverlay({
   onAvatarStyleChange: (style: AvatarStyle) => Promise<void>;
   timezone: string | null;
   onTimezoneChange: (timezone: string) => Promise<void>;
+  actionOfferSettings: ActionOfferSettings;
+  onActionOfferSettingsChange: (patch: Partial<ActionOfferSettings>) => Promise<void>;
   isDeploymentOwner?: boolean;
   billingEnabled?: boolean;
   sandboxProvider?: string | null;
@@ -338,6 +342,8 @@ export function SettingsOverlay({
                     onAvatarStyleChange={onAvatarStyleChange}
                     timezone={timezone}
                     onTimezoneChange={onTimezoneChange}
+                    actionOfferSettings={actionOfferSettings}
+                    onActionOfferSettingsChange={onActionOfferSettingsChange}
                     messagingEnabled={messagingEnabled}
                     onOpenMessaging={
                       onOpenMessaging ? () => leaveSettings(onOpenMessaging) : undefined
