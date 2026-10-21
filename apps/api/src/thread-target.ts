@@ -10,7 +10,11 @@ import type {
   ReplyPreview,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { GROUP_MEMBER_MIN, MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
+import {
+  ACTION_OFFER_STEERING_ORIGIN,
+  GROUP_MEMBER_MIN,
+  MessageBlock as MessageBlockSchema,
+} from "@rakazo/contracts";
 import {
   ACTIVE_RUN_STATUSES,
   BACKGROUND_RUN_TRIGGERS,
@@ -33,6 +37,7 @@ import {
   expireComputerExecutionLeases,
   IsolationError,
   lockOwnedGroup,
+  mirrorActionOffersInTransaction,
   touchGroupUpdatedAt,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -613,6 +618,32 @@ function mapRun(run: {
   };
 }
 
+export interface SendThreadMessageOptions {
+  /** Runs under the thread lock (and the group lock first, in a group) before the message is written; throwing sends nothing. */
+  beforeSend?: (tx: Prisma.TransactionClient) => Promise<void>;
+  /** Runs in the same transaction once the message and any run exist. */
+  afterSend?: (
+    tx: Prisma.TransactionClient,
+    sent: { messageId: string; runIds: string[]; queued: boolean },
+  ) => Promise<void>;
+  /** Give the new run the whole replied-to message, not the automatic one-line quote. */
+  fullReplyContext?: boolean;
+  /** Group chats: wake exactly these members, with no wake by name and no fallback. */
+  targetBotIds?: string[];
+  /** Queue behind a busy run instead of steering it; refuse while that bot waits for the user. */
+  queueBehindActiveRun?: boolean;
+}
+
+/** Text sent now would answer this bot's question or end a takeover, so a take waits for the user. */
+function assertNotWaitingForUser(runs: Array<{ status: string }>, botName: string) {
+  if (runs.some((run) => run.status === "waiting_input" || run.status === "waiting_takeover")) {
+    throw new ORPCError("CONFLICT", {
+      message: `Answer ${botName}'s question first.`,
+      data: { reason: "waiting_for_answer", botName },
+    });
+  }
+}
+
 export async function sendThreadMessage(
   deps: {
     prisma: PrismaClient;
@@ -630,6 +661,7 @@ export async function sendThreadMessage(
     clientNonce?: string;
   },
   releaseTakeover?: (runId: string) => Promise<void>,
+  options: SendThreadMessageOptions = {},
 ) {
   const existing = await replayExistingSend(
     deps,
@@ -646,8 +678,27 @@ export async function sendThreadMessage(
     throw new ORPCError("BAD_REQUEST", { message: "replyQuote requires replyToMessageId." });
   }
 
+  /** Runs afterSend in the send's transaction; its events raise the seq to notify with. */
+  const finish = async <T extends { message: { id: string }; eventSeq: number }>(
+    tx: Prisma.TransactionClient,
+    result: T,
+    sent: { runIds: string[]; queued: boolean },
+  ): Promise<T> => {
+    if (!options.afterSend) return result;
+    await options.afterSend(tx, { messageId: result.message.id, ...sent });
+    const thread = await tx.thread.findUniqueOrThrow({
+      where: { id: target.threadId },
+      select: { nextEventSeq: true },
+    });
+    return { ...result, eventSeq: Math.max(result.eventSeq, thread.nextEventSeq - 1) };
+  };
+
   const commit = () =>
     deps.prisma.$transaction(async (tx) => {
+      if (target.kind === "bot" && options.beforeSend) {
+        await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR UPDATE`;
+        await options.beforeSend(tx);
+      }
       let replyToMessageId: string | undefined;
       let replyQuote: string | undefined;
       let replyPreview: ReplyPreview | null | undefined;
@@ -672,7 +723,7 @@ export async function sendThreadMessage(
               reply.botId ?? undefined,
             );
             // Attachment labels stay in the preview; only selected text is persisted as a quote.
-            if (!requestedReplyQuote && !replyPreview.attachment) {
+            if (!requestedReplyQuote && !replyPreview.attachment && !options.fullReplyContext) {
               replyQuote = replyPreview.text || undefined;
             }
           }
@@ -724,6 +775,7 @@ export async function sendThreadMessage(
           },
           select: { id: true, taskId: true, status: true, trigger: true },
         });
+        if (options.queueBehindActiveRun) assertNotWaitingForUser(activeRuns, target.bot.name);
         const answered: typeof activeRuns = [];
         for (const run of activeRuns.filter((run) => run.status === "waiting_input")) {
           if (
@@ -760,19 +812,27 @@ export async function sendThreadMessage(
               replyPreview,
             },
           });
-          return { message, runs: answered, eventSeq: event.seq };
+          return finish(
+            tx,
+            { message, runs: answered, eventSeq: event.seq },
+            { runIds: [], queued: false },
+          );
         }
         const holdingRuns = activeRuns.filter((run) =>
           QUEUE_HOLDING_RUN_STATUSES.some((status) => status === run.status),
         );
         const active = holdingRuns.find(steersUserMessage) ?? holdingRuns[0];
         if (active) {
+          const steered = !options.queueBehindActiveRun && steersUserMessage(active);
           await tx.steeringMessage.create({
             data: {
               messageId: message.id,
               botId: target.botId,
               userId: actor.userId,
-              runId: steersUserMessage(active) ? active.id : null,
+              runId: steered ? active.id : null,
+              ...(options.queueBehindActiveRun
+                ? { originTrigger: ACTION_OFFER_STEERING_ORIGIN }
+                : {}),
             },
           });
           await tx.message.update({ where: { id: message.id }, data: { runId: active.id } });
@@ -793,7 +853,11 @@ export async function sendThreadMessage(
               replyPreview,
             },
           });
-          return { message, runs: [active], eventSeq: event.seq };
+          return finish(
+            tx,
+            { message, runs: [active], eventSeq: event.seq },
+            { runIds: [], queued: !steered },
+          );
         }
         const task = await tx.task.create({
           data: {
@@ -842,17 +906,31 @@ export async function sendThreadMessage(
             replyPreview,
           },
         });
-        return { message, runs: [run], eventSeq: event.seq };
+        return finish(
+          tx,
+          { message, runs: [run], eventSeq: event.seq },
+          { runIds: [run.id], queued: false },
+        );
       }
 
       const members = await lockAndLoadGroupMembers(tx, actor, target);
+      // After the group lock, so a take locks group then thread like every group send.
+      await options.beforeSend?.(tx);
       const memberBotIds = members.map((member) => member.botId);
       const mentionTargets = splitMentionTargets(input.mentions);
-      const targetBotIds = resolveGroupTargetBotIds({
-        text: input.text ?? "",
-        members: members.map((member) => ({ id: member.botId, name: member.name })),
-        explicitMentions: mentionTargets.botMentionIds,
-      });
+      if (options.targetBotIds?.some((botId) => !memberBotIds.includes(botId))) {
+        throw new ORPCError("CONFLICT", {
+          message: "That bot has left this group.",
+          data: { reason: "left_group" },
+        });
+      }
+      const targetBotIds =
+        options.targetBotIds ??
+        resolveGroupTargetBotIds({
+          text: input.text ?? "",
+          members: members.map((member) => ({ id: member.botId, name: member.name })),
+          explicitMentions: mentionTargets.botMentionIds,
+        });
       const { blocks: attachmentBlocks, artifacts } = await resolveGroupSendAttachments(
         { prisma: tx },
         actor,
@@ -882,6 +960,14 @@ export async function sendThreadMessage(
         },
         select: { id: true, taskId: true, botId: true, status: true, trigger: true },
       });
+      if (options.queueBehindActiveRun) {
+        for (const botId of targetBotIds) {
+          assertNotWaitingForUser(
+            activeRuns.filter((run) => run.botId === botId),
+            members.find((member) => member.botId === botId)?.name ?? "The bot",
+          );
+        }
+      }
       const activeByBotId = new Map<string, (typeof activeRuns)[number]>();
       const answeredByBotId = new Map<string, Array<(typeof activeRuns)[number]>>();
       for (const run of activeRuns) {
@@ -908,6 +994,7 @@ export async function sendThreadMessage(
         }
       }
       const runs: Array<{ id: string; taskId: string; botId: string; status: string }> = [];
+      let queuedBehind = false;
       for (const botId of targetBotIds) {
         const answered = answeredByBotId.get(botId);
         if (answered) {
@@ -916,14 +1003,19 @@ export async function sendThreadMessage(
         }
         const active = activeByBotId.get(botId);
         if (active) {
+          const steered = !options.queueBehindActiveRun && steersUserMessage(active);
           await tx.steeringMessage.create({
             data: {
               messageId: message.id,
               botId,
               userId: actor.userId,
-              runId: steersUserMessage(active) ? active.id : null,
+              runId: steered ? active.id : null,
+              ...(options.queueBehindActiveRun
+                ? { originTrigger: ACTION_OFFER_STEERING_ORIGIN }
+                : {}),
             },
           });
+          if (!steered) queuedBehind = true;
           runs.push(active);
           continue;
         }
@@ -955,11 +1047,11 @@ export async function sendThreadMessage(
       const firstRun = runs[0];
       const eventBotId = firstRun?.botId ?? targetBotIds[0];
       if (!eventBotId) throw new IsolationError("Group send did not resolve a target");
+      const createdRuns = runs.filter(
+        (run) => !activeByBotId.has(run.botId) && !answeredByBotId.has(run.botId),
+      );
       if (firstRun) {
         await tx.message.update({ where: { id: message.id }, data: { runId: firstRun.id } });
-        const createdRuns = runs.filter(
-          (run) => !activeByBotId.has(run.botId) && !answeredByBotId.has(run.botId),
-        );
         if (createdRuns.length) {
           await cancelSupersededQueuedRuns(tx, {
             threadId: target.threadId,
@@ -987,7 +1079,11 @@ export async function sendThreadMessage(
           replyPreview,
         },
       });
-      return { message, runs, eventSeq: event.seq };
+      return finish(
+        tx,
+        { message, runs, eventSeq: event.seq },
+        { runIds: createdRuns.map((run) => run.id), queued: queuedBehind },
+      );
     });
 
   const committed = await withSerializableRetry(commit).catch(async (error) => {
@@ -1256,6 +1352,35 @@ export async function stopThreadRuns(
       select: { id: true, botId: true },
     });
     const ids = cancelled.map((run) => run.id);
+    const botIds = target.kind === "bot" ? [target.botId] : target.memberBotIds;
+    // A dropped queued task would otherwise lose its card silently, so the card reopens.
+    const dropped = await tx.steeringMessage.findMany({
+      where: {
+        botId: { in: botIds },
+        message: { threadId: target.threadId },
+        runId: null,
+        originTrigger: ACTION_OFFER_STEERING_ORIGIN,
+      },
+      select: { message: { select: { clientNonce: true } } },
+    });
+    const reopened = dropped.flatMap((row) =>
+      row.message.clientNonce ? [row.message.clientNonce] : [],
+    );
+    let reopenedSeq: number | null = null;
+    if (reopened.length > 0) {
+      await tx.actionOffer.updateMany({
+        where: { id: { in: reopened }, status: "taken", takenRunId: null },
+        data: { status: "open" },
+      });
+      reopenedSeq = await mirrorActionOffersInTransaction(tx, {
+        spaceId: actor.spaceId,
+        threadId: target.threadId,
+        botId: botIds[0]!,
+        updates: new Map(
+          reopened.map((id) => [id, { status: "open" as const, takenMessageId: undefined }]),
+        ),
+      });
+    }
     await tx.steeringMessage.deleteMany({
       where: {
         botId: { in: target.kind === "bot" ? [target.botId] : target.memberBotIds },
@@ -1296,7 +1421,7 @@ export async function stopThreadRuns(
     // flip and the progress purge below. Other clients learn the run ended, and
     // the fresh seq keeps max(seq) above every deleted progress row so a client
     // whose cursor pointed at one never discards later refreshes as stale.
-    let eventSeq: number | null = null;
+    let eventSeq: number | null = reopenedSeq;
     for (const run of cancelled) {
       const event = await appendEventInTransaction(tx, {
         spaceId: actor.spaceId,
