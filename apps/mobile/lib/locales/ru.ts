@@ -884,4 +884,8 @@ export const RU_MESSAGES: Record<string, string> = {
   "Try again": "Повторить",
   "Your session expired": "Сеанс истёк",
   "The server had a problem": "На сервере произошла ошибка",
+  // components/OfferCard.tsx
+  "Save as a skill": "Сохранить как навык",
+  "Answer {bot}'s question first.": "Сначала ответьте на вопрос {bot}.",
+  "That bot has left this group.": "Этот бот покинул группу.",
 };

@@ -851,4 +851,8 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Try again": "重试",
   "Your session expired": "会话已过期",
   "The server had a problem": "服务器出现问题",
+  // components/OfferCard.tsx
+  "Save as a skill": "保存为技能",
+  "Answer {bot}'s question first.": "请先回答 {bot} 的问题。",
+  "That bot has left this group.": "该机器人已离开此群组。",
 };

@@ -887,4 +887,8 @@ export const DE_MESSAGES: Record<string, string> = {
   "Try again": "Erneut versuchen",
   "Your session expired": "Deine Sitzung ist abgelaufen",
   "The server had a problem": "Auf dem Server ist ein Problem aufgetreten",
+  // components/OfferCard.tsx
+  "Save as a skill": "Als Skill speichern",
+  "Answer {bot}'s question first.": "Beantworte zuerst die Frage von {bot}.",
+  "That bot has left this group.": "Dieser Bot hat die Gruppe verlassen.",
 };
