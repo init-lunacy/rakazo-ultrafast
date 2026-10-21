@@ -13,11 +13,10 @@ import {
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
-import type { BotIntroHarness } from "./discard-bot-intro.js";
-import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
+import type { App, Bot } from "./app-helpers.js";
+import { botInput, raw, rpc, setBotIntroHarness, signup } from "./app-helpers.js";
 import { sessionCookieHeader } from "./index.js";
 
-type App = { request: (input: string, init?: RequestInit) => Response | Promise<Response> };
 type AppHandles = Awaited<ReturnType<typeof createApp>>;
 type RpcPath<T, Prefix extends string = ""> = T extends { "~orpc": unknown }
   ? Prefix
@@ -34,7 +33,6 @@ process.env.AGENT_RUNTIME = "scripted";
 
 const hasDb = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
 const describeWithDatabase = hasDb ? describe : describe.skip;
-let botIntroHarness: BotIntroHarness | undefined;
 
 describeWithDatabase("API authorization and resource isolation", () => {
   let handles: AppHandles;
@@ -54,7 +52,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
       composio: new ComposioEmulator(),
     });
     app = handles.app;
-    botIntroHarness = handles;
+    setBotIntroHarness(handles);
   });
 
   afterAll(async () => {
@@ -1841,16 +1839,6 @@ describeWithDatabase("API authorization and resource isolation", () => {
   });
 });
 
-function botInput(name: string) {
-  return {
-    name,
-    title: "",
-    description: "",
-    instructions: "",
-    notifyOnFinish: false,
-  };
-}
-
 function routineInput(botId: string) {
   return {
     botId,
@@ -1881,18 +1869,6 @@ function capabilityInput(name: string) {
 
 function connectionInput(displayName: string) {
   return { provider: "test-provider", displayName };
-}
-
-async function signup(app: App, email: string, name: string) {
-  const response = await app.request("/api/auth/sign-up/email", {
-    method: "POST",
-    headers: { "content-type": "application/json", origin: "http://127.0.0.1:5173" },
-    body: JSON.stringify({ email, password: "password12", name }),
-  });
-  if (response.status >= 400) {
-    throw new Error(`signup failed ${response.status}: ${await response.text()}`);
-  }
-  return sessionCookieHeader(response);
 }
 
 async function phoneSession(app: App, email: string) {
@@ -1935,41 +1911,6 @@ async function authPost(app: App, cookie: string, path: string, body: unknown = 
   return response;
 }
 
-async function raw(
-  app: App,
-  cookie: string,
-  procedure: string,
-  body: unknown = {},
-  spaceId?: string,
-) {
-  return app.request(`/rpc/${procedure}`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(cookie ? { cookie } : {}),
-      ...(spaceId ? { "x-rakazo-space-id": spaceId } : {}),
-      origin: "http://127.0.0.1:5173",
-    },
-    body: JSON.stringify({ json: body ?? {} }),
-  });
-}
-
-async function rpc<T>(
-  app: App,
-  cookie: string,
-  procedure: string,
-  body: unknown = {},
-  spaceId?: string,
-): Promise<T> {
-  const response = await raw(app, cookie, procedure, body, spaceId);
-  const text = await response.text();
-  const payload = JSON.parse(text) as { json?: T; error?: { message?: string } };
-  if (response.status >= 400 || payload.error) {
-    throw new Error(`${procedure} ${response.status}: ${payload.error?.message ?? text}`);
-  }
-  return discardBotIntroFromCreate(botIntroHarness, cookie, procedure, payload.json as T);
-}
-
 async function expectDenied(
   app: App,
   cookie: string,
@@ -2004,10 +1945,6 @@ interface ModelCredential {
   label: string;
   hasKey: boolean;
   isDefault: boolean;
-}
-
-interface Bot {
-  id: string;
 }
 
 function exhaustiveProtectedCalls<

@@ -89,6 +89,7 @@ import {
   messagingDmSurfaceNote,
   nextCronDateAcross,
   nextFence,
+  offerPushBody,
   planActionGate,
   promptInvokesSkill,
   redactSecrets,
@@ -140,6 +141,7 @@ import {
   actionOffersAllowedForRun,
   offerActionsFromTool,
   recordToolCall,
+  skillSourceContext,
 } from "./action-offer-tool.js";
 import {
   connectAgent,
@@ -4207,8 +4209,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
             : null;
         // Calls carry no schema flag: the sending client encodes them in the clientNonce.
         const sourceClientNonce = sourceMessage?.clientNonce ?? null;
-        // Set when the run was started by a save-as-skill card (looked up later).
-        const saveSkillSource: string[] | null = null;
+        const saveSkillOffer = sourceClientNonce
+          ? await deps.prisma.actionOffer.findFirst({
+              where: { id: sourceClientNonce, kind: "save_skill", userId: run.userId },
+              select: { skillSource: true },
+            })
+          : null;
+        const saveSkillSource = saveSkillOffer
+          ? ((saveSkillOffer.skillSource as string[] | null) ?? [])
+          : null;
         // A follow-up can be queued by a bot (group handoffs); only the user's own counts.
         const ownerStartedRun = isOwnerStartedRun(run.trigger, sourceMessage?.role === "user");
         // A hang-up run has no source message: its own nonce carries the call it closes.
@@ -7264,6 +7273,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const prompt = [
           replyContext,
           run.trigger === "reaction" && replyContext ? undefined : basePrompt,
+          saveSkillSource ? skillSourceContext(saveSkillSource) : undefined,
           takeoverResume?.promptNote,
           approvalContinuation,
           // A hang-up turn is read, not heard: no spoken-reply constraint.
@@ -7819,6 +7829,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   leaseOwner: workerId,
                   leaseFence: fence,
                   outcome: "completed",
+                  publishOffers: false,
                   blocks: isBackgroundRunTrigger(run.trigger)
                     ? []
                     : [{ kind: "text", text: stuckText }],
@@ -8081,6 +8092,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             leaseFence: fence,
             outcome: "completed",
             blocks,
+            publishOffers: !handedOff,
             markUnread: completionMarksUnread(
               run.trigger,
               text,
@@ -8109,7 +8121,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ).catch((error) => getLogger().error("bot message result return", error));
           }
           const notifyBody = completionNotificationPreview(text);
-          if (
+          const published = completed.publishedOffers ?? [];
+          const offerPush =
+            (run.trigger === "routine" || run.trigger === "webhook") &&
+            published.length > 0 &&
+            !completed.continuationRunId;
+          if (offerPush) {
+            await notifyRun(deps, run, {
+              kind: "offer",
+              title: displayName(bot.name, "Bot"),
+              body: offerPushBody(published.map((offer) => offer.label)),
+              botId: bot.id,
+              threadId: thread.id,
+              messageId: published[0]!.messageId,
+            });
+          } else if (
             runSendsFinishNotification(run.trigger) &&
             notifyBody &&
             !completed.continuationRunId
@@ -8411,10 +8437,13 @@ async function notifyRun(
 ) {
   if (
     !deps.notifications ||
-    (isBackgroundRunTrigger(run.trigger) && message.kind !== "help" && message.kind !== "takeover")
+    (isBackgroundRunTrigger(run.trigger) &&
+      message.kind !== "help" &&
+      message.kind !== "takeover" &&
+      message.kind !== "offer")
   )
     return;
-  const routineId = message.kind === "failure" ? run.routineId : null;
+  const routineId = message.kind === "failure" || message.kind === "offer" ? run.routineId : null;
   const notice = await runNotice(deps.prisma, run, routineId).catch((error) => {
     if (options.retryOnFailure) throw error;
     getLogger().error("notification preference lookup", error);
