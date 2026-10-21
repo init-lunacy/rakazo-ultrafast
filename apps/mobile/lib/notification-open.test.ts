@@ -24,6 +24,20 @@ describe("notification tap routing", () => {
     });
   });
 
+  it("opens an offer push at its message", () => {
+    expect(
+      notificationOpenTarget({
+        kind: "offer",
+        botId: "bot-1",
+        threadId: "thread-1",
+        messageId: "msg-1",
+      }),
+    ).toEqual({
+      pathname: "/thread",
+      params: { botId: "bot-1", threadId: "thread-1", messageId: "msg-1" },
+    });
+  });
+
   it("keeps the space and the exact thread when the payload has them", () => {
     expect(
       notificationOpenTarget({

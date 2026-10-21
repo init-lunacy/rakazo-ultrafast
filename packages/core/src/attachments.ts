@@ -5,6 +5,7 @@ import {
   isAllowedAttachmentMimeType,
   isAttachmentImageMimeType,
 } from "@rakazo/contracts";
+import { actionOfferHistoryText } from "./action-offers.js";
 
 export class AttachmentValidationError extends Error {
   constructor(message: string) {
@@ -158,6 +159,7 @@ export function blocksToAgentHistoryText(blocks: MessageBlock[]): string {
         }[block.status];
         return `[you called the user about: ${block.reason}; ${outcome}]${block.status === "answered" ? `\n${block.opening}` : ""}`;
       }
+      if (block.kind === "action_offer") return actionOfferHistoryText(block.offers);
       if ("text" in block && typeof block.text === "string") return block.text;
       return "";
     })

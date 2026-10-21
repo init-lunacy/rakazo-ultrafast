@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { DEFAULT_ACTION_OFFER_SETTINGS } from "@rakazo/contracts";
 import type { ReactNode } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -78,6 +79,8 @@ async function render(props: Partial<React.ComponentProps<typeof SettingsOverlay
           onAvatarStyleChange={async () => undefined}
           timezone={null}
           onTimezoneChange={async () => undefined}
+          actionOfferSettings={DEFAULT_ACTION_OFFER_SETTINGS}
+          onActionOfferSettingsChange={async () => undefined}
           memoryConfig={null}
           onMemoryConfigChange={() => undefined}
           onClose={() => undefined}

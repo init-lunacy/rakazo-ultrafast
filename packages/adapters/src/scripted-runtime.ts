@@ -588,6 +588,35 @@ code-b
       { assistant: "writing that into my home now.", complete: true },
     ];
   }
+  const offeredCard = /offer the card\s+"([^"]+)"\s+to\s+"([^"]+)"/i.exec(prompt);
+  if (offeredCard) {
+    return [
+      {
+        assistant: "Here is a next step.",
+        toolCalls: [
+          {
+            name: "offer_actions",
+            args: { offers: [{ label: offeredCard[1], task: offeredCard[2] }] },
+          },
+        ],
+        complete: true,
+      },
+    ];
+  }
+  if (/offer to save this as a skill/i.test(prompt)) {
+    return [
+      {
+        assistant: "Checked the schedule three times.",
+        toolCalls: [
+          { name: "schedule_list", args: {} },
+          { name: "schedule_list", args: {} },
+          { name: "schedule_list", args: {} },
+          { name: "offer_actions", args: { offers: [{ kind: "save_skill" }] } },
+        ],
+        complete: true,
+      },
+    ];
+  }
   if (lower.includes("remember")) {
     return [
       {

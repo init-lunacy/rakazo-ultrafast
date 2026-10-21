@@ -1,5 +1,10 @@
 import { eventIterator, oc } from "@orpc/contract";
 import * as z from "zod";
+import {
+  ActionOfferListItemSchema,
+  ActionOfferSettingsPatchSchema,
+  ActionOfferStatusSchema,
+} from "./action-offers.js";
 import { AiConsentQuerySchema, AiConsentStatusSchema } from "./ai-consent.js";
 import {
   ARTIFACT_DESCRIPTION_MAX_LENGTH,
@@ -201,10 +206,15 @@ export const appContract = {
           .object({
             avatarStyle: AvatarStyleSchema.optional(),
             timezone: TimeZoneSchema.nullable().optional(),
+            actionOfferSettings: ActionOfferSettingsPatchSchema.optional(),
           })
-          .refine((input) => input.avatarStyle !== undefined || input.timezone !== undefined, {
-            message: "Nothing to update",
-          }),
+          .refine(
+            (input) =>
+              input.avatarStyle !== undefined ||
+              input.timezone !== undefined ||
+              input.actionOfferSettings !== undefined,
+            { message: "Nothing to update" },
+          ),
       )
       .output(MeSchema),
     /** Saves a detected timezone only while none is saved, so it never replaces a choice. */
@@ -892,6 +902,15 @@ export const appContract = {
       )
       .output(ActionApprovalRuleSchema),
     remove: oc.input(z.object({ id: Id })).output(z.object({ ok: z.literal(true) })),
+  },
+  actionOffers: {
+    /** The user's open cards across bots and groups, newest first. */
+    list: oc.output(z.array(ActionOfferListItemSchema)),
+    /** Start a card's task; runId is absent while it waits behind a busy bot. */
+    take: oc.input(z.object({ offerId: Id })).output(z.object({ runId: Id.optional() })),
+    dismiss: oc
+      .input(z.object({ offerId: Id }))
+      .output(z.object({ status: ActionOfferStatusSchema })),
   },
   autoReview: {
     get: oc.output(ActionAutoReviewSettingsSchema),

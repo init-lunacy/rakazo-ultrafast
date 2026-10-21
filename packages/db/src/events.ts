@@ -1,6 +1,7 @@
 import type { RealtimeFanout } from "@rakazo/adapter-kit";
 import type { BotSecretDestination, MessageBlock, ProductEvent } from "@rakazo/contracts";
 import {
+  ACTION_OFFER_STEERING_ORIGIN,
   BOT_INSTRUCTIONS_MAX_LENGTH,
   encodeLoginSecret,
   LoginSecretValue,
@@ -22,6 +23,7 @@ import {
 } from "@rakazo/core";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import { getLogger } from "@rakazo/logging";
+import { publishRunActionOffersInTransaction } from "./action-offers.js";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { Prisma, PrismaClient } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
@@ -110,6 +112,8 @@ export interface ClaimedSteeringMessage {
 
 export interface FinalizeRunResult {
   continuationRunId: string | null;
+  /** Cards this completion opened, for the offer push; absent when none opened. */
+  publishedOffers?: Array<{ id: string; label: string; messageId: string }>;
 }
 
 interface FinalizeRunBase {
@@ -129,6 +133,8 @@ export type FinalizeRunInput = FinalizeRunBase &
         outcome: "completed";
         blocks: MessageBlock[];
         markUnread?: boolean;
+        /** Open the run's held action cards on its reply. False after a handoff or a loop-guard stop. */
+        publishOffers?: boolean;
       }
     | { outcome: "failed"; error: string }
   );
@@ -1332,7 +1338,10 @@ export async function finalizeRun(
   const committed = await withTransactionRetry(() => finalizeRunOnce(prisma, input));
   if (!committed) return false;
   await notifyRealtime(realtime, committed.threadId, committed.seq);
-  return { continuationRunId: committed.continuationRunId };
+  return {
+    continuationRunId: committed.continuationRunId,
+    ...(committed.publishedOffers ? { publishedOffers: committed.publishedOffers } : {}),
+  };
 }
 
 /** Stamps one turn-level wall-clock duration on the final tool block. */
@@ -1356,7 +1365,12 @@ export function completedRunBlocks(
 async function finalizeRunOnce(
   prisma: PrismaClient,
   input: FinalizeRunInput,
-): Promise<{ threadId: string; seq: number; continuationRunId: string | null } | null> {
+): Promise<{
+  threadId: string;
+  seq: number;
+  continuationRunId: string | null;
+  publishedOffers?: FinalizeRunResult["publishedOffers"];
+} | null> {
   return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
     let writableRun: { startedAt: Date | null } | undefined;
@@ -1414,16 +1428,32 @@ async function finalizeRunOnce(
     });
     if (task.count !== 1) throw new Error("Run task was not available to finalize");
 
+    let publishedOffers: FinalizeRunResult["publishedOffers"];
     if (input.outcome === "completed") {
       const completedBlocks = completedRunBlocks(input.blocks, writableRun?.startedAt ?? null, now);
-      if (completedBlocks.length > 0) {
+      const offers = input.publishOffers
+        ? await publishRunActionOffersInTransaction(tx, {
+            spaceId: input.spaceId,
+            threadId: input.threadId,
+            botId: input.botId,
+            runId: input.runId,
+            now,
+          })
+        : { opened: [], seq: null };
+      const replyBlocks: MessageBlock[] =
+        offers.opened.length > 0
+          ? [...completedBlocks, { kind: "action_offer", offers: offers.opened }]
+          : completedBlocks;
+      if (replyBlocks.length > 0) {
         const message = await createThreadMessageInTransaction(tx, {
           threadId: input.threadId,
           role: "bot",
-          blocks: completedBlocks,
+          blocks: replyBlocks,
           botId: input.botId,
           runId: input.runId,
-          markUnread: input.markUnread,
+          // New cards are something to act on, even when the run said nothing; otherwise
+          // keep the caller's choice, whose absence means a bot reply marks the chat unread.
+          markUnread: offers.opened.length > 0 ? true : input.markUnread,
         });
         await appendEventInTransaction(tx, {
           spaceId: input.spaceId,
@@ -1431,8 +1461,19 @@ async function finalizeRunOnce(
           botId: input.botId,
           type: "thread.message.created",
           runId: input.runId,
-          payload: { messageId: message.id, role: "bot", blocks: completedBlocks },
+          payload: { messageId: message.id, role: "bot", blocks: replyBlocks },
         });
+        if (offers.opened.length > 0) {
+          await tx.actionOffer.updateMany({
+            where: { id: { in: offers.opened.map((offer) => offer.id) } },
+            data: { messageId: message.id },
+          });
+          publishedOffers = offers.opened.map((offer) => ({
+            id: offer.id,
+            label: offer.label,
+            messageId: message.id,
+          }));
+        }
       }
     }
     const lastEvent = await appendEventInTransaction(tx, {
@@ -1470,7 +1511,12 @@ async function finalizeRunOnce(
     }
     const continuationRunId = await createPendingSteeringRun(tx, input);
     await tx.bot.update({ where: { id: input.botId }, data: { updatedAt: now } });
-    return { threadId: lastEvent.threadId, seq: lastEvent.seq, continuationRunId };
+    return {
+      threadId: lastEvent.threadId,
+      seq: lastEvent.seq,
+      continuationRunId,
+      ...(publishedOffers ? { publishedOffers } : {}),
+    };
   });
 }
 
@@ -1573,7 +1619,10 @@ export async function createPendingSteeringRun(
           ? "webhook"
           : origin === "private" &&
               batch.every(
-                (item) => item.originTrigger === null && !hasChannelMessage(item.message.blocks),
+                (item) =>
+                  (item.originTrigger === null ||
+                    item.originTrigger === ACTION_OFFER_STEERING_ORIGIN) &&
+                  !hasChannelMessage(item.message.blocks),
               )
             ? "follow_up"
             : "messaging",
@@ -1610,6 +1659,30 @@ function continuationModelPin(
     thinkingLevel: first.thinkingLevel ?? null,
     modelPinned: true,
   };
+}
+
+/** A channel or webhook message this run took in mid-turn; the owner's queued cards do not count. */
+export async function runTookOutsideSteering(
+  prisma: PrismaClient,
+  runId: string,
+): Promise<boolean> {
+  const found = await prisma.steeringMessage.findFirst({
+    where: {
+      runId,
+      claimedAt: { not: null },
+      OR: [
+        {
+          AND: [
+            { originTrigger: { not: null } },
+            { originTrigger: { not: ACTION_OFFER_STEERING_ORIGIN } },
+          ],
+        },
+        { message: { blocks: { array_contains: [{ kind: "channel_message" }] } } },
+      ],
+    },
+    select: { id: true },
+  });
+  return found !== null;
 }
 
 function hasChannelMessage(blocks: unknown): boolean {

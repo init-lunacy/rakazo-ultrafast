@@ -142,7 +142,7 @@ export function messageReplyExcerpt(blocks: MessageBlock[], role: string): strin
   return "";
 }
 
-function replyBlockText(block: MessageBlock): string {
+export function replyBlockText(block: MessageBlock): string {
   switch (block.kind) {
     case "text":
     case "ask":
@@ -165,6 +165,8 @@ function replyBlockText(block: MessageBlock): string {
       return block.title;
     case "call_request":
       return block.reason;
+    case "action_offer":
+      return block.offers.map((offer) => offer.label).join(" · ");
     case "subagent":
       return block.name || block.task;
     case "child_bot":

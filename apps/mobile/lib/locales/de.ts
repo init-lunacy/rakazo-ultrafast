@@ -887,4 +887,17 @@ export const DE_MESSAGES: Record<string, string> = {
   "Try again": "Erneut versuchen",
   "Your session expired": "Deine Sitzung ist abgelaufen",
   "The server had a problem": "Auf dem Server ist ein Problem aufgetreten",
+  // components/OfferCard.tsx
+  "Save as a skill": "Als Skill speichern",
+  "Answer {bot}'s question first.": "Beantworte zuerst die Frage von {bot}.",
+  "That bot has left this group.": "Dieser Bot hat die Gruppe verlassen.",
+  // app/actions.tsx, app/(settings)/account.tsx
+  Actions: "Aktionen",
+  "Action cards": "Aktionskarten",
+  "Offer next steps": "Nächste Schritte vorschlagen",
+  "Cards per reply": "Karten pro Antwort",
+  "Open cards per chat": "Offene Karten pro Chat",
+  "Keep cards for (days)": "Karten behalten für (Tage)",
+  "Steps before offering to save a skill":
+    "Schritte, bevor das Speichern als Skill vorgeschlagen wird",
 };

@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { ActionOfferCardSchema } from "./action-offers.js";
 import { botSecretDestinationSchema } from "./bot-secrets.js";
 import { Id } from "./ids.js";
 import { McpTransportSchema } from "./mcp.js";
@@ -227,6 +228,10 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     branch: z.string().optional(),
     prUrl: z.string().optional(),
     latestRunId: z.string().optional(),
+  }),
+  z.object({
+    kind: z.literal("action_offer"),
+    offers: z.array(ActionOfferCardSchema).min(1),
   }),
   z.object({
     kind: z.literal("skill_draft"),

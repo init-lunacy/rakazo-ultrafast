@@ -49,6 +49,8 @@ model User {
   agentSecrets               AgentSecret[]
   createdTickets              Ticket[]                     @relation("TicketCreatorUser")
   ticketComments              TicketComment[]              @relation("TicketCommentAuthorUser")
+  /// Action card settings (ActionOfferSettingsSchema); null until the user changes one.
+  actionOfferSettings         Json?
 
   @@unique([email])
   @@map("user")
@@ -245,6 +247,7 @@ model Space {
   board                       Board?
   tickets                     Ticket[]
   ticketComments              TicketComment[]
+  actionOffers                ActionOffer[]
 
   @@unique([id, organizationId])
   @@index([organizationId, createdAt])
@@ -452,6 +455,7 @@ model Bot {
   ticketComments    TicketComment[]   @relation("TicketCommentAuthorBot")
 
   externalConversations ExternalConversation[]
+  actionOffers          ActionOffer[]
 
   @@unique([spaceId, spawnKey])
   @@index([spaceId, userId, archivedAt, pinned, updatedAt])
@@ -549,6 +553,7 @@ model Thread {
   tasks                       Task[]
   runs                        Run[]
   routines                    Routine[]
+  actionOffers                ActionOffer[]
 
   @@index([spaceId])
   @@map("threads")
@@ -572,6 +577,7 @@ model Message {
   externalTranscriptFor  ExternalMessage?
   steeringMessages SteeringMessage[]
   createdAt        DateTime  @default(now())
+  actionOffers          ActionOffer[]
 
   @@unique([threadId, seq])
   @@unique([threadId, clientNonce])
@@ -662,6 +668,7 @@ model Run {
   usageRecords         UsageRecord[]
   steeringMessages     SteeringMessage[]
   externalMessage      ExternalMessage?
+  actionOffers         ActionOffer[]
 
   @@unique([spaceId, clientNonce])
   @@index([status, leaseExpiresAt])
@@ -1492,4 +1499,37 @@ model TicketComment {
 
   @@index([ticketId, createdAt])
   @@map("ticket_comments")
+}
+
+model ActionOffer {
+  id           String   @id @default(cuid())
+  spaceId      String
+  space        Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  /// The run's user: bots, groups and threads are per user, so only they act on it.
+  userId       String
+  threadId     String
+  thread       Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  botId        String
+  bot          Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  runId        String
+  run          Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  messageId    String?
+  message      Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  kind         String
+  label        String
+  task         String
+  /// save_skill only: the offering run's tool calls, redacted.
+  skillSource  Json?
+  status       String   @default("held")
+  /// The run that asked to close this card; it closes only if that run completes.
+  closingRunId String?
+  expiresAt    DateTime
+  takenRunId   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([spaceId, userId, status, expiresAt])
+  @@index([threadId, botId, status])
+  @@index([runId, status])
+  @@map("action_offers")
 }

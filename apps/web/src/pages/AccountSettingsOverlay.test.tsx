@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import type { AccountSecurity } from "@rakazo/contracts";
+import { DEFAULT_ACTION_OFFER_SETTINGS } from "@rakazo/contracts";
 import type { ReactNode } from "react";
 import { act, useEffect } from "react";
 import { createRoot } from "react-dom/client";
@@ -125,6 +126,8 @@ it("flips the stored tool activity preference from the settings toggle", async (
           name="Jamie"
           avatarStyle="robot"
           onAvatarStyleChange={async () => undefined}
+          actionOfferSettings={DEFAULT_ACTION_OFFER_SETTINGS}
+          onActionOfferSettingsChange={async () => undefined}
         />,
       );
     });
@@ -167,6 +170,8 @@ it("turns loading web images on and off from the settings toggle", async () => {
           name="Jamie"
           avatarStyle="robot"
           onAvatarStyleChange={async () => undefined}
+          actionOfferSettings={DEFAULT_ACTION_OFFER_SETTINGS}
+          onActionOfferSettingsChange={async () => undefined}
         />,
       );
     });
@@ -208,6 +213,8 @@ it.each([undefined, true, false])("respects the password-change policy (%s)", as
           name="Test"
           avatarStyle="robot"
           onAvatarStyleChange={async () => undefined}
+          actionOfferSettings={DEFAULT_ACTION_OFFER_SETTINGS}
+          onActionOfferSettingsChange={async () => undefined}
         />,
       ),
     );
@@ -231,6 +238,8 @@ it("updates the Enter preference from Settings and reflects external changes", a
           name="Test"
           avatarStyle="robot"
           onAvatarStyleChange={async () => undefined}
+          actionOfferSettings={DEFAULT_ACTION_OFFER_SETTINGS}
+          onActionOfferSettingsChange={async () => undefined}
         />,
       );
     });
@@ -250,6 +259,97 @@ it("updates the Enter preference from Settings and reflects external changes", a
     expect(toggle.getAttribute("aria-checked")).toBe("true");
   } finally {
     await act(async () => root.unmount());
+    vi.unstubAllGlobals();
+  }
+});
+
+it("saves action card settings from Advanced", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const onActionOfferSettingsChange = vi.fn(async () => undefined);
+  try {
+    await act(async () => {
+      root.render(
+        <GeneralSettingsPanels
+          name="Jamie"
+          avatarStyle="robot"
+          onAvatarStyleChange={async () => undefined}
+          actionOfferSettings={DEFAULT_ACTION_OFFER_SETTINGS}
+          onActionOfferSettingsChange={onActionOfferSettingsChange}
+        />,
+      );
+    });
+    const toggle = container.querySelector<HTMLElement>('[data-testid="action-offers-toggle"]');
+    if (!toggle) throw new Error("Missing action cards toggle");
+    await act(async () => toggle.click());
+    expect(onActionOfferSettingsChange).toHaveBeenCalledWith({ enabled: false });
+    const perReply = container.querySelector<HTMLInputElement>(
+      '[data-testid="action-offers-per-reply"]',
+    );
+    if (!perReply) throw new Error("Missing cards per reply field");
+    await act(async () => {
+      // React tracks the value itself: set it through the native setter, then fire input and focusout.
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        perReply,
+        "5",
+      );
+      perReply.dispatchEvent(new Event("input", { bubbles: true }));
+      perReply.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(onActionOfferSettingsChange).toHaveBeenCalledWith({ perReply: 5 });
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("puts action card settings back to the saved values when a save fails", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const onActionOfferSettingsChange = vi.fn(async () => {
+    throw new Error("offline");
+  });
+  try {
+    await act(async () => {
+      root.render(
+        <GeneralSettingsPanels
+          name="Jamie"
+          avatarStyle="robot"
+          onAvatarStyleChange={async () => undefined}
+          actionOfferSettings={DEFAULT_ACTION_OFFER_SETTINGS}
+          onActionOfferSettingsChange={onActionOfferSettingsChange}
+        />,
+      );
+    });
+    const toggle = container.querySelector<HTMLElement>('[data-testid="action-offers-toggle"]');
+    if (!toggle) throw new Error("Missing action cards toggle");
+    await act(async () => toggle.click());
+    expect(onActionOfferSettingsChange).toHaveBeenCalledWith({ enabled: false });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    const perReply = container.querySelector<HTMLInputElement>(
+      '[data-testid="action-offers-per-reply"]',
+    );
+    if (!perReply) throw new Error("Missing cards per reply field");
+    const saved = String(DEFAULT_ACTION_OFFER_SETTINGS.perReply);
+    const next = saved === "5" ? "6" : "5";
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        perReply,
+        next,
+      );
+      perReply.dispatchEvent(new Event("input", { bubbles: true }));
+      perReply.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(onActionOfferSettingsChange).toHaveBeenCalledWith({ perReply: Number(next) });
+    expect(perReply.value).toBe(saved);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
     vi.unstubAllGlobals();
   }
 });

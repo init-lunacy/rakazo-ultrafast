@@ -2,9 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ComposioEmulator, ExpoPushProvider, loadPushToken } from "@rakazo/adapters";
-import type { appContract, Space, SpaceNavigation } from "@rakazo/contracts";
+import type { appContract, Me, Space, SpaceNavigation } from "@rakazo/contracts";
 import {
   claimEmptySpaceDeletionForMember,
+  createThreadMessage,
   deleteEmptySpaceForMember,
   pushSessionExpiresAt,
   releaseSpaceDeletionClaim,
@@ -12,11 +13,10 @@ import {
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
-import type { BotIntroHarness } from "./discard-bot-intro.js";
-import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
+import type { App, Bot } from "./app-helpers.js";
+import { botInput, raw, rpc, setBotIntroHarness, signup } from "./app-helpers.js";
 import { sessionCookieHeader } from "./index.js";
 
-type App = { request: (input: string, init?: RequestInit) => Response | Promise<Response> };
 type AppHandles = Awaited<ReturnType<typeof createApp>>;
 type RpcPath<T, Prefix extends string = ""> = T extends { "~orpc": unknown }
   ? Prefix
@@ -33,7 +33,6 @@ process.env.AGENT_RUNTIME = "scripted";
 
 const hasDb = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
 const describeWithDatabase = hasDb ? describe : describe.skip;
-let botIntroHarness: BotIntroHarness | undefined;
 
 describeWithDatabase("API authorization and resource isolation", () => {
   let handles: AppHandles;
@@ -53,7 +52,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
       composio: new ComposioEmulator(),
     });
     app = handles.app;
-    botIntroHarness = handles;
+    setBotIntroHarness(handles);
   });
 
   afterAll(async () => {
@@ -172,6 +171,9 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ["connections/complete", { connectionId: "missing-connection" }],
       ["connections/revoke", { connectionId: "missing-connection" }],
       ["approvalRules/list"],
+      ["actionOffers/list"],
+      ["actionOffers/take", { offerId: "missing-offer" }],
+      ["actionOffers/dismiss", { offerId: "missing-offer" }],
       [
         "approvalRules/set",
         { effect: "require_approval", matchKind: "category", matchValue: "email" },
@@ -715,6 +717,92 @@ describeWithDatabase("API authorization and resource isolation", () => {
     expect(
       await handles.prisma.actionApprovalRule.findUnique({ where: { id: ownerRule.id } }),
     ).not.toBeNull();
+  });
+
+  it("keeps action cards private to each user in a shared Space", async () => {
+    const owner = await signup(app, `card-owner-${stamp}@rakazo.test`, "Card Owner");
+    const member = await signup(app, `card-member-${stamp}@rakazo.test`, "Card Member");
+    const ownerActor = await rpc<Actor>(app, owner, "me");
+    const memberActor = await rpc<Actor>(app, member, "me");
+
+    await handles.prisma.member.deleteMany({ where: { userId: memberActor.userId } });
+    await handles.prisma.member.create({
+      data: {
+        id: `card-member-${stamp}`,
+        organizationId: ownerActor.spaceId,
+        userId: memberActor.userId,
+        role: "member",
+        createdAt: new Date(),
+      },
+    });
+    const bot = await rpc<Bot>(app, owner, "bots/create", botInput("Card Bot"));
+    const thread = await handles.prisma.thread.findFirstOrThrow({ where: { botId: bot.id } });
+    const task = await handles.prisma.task.create({
+      data: {
+        spaceId: ownerActor.spaceId,
+        userId: ownerActor.userId,
+        botId: bot.id,
+        threadId: thread.id,
+        prompt: "x",
+        status: "completed",
+      },
+    });
+    const run = await handles.prisma.run.create({
+      data: {
+        spaceId: ownerActor.spaceId,
+        userId: ownerActor.userId,
+        botId: bot.id,
+        threadId: thread.id,
+        taskId: task.id,
+        status: "completed",
+        trigger: "user",
+      },
+    });
+    const message = await createThreadMessage(handles.prisma, {
+      threadId: thread.id,
+      role: "bot",
+      botId: bot.id,
+      blocks: [],
+    });
+    const offer = await handles.prisma.actionOffer.create({
+      data: {
+        spaceId: ownerActor.spaceId,
+        userId: ownerActor.userId,
+        threadId: thread.id,
+        botId: bot.id,
+        runId: run.id,
+        messageId: message.id,
+        kind: "task",
+        label: "Owner's",
+        task: "x",
+        status: "open",
+        expiresAt: new Date(Date.now() + 3_600_000),
+      },
+    });
+    expect(await rpc<unknown[]>(app, member, "actionOffers/list")).toEqual([]);
+    await expectDenied(app, member, "actionOffers/take", { offerId: offer.id });
+    await expectDenied(app, member, "actionOffers/dismiss", { offerId: offer.id });
+    expect(
+      (await handles.prisma.actionOffer.findUniqueOrThrow({ where: { id: offer.id } })).status,
+    ).toBe("open");
+    expect(await rpc<Array<{ id: string }>>(app, owner, "actionOffers/list")).toEqual([
+      expect.objectContaining({ id: offer.id, label: "Owner's", messageId: message.id }),
+    ]);
+  });
+
+  it("merges a partial settings update and returns full settings", async () => {
+    const cookie = await signup(app, `card-settings-${stamp}@rakazo.test`, "Card Settings");
+    await rpc(app, cookie, "preferences/update", { actionOfferSettings: { perReply: 5 } });
+    const me = await rpc<Me>(app, cookie, "preferences/update", {
+      actionOfferSettings: { openPerChat: 9 },
+    });
+    expect(me.actionOfferSettings).toEqual({
+      enabled: true,
+      perReply: 5,
+      openPerChat: 9,
+      defaultLifetimeDays: 3,
+      saveSkillMinSteps: 3,
+    });
   });
 
   it("keeps space data and computers behind the selected space boundary", async () => {
@@ -1751,16 +1839,6 @@ describeWithDatabase("API authorization and resource isolation", () => {
   });
 });
 
-function botInput(name: string) {
-  return {
-    name,
-    title: "",
-    description: "",
-    instructions: "",
-    notifyOnFinish: false,
-  };
-}
-
 function routineInput(botId: string) {
   return {
     botId,
@@ -1791,18 +1869,6 @@ function capabilityInput(name: string) {
 
 function connectionInput(displayName: string) {
   return { provider: "test-provider", displayName };
-}
-
-async function signup(app: App, email: string, name: string) {
-  const response = await app.request("/api/auth/sign-up/email", {
-    method: "POST",
-    headers: { "content-type": "application/json", origin: "http://127.0.0.1:5173" },
-    body: JSON.stringify({ email, password: "password12", name }),
-  });
-  if (response.status >= 400) {
-    throw new Error(`signup failed ${response.status}: ${await response.text()}`);
-  }
-  return sessionCookieHeader(response);
 }
 
 async function phoneSession(app: App, email: string) {
@@ -1845,41 +1911,6 @@ async function authPost(app: App, cookie: string, path: string, body: unknown = 
   return response;
 }
 
-async function raw(
-  app: App,
-  cookie: string,
-  procedure: string,
-  body: unknown = {},
-  spaceId?: string,
-) {
-  return app.request(`/rpc/${procedure}`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(cookie ? { cookie } : {}),
-      ...(spaceId ? { "x-rakazo-space-id": spaceId } : {}),
-      origin: "http://127.0.0.1:5173",
-    },
-    body: JSON.stringify({ json: body ?? {} }),
-  });
-}
-
-async function rpc<T>(
-  app: App,
-  cookie: string,
-  procedure: string,
-  body: unknown = {},
-  spaceId?: string,
-): Promise<T> {
-  const response = await raw(app, cookie, procedure, body, spaceId);
-  const text = await response.text();
-  const payload = JSON.parse(text) as { json?: T; error?: { message?: string } };
-  if (response.status >= 400 || payload.error) {
-    throw new Error(`${procedure} ${response.status}: ${payload.error?.message ?? text}`);
-  }
-  return discardBotIntroFromCreate(botIntroHarness, cookie, procedure, payload.json as T);
-}
-
 async function expectDenied(
   app: App,
   cookie: string,
@@ -1914,10 +1945,6 @@ interface ModelCredential {
   label: string;
   hasKey: boolean;
   isDefault: boolean;
-}
-
-interface Bot {
-  id: string;
 }
 
 function exhaustiveProtectedCalls<

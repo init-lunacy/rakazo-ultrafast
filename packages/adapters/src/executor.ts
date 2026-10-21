@@ -54,6 +54,7 @@ import {
   HistorySearchInputSchema,
   isAttachmentImageMimeType,
   OPENAI_COMPATIBLE_PROVIDER_ID,
+  parseActionOfferSettings,
 } from "@rakazo/contracts";
 import type { ActionApprovalRule, ToolCallStreak } from "@rakazo/core";
 import {
@@ -72,6 +73,7 @@ import {
   displayName,
   endsSentence,
   expandSkillReferencesInPrompt,
+  extractForcedSkillName,
   formatSkillRunPrompt,
   formatSkillsCatalogInstruction,
   humanizeToolName,
@@ -87,6 +89,7 @@ import {
   messagingDmSurfaceNote,
   nextCronDateAcross,
   nextFence,
+  offerPushBody,
   planActionGate,
   promptInvokesSkill,
   redactSecrets,
@@ -124,6 +127,7 @@ import {
   recordUsage,
   reserveInstructionProposal,
   retireModelCredential,
+  runTookOutsideSteering,
   SpaceLimitError,
   searchHistory,
   settleReleasedTakeoverCards,
@@ -132,6 +136,14 @@ import {
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { parse as parseShellCommand } from "shell-quote";
+import type { ToolCallRecord } from "./action-offer-tool.js";
+import {
+  actionOffersAllowedForRun,
+  offerActionsFromTool,
+  recordToolCall,
+  saveSkillRunRequiresApproval,
+  skillSourceContext,
+} from "./action-offer-tool.js";
 import {
   connectAgent,
   messageConnectedAgent,
@@ -4198,6 +4210,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
             : null;
         // Calls carry no schema flag: the sending client encodes them in the clientNonce.
         const sourceClientNonce = sourceMessage?.clientNonce ?? null;
+        const saveSkillOffer = sourceClientNonce
+          ? await deps.prisma.actionOffer.findFirst({
+              where: {
+                id: sourceClientNonce,
+                kind: "save_skill",
+                userId: run.userId,
+                botId: run.botId,
+                status: "taken",
+              },
+              select: { skillSource: true },
+            })
+          : null;
+        const saveSkillSource = saveSkillOffer
+          ? Array.isArray(saveSkillOffer.skillSource)
+            ? saveSkillOffer.skillSource.filter((line): line is string => typeof line === "string")
+            : []
+          : null;
         // A follow-up can be queued by a bot (group handoffs); only the user's own counts.
         const ownerStartedRun = isOwnerStartedRun(run.trigger, sourceMessage?.role === "user");
         // A hang-up run has no source message: its own nonce carries the call it closes.
@@ -4208,6 +4237,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
         const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
+        let userPreferences: { timezone: string | null; actionOfferSettings: unknown } | null =
+          null;
+        try {
+          userPreferences = await deps.prisma.user.findUnique({
+            where: { id: run.userId },
+            select: { timezone: true, actionOfferSettings: true },
+          });
+        } catch {
+          // Timezone and card settings are optional; a lookup failure must not prevent a run.
+        }
+        const actionOfferSettings = parseActionOfferSettings(userPreferences?.actionOfferSettings);
+
         const builtins = [
           ...selectBuiltinToolsForRun({
             ticketBoardEnabled: deps.ticketBoardEnabled,
@@ -4226,6 +4267,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             disabledBuiltinTools: bot.disabledBuiltinTools,
             fleetManagement: bot.fleetManagement,
             followUpFromUser: sourceMessage?.role === "user",
+            actionOffersEnabled: actionOfferSettings.enabled,
           }),
           // Cross-owner agent connections only exist for chat-linked bots.
           ...(hasMessagingIdentity && !isBackgroundRunTrigger(run.trigger)
@@ -4386,6 +4428,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let lastProgressAt = 0;
         let hasStreamedText = false;
         const toolCallStreaks = new Map<string, ToolCallStreak>();
+        /** This run's calls since it started or resumed, for a save-skill offer's source. */
+        const runToolCalls: ToolCallRecord[] = [];
         // Set by a tool call: the next text starts a new assistant turn and needs a break
         // from the earlier text that stayed in this reply (held-back narration).
         let assistantTurnBreakPending = false;
@@ -4724,21 +4768,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
             if (!live?.fleetManagement) return { error: "This tool is disabled for this bot." };
             if (!ownerStartedRun) return { error: "Fleet tools need a run you started." };
-            // Channel and webhook text this run took in mid-turn is not the owner's. Rows queued
-            // before origins were recorded are recognized by their channel message.
-            const outside =
-              fleetWrite &&
-              (await deps.prisma.steeringMessage.findFirst({
-                where: {
-                  runId,
-                  claimedAt: { not: null },
-                  OR: [
-                    { originTrigger: { not: null } },
-                    { message: { blocks: { array_contains: [{ kind: "channel_message" }] } } },
-                  ],
-                },
-                select: { id: true },
-              }));
+            // Channel and webhook text this run took in mid-turn is not the owner's.
+            const outside = fleetWrite && (await runTookOutsideSteering(deps.prisma, runId));
             if (outside)
               return {
                 error:
@@ -4810,12 +4841,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
           // the command once, rather than letting an allow rule or reviewer schedule it.
           const commandWatch =
             name === "schedule_create" && commandWatchFromTool(args.watch) !== undefined;
+          // The saved run's tool calls are untrusted text: the user approves each skill change.
+          const saveSkillReview = saveSkillRunRequiresApproval(name, saveSkillSource !== null);
           const requiresApprovalByDefault =
             commandWatch ||
+            saveSkillReview ||
             requiresUnattendedApproval ||
             toolRequiresApproval(name, viaConnector, declaredReadOnly);
           const requiresMandatoryApproval =
-            commandWatch || requiresUnattendedApproval || toolRequiresExplicitApproval(name);
+            commandWatch ||
+            saveSkillReview ||
+            requiresUnattendedApproval ||
+            toolRequiresExplicitApproval(name);
           const connectorKind = connectorKindFromToolName(
             name,
             connectedPlugins.map((plugin) => plugin.provider),
@@ -5168,7 +5205,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   name,
                   name === "propose_instructions_update" ? { ...args, botId: bot.id } : args,
                   runSecrets,
-                  { reviewReason, summary: fleetSummary },
+                  { reviewReason, summary: fleetSummary, allowAlways: !requiresMandatoryApproval },
                 ),
               ],
             });
@@ -6111,6 +6148,36 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }),
             });
             return finish(created);
+          }
+          if (name === "offer_actions") {
+            if (isSubagentToolExecution(executionId)) {
+              return finish({ error: "Only the main agent offers cards; tell it what to offer." });
+            }
+            const stepCount = await deps.prisma.event.count({
+              where: {
+                runId,
+                type: "agent.tool.called",
+                NOT: { payload: { path: ["name"], equals: "offer_actions" } },
+              },
+            });
+            return finish(
+              await offerActionsFromTool(deps.prisma, {
+                args,
+                run: { id: runId, spaceId: run.spaceId, userId: run.userId },
+                botId: bot.id,
+                threadId: thread.id,
+                settings: actionOfferSettings,
+                secrets: runSecrets,
+                toolCalls: runToolCalls,
+                stepCount,
+                ranSkill:
+                  Boolean(invokedSkill) ||
+                  Boolean(extractForcedSkillName(taskPrompt)) ||
+                  runToolCalls.some((entry) => entry.name === "skill_read"),
+                startedBySaveSkillCard: Boolean(saveSkillSource),
+                now: new Date(),
+              }),
+            );
           }
           if (name === "call_user") {
             if (
@@ -7210,26 +7277,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
           { exposedToolNames: new Set(tools.map((tool) => tool.name)) },
         );
         const replyContext = await loadReplyContext(deps.prisma, thread.id, run.sourceMessageId);
-        let userTimeZone: string | null | undefined;
-        try {
-          userTimeZone = (
-            await deps.prisma.user.findUnique({
-              where: { id: run.userId },
-              select: { timezone: true },
-            })
-          )?.timezone;
-        } catch {
-          // Timezone is optional context; a lookup failure must not prevent a run.
-        }
         const prompt = [
           replyContext,
           run.trigger === "reaction" && replyContext ? undefined : basePrompt,
+          saveSkillSource ? skillSourceContext(saveSkillSource) : undefined,
           takeoverResume?.promptNote,
           approvalContinuation,
           // A hang-up turn is read, not heard: no spoken-reply constraint.
           voiceCall && !callEndRun ? voiceCallInstruction(disabledBuiltinTools) : undefined,
           // Per-turn, not in the system prompt: the timestamp changes every call and would break the cacheable prefix.
-          formatCurrentTimeInstruction(new Date(), userTimeZone),
+          formatCurrentTimeInstruction(new Date(), userPreferences?.timezone),
         ]
           .filter(Boolean)
           .join("\n\n");
@@ -7395,6 +7452,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 replyGuidance: runReplyGuidance(run.trigger),
                 disabledBuiltinTools,
                 offeredFleetTools: offeredFleetTools(builtins),
+                offersActions: builtins.some((tool) => tool.name === "offer_actions"),
               })
                 .filter((instruction): instruction is string => Boolean(instruction))
                 .join("\n\n"),
@@ -7746,6 +7804,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 payload: { name: event.name, executionId: event.executionId },
               });
               pendingToolNames.push(event.name);
+              recordToolCall(runToolCalls, event.name, event.args, runSecrets);
               tryFlushPendingTools();
               // One streak per agent: parallel helpers neither reset nor trip each other's.
               const loopGuard = advanceAgentLoopGuard(
@@ -7777,6 +7836,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   leaseOwner: workerId,
                   leaseFence: fence,
                   outcome: "completed",
+                  publishOffers: false,
                   blocks: isBackgroundRunTrigger(run.trigger)
                     ? []
                     : [{ kind: "text", text: stuckText }],
@@ -8039,6 +8099,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             leaseFence: fence,
             outcome: "completed",
             blocks,
+            publishOffers: !handedOff,
             markUnread: completionMarksUnread(
               run.trigger,
               text,
@@ -8067,7 +8128,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ).catch((error) => getLogger().error("bot message result return", error));
           }
           const notifyBody = completionNotificationPreview(text);
-          if (
+          const published = completed.publishedOffers ?? [];
+          const offerPush =
+            (run.trigger === "routine" || run.trigger === "webhook") &&
+            published.length > 0 &&
+            !completed.continuationRunId;
+          if (offerPush) {
+            await notifyRun(deps, run, {
+              kind: "offer",
+              title: displayName(bot.name, "Bot"),
+              body: offerPushBody(published.map((offer) => offer.label)),
+              botId: bot.id,
+              threadId: thread.id,
+              messageId: published[0]!.messageId,
+            });
+          } else if (
             runSendsFinishNotification(run.trigger) &&
             notifyBody &&
             !completed.continuationRunId
@@ -8476,6 +8551,8 @@ export function selectBuiltinToolsForRun(options: {
   fleetManagement?: boolean;
   /** A follow-up run whose source message the user wrote. */
   followUpFromUser?: boolean;
+  /** The user has action cards switched on. */
+  actionOffersEnabled?: boolean;
 }) {
   const disabled = disabledBuiltinToolSet(options.disabledBuiltinTools);
   const fleetToolsAllowed = isOwnerStartedRun(options.trigger, Boolean(options.followUpFromUser));
@@ -8499,6 +8576,8 @@ export function selectBuiltinToolsForRun(options: {
       !disabled.has(tool.name) &&
       (!FLEET_TOOL_NAMES_SET.has(tool.name) ||
         (Boolean(options.fleetManagement) && fleetToolsAllowed)) &&
+      (tool.name !== "offer_actions" ||
+        (Boolean(options.actionOffersEnabled) && actionOffersAllowedForRun(options))) &&
       (options.mediaImagesEnabled || tool.name !== "generate_image") &&
       (options.mediaVideoEnabled || tool.name !== "generate_video") &&
       (options.ticketBoardEnabled ||
@@ -8850,6 +8929,8 @@ export function userTurnInstructions(parts: {
   disabledBuiltinTools?: ReadonlySet<string>;
   /** The fleet tools the run was offered (see offeredFleetTools). */
   offeredFleetTools?: readonly string[];
+  /** offer_actions was offered to this run. */
+  offersActions?: boolean;
 }): (string | undefined)[] {
   return [
     parts.botInstructions,
@@ -8886,6 +8967,9 @@ export function userTurnInstructions(parts: {
       "archive_bot safely archives a bot this bot created, and only that bot. Use it when the user asks to remove that bot or when it is finished and unused. The user can restore it or permanently delete it later. confirm_name must exactly match its name.",
     ),
     fleetClause(parts.offeredFleetTools),
+    parts.offersActions
+      ? "When there is a clear next step you could take on request, offer it with offer_actions instead of asking in text."
+      : undefined,
     parts.pluginLine,
     parts.agentSkillsLine,
     parts.taughtSkillsLine,

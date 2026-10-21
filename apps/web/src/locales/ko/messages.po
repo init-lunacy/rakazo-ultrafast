@@ -345,6 +345,15 @@ msgstr "{name}의 계정 메뉴"
 msgid "Accounts"
 msgstr ""
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Action cards"
+msgstr ""
+
+#: src/pages/Actions.tsx
+#: src/pages/Shell.tsx
+msgid "Actions"
+msgstr ""
+
 #. placeholder {0}: bot.name
 #. placeholder {0}: group.spaceName
 #. placeholder {0}: sectionMenu.section.name
@@ -602,6 +611,11 @@ msgstr "답변"
 msgctxt "incoming call"
 msgid "Answer"
 msgstr "답변"
+
+#. placeholder {0}: data.botName ?? ""
+#: src/pages/shell/message-cards.tsx
+msgid "Answer {0}'s question first."
+msgstr ""
 
 #: src/components/AskCard.tsx
 msgid "Answered"
@@ -876,6 +890,7 @@ msgstr "연결할 Bot"
 msgid "Bot's model"
 msgstr "봇의 모델"
 
+#: src/pages/Actions.tsx
 #: src/pages/Artifacts.tsx
 msgid "Bots"
 msgstr ""
@@ -971,6 +986,10 @@ msgstr "취소됨"
 
 #: src/pages/Artifacts.tsx
 msgid "Card view"
+msgstr ""
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Cards per reply"
 msgstr ""
 
 #: src/pages/AccountSettingsOverlay.tsx
@@ -2729,6 +2748,10 @@ msgstr "답장한 메시지로 이동: {excerpt}"
 msgid "just now"
 msgstr "방금"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Keep cards for (days)"
+msgstr ""
+
 #: src/pages/shell/dialogs.tsx
 msgid "Keep memories"
 msgstr "기억은 유지"
@@ -3429,6 +3452,10 @@ msgstr ""
 msgid "Off"
 msgstr ""
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Offer next steps"
+msgstr ""
+
 #: src/pages/RoutineEditor.tsx
 msgid "On a schedule"
 msgstr "일정에 따라"
@@ -3467,6 +3494,10 @@ msgstr ""
 
 #: src/pages/Shell.tsx
 msgid "Open call"
+msgstr ""
+
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Open cards per chat"
 msgstr ""
 
 #. placeholder {0}: call.botName
@@ -4128,6 +4159,10 @@ msgstr ""
 msgid "Save"
 msgstr "저장"
 
+#: src/pages/shell/message-cards.tsx
+msgid "Save as a skill"
+msgstr ""
+
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Save backups"
 msgstr "백업 모델 저장"
@@ -4544,6 +4579,10 @@ msgstr ""
 msgid "Steps"
 msgstr "실행 단계"
 
+#: src/pages/AccountSettingsOverlay.tsx
+msgid "Steps before offering to save a skill"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Stop"
 msgstr "중지"
@@ -4664,6 +4703,10 @@ msgstr "로그인 테스트"
 #: src/components/ModelConnectionPreflightNotice.tsx
 msgid "Testing…"
 msgstr "테스트 중…"
+
+#: src/pages/shell/message-cards.tsx
+msgid "That bot has left this group."
+msgstr ""
 
 #: src/components/SoftwareUpdateSection.tsx
 msgid "The API did not come back. Refresh this page."
