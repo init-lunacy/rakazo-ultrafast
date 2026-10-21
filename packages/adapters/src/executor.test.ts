@@ -59,6 +59,30 @@ describe("bot tool permissions", () => {
   });
 });
 
+describe("offer_actions availability", () => {
+  const options = {
+    graphicalToolsAllowed: false,
+    groupId: null,
+    trigger: "user",
+    semanticMemoryEnabled: false,
+    messagingChannelRun: false,
+  };
+  const offered = (extra: object) =>
+    selectBuiltinToolsForRun({ ...options, ...extra }).some(
+      (tool) => tool.name === "offer_actions",
+    );
+
+  it("is offered only when enabled and the run has a person to tap a card", () => {
+    expect(offered({ actionOffersEnabled: true })).toBe(true);
+    expect(offered({})).toBe(false);
+    expect(offered({ actionOffersEnabled: false })).toBe(false);
+    for (const trigger of ["bot_message", "messaging"])
+      expect(offered({ actionOffersEnabled: true, trigger })).toBe(false);
+    expect(offered({ actionOffersEnabled: true, voiceCall: true })).toBe(false);
+    expect(offered({ actionOffersEnabled: true, messagingChannelRun: true })).toBe(false);
+  });
+});
+
 describe("tool completion audit", () => {
   it("records result metadata without persisting tool contents", () => {
     const payload = toolCompletionAuditPayload({
@@ -1240,6 +1264,29 @@ describe("userTurnInstructions", () => {
     workspaceInstruction: "This entire computer workspace is your private home.",
     replyGuidance,
   };
+
+  it("mentions offer_actions only when the run was offered it", () => {
+    const sentence = "offer it with offer_actions";
+    const text = (offersActions: boolean) =>
+      userTurnInstructions({
+        ...base,
+        groupContext: undefined,
+        messagingContext: undefined,
+        redactedMemoryContext: undefined,
+        redactedScratchpadContext: undefined,
+        hasHistoricalContext: false,
+        agentEnvironmentInstruction: undefined,
+        botDirectory: undefined,
+        pluginLine: undefined,
+        agentSkillsLine: undefined,
+        taughtSkillsLine: undefined,
+        offersActions,
+      })
+        .filter(Boolean)
+        .join("\n");
+    expect(text(true)).toContain(sentence);
+    expect(text(false)).not.toContain(sentence);
+  });
 
   it("places stable guidance before volatile context when every optional context is present", () => {
     const instructions = userTurnInstructions({

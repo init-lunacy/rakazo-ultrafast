@@ -74,6 +74,7 @@ export const DELEGATION_TOOL_NAMES = new Set<string>([
   "delete_bot",
   "handoff_to_bot",
   "message_bot",
+  "offer_actions",
   ...FLEET_TOOL_NAMES,
 ]);
 
@@ -1054,6 +1055,34 @@ export const builtinAgentTools: ConnectorTool[] = [
         },
       },
       required: ["title", "farewell"],
+    },
+  },
+  {
+    name: "offer_actions",
+    description:
+      "Offer the user one-tap cards for next steps you could take on request; a tap starts that task as a new request in this chat. Cards appear when this run finishes cleanly, and each call replaces this run's earlier offers. Write each task so it makes sense on its own later. Use close with ids from [offered: …] to close your own earlier cards a new offer supersedes. kind save_skill offers to save what you did as a skill; its text is written for you.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        offers: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              kind: { type: "string", enum: ["task", "save_skill"] },
+              label: { type: "string", description: "Button text, at most 60 characters." },
+              task: { type: "string", description: "What to do, at most 2,000 characters." },
+              expiresAt: {
+                type: "string",
+                description:
+                  "Optional ISO 8601 time with offset after which the offer no longer makes sense.",
+              },
+            },
+          },
+        },
+        close: { type: "array", items: { type: "string" } },
+      },
+      required: ["offers"],
     },
   },
   {
