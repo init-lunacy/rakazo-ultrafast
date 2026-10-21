@@ -103,21 +103,29 @@ export async function openActionOffersInChat(
   >;
 }
 
+/** The actor's open, published cards in chats that are still live: the list and the counts. */
+function openCardsWhere(
+  actor: { spaceId: string; userId: string },
+  now: Date,
+): Prisma.ActionOfferWhereInput {
+  return {
+    spaceId: actor.spaceId,
+    userId: actor.userId,
+    status: "open",
+    expiresAt: { gt: now },
+    messageId: { not: null },
+    bot: { archivedAt: null },
+    thread: { OR: [{ groupId: null }, { group: { archivedAt: null } }] },
+  };
+}
+
 export async function listOpenActionOffers(
   prisma: PrismaClient,
   actor: { spaceId: string; userId: string },
   now: Date,
 ): Promise<ActionOfferListItem[]> {
   const rows = await prisma.actionOffer.findMany({
-    where: {
-      spaceId: actor.spaceId,
-      userId: actor.userId,
-      status: "open",
-      expiresAt: { gt: now },
-      messageId: { not: null },
-      bot: { archivedAt: null },
-      thread: { OR: [{ groupId: null }, { group: { archivedAt: null } }] },
-    },
+    where: openCardsWhere(actor, now),
     orderBy: { createdAt: "desc" },
     include: { thread: { select: { groupId: true } } },
   });
@@ -142,15 +150,7 @@ export async function countOpenActionOffers(
   now: Date,
 ) {
   const rows = await prisma.actionOffer.findMany({
-    where: {
-      spaceId: actor.spaceId,
-      userId: actor.userId,
-      status: "open",
-      expiresAt: { gt: now },
-      messageId: { not: null },
-      bot: { archivedAt: null },
-      thread: { OR: [{ groupId: null }, { group: { archivedAt: null } }] },
-    },
+    where: openCardsWhere(actor, now),
     select: { botId: true, thread: { select: { groupId: true } } },
   });
   const byBot = new Map<string, number>();
@@ -243,7 +243,7 @@ export async function dismissActionOffer(
 
 /**
  * Called by finalizeRunOnce for a completed run, under its thread lock. Expired held
- * cards are dropped, exact repeats extend the open card they repeat, cards the run
+ * cards are dropped, exact task repeats extend the open card they repeat, cards the run
  * asked to close are closed, and the rest open. Their message is attached by the caller.
  */
 export async function publishRunActionOffersInTransaction(
@@ -268,9 +268,11 @@ export async function publishRunActionOffersInTransaction(
   const updates = new Map<string, ActionOfferCardUpdate>();
   const opening = [];
   for (const offer of held) {
+    // Save-skill cards share a fixed label and task but each carries its own run's source.
     const repeat = open.find(
       (card) =>
-        card.kind === offer.kind &&
+        offer.kind === "task" &&
+        card.kind === "task" &&
         card.label === offer.label &&
         card.task === offer.task &&
         card.closingRunId !== input.runId,

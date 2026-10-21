@@ -332,6 +332,38 @@ describePostgres("action offers (PostgreSQL)", () => {
     expect(byId.get(closing!.id)?.status).toBe("closed");
   });
 
+  it("never merges save-skill cards: each run's card opens on its own reply", async () => {
+    const replies = [];
+    for (const text of ["Booked the flight.", "Filed the expense."]) {
+      const fixture = await runningRun();
+      await replaceHeldActionOffers(prisma, {
+        ...ids,
+        runId: fixture.run.id,
+        offers: [
+          {
+            kind: "save_skill",
+            label: "Save as a skill",
+            task: "Save it.",
+            expiresAt: soon(),
+            skillSource: [`shell {"command":"${text}"}`],
+          },
+        ],
+        close: [],
+      });
+      const result = await completeRun(fixture, [{ kind: "text", text }]);
+      expect(result.publishedOffers).toHaveLength(1);
+      replies.push({ runId: fixture.run.id, messageId: result.publishedOffers![0]!.messageId });
+    }
+    for (const reply of replies) {
+      expect(
+        await prisma.actionOffer.findMany({
+          where: { runId: reply.runId },
+          select: { status: true, messageId: true },
+        }),
+      ).toEqual([{ status: "open", messageId: reply.messageId }]);
+    }
+  });
+
   it("drops held cards that expired while the run waited", async () => {
     const fixture = await runningRun();
     await replaceHeldActionOffers(prisma, {

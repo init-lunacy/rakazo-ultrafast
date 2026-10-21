@@ -49,11 +49,11 @@ model User {
   agentSecrets               AgentSecret[]
   createdTickets              Ticket[]                     @relation("TicketCreatorUser")
   ticketComments              TicketComment[]              @relation("TicketCommentAuthorUser")
+  /// Action card settings (ActionOfferSettingsSchema); null until the user changes one.
+  actionOfferSettings         Json?
 
   @@unique([email])
   @@map("user")
-  /// Action card settings (ActionOfferSettingsSchema); null until the user changes one.
-  actionOfferSettings         Json?
 }
 
 model Session {
@@ -247,12 +247,12 @@ model Space {
   board                       Board?
   tickets                     Ticket[]
   ticketComments              TicketComment[]
+  actionOffers                ActionOffer[]
 
   @@unique([id, organizationId])
   @@index([organizationId, createdAt])
   @@index([createdByUserId])
   @@map("spaces")
-  actionOffers ActionOffer[]
 }
 
 model SpaceMember {
@@ -455,6 +455,7 @@ model Bot {
   ticketComments    TicketComment[]   @relation("TicketCommentAuthorBot")
 
   externalConversations ExternalConversation[]
+  actionOffers          ActionOffer[]
 
   @@unique([spaceId, spawnKey])
   @@index([spaceId, userId, archivedAt, pinned, updatedAt])
@@ -462,7 +463,6 @@ model Bot {
   @@index([computerId])
   @@index([parentBotId])
   @@map("bots")
-  actionOffers ActionOffer[]
 }
 
 model BotSection {
@@ -553,10 +553,10 @@ model Thread {
   tasks                       Task[]
   runs                        Run[]
   routines                    Routine[]
+  actionOffers                ActionOffer[]
 
   @@index([spaceId])
   @@map("threads")
-  actionOffers ActionOffer[]
 }
 
 model Message {
@@ -577,13 +577,13 @@ model Message {
   externalTranscriptFor  ExternalMessage?
   steeringMessages SteeringMessage[]
   createdAt        DateTime  @default(now())
+  actionOffers          ActionOffer[]
 
   @@unique([threadId, seq])
   @@unique([threadId, clientNonce])
   @@index([threadId, seq])
   @@index([replyToMessageId])
   @@map("messages")
-  actionOffers ActionOffer[]
 }
 
 model Event {
@@ -668,6 +668,7 @@ model Run {
   usageRecords         UsageRecord[]
   steeringMessages     SteeringMessage[]
   externalMessage      ExternalMessage?
+  actionOffers         ActionOffer[]
 
   @@unique([spaceId, clientNonce])
   @@index([status, leaseExpiresAt])
@@ -681,7 +682,6 @@ model Run {
   @@index([threadId, status, createdAt])
   @@index([routineId])
   @@map("runs")
-  actionOffers ActionOffer[]
 }
 
 model SteeringMessage {
