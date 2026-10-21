@@ -121,6 +121,7 @@ import { MessageCaption } from "../components/message-caption";
 import { MessageContextMenu } from "../components/message-context-menu";
 import { NativeActionButton } from "../components/native-action-button";
 import { NativeSymbol } from "../components/native-symbol";
+import { OfferCard } from "../components/OfferCard";
 import { ReplyDismissButton } from "../components/reply-dismiss-button";
 import { ReplyLine } from "../components/reply-line";
 import { ScrollToBottomButton } from "../components/scroll-to-bottom-button";
@@ -3282,6 +3283,7 @@ const MessageRow = memo(function MessageRow({
                 onPreviewImage={actions.previewImage}
                 peerReplies={peerReplies}
                 onTogglePeerReplies={actions.togglePeerReplies}
+                onJumpToMessage={actions.jump}
                 actionProps={actionProps}
               />
             </ThreadReadOnlyContext.Provider>
@@ -3338,6 +3340,7 @@ const MessageBubble = memo(function MessageBubble({
   onPreviewImage,
   peerReplies,
   onTogglePeerReplies,
+  onJumpToMessage,
   actionProps,
 }: {
   botId: string;
@@ -3355,6 +3358,7 @@ const MessageBubble = memo(function MessageBubble({
   onPreviewImage: (target: ImageArtifactPreviewTarget) => void;
   peerReplies?: "collapsed" | "expanded";
   onTogglePeerReplies: (markerId: string) => void;
+  onJumpToMessage?: (messageId: string) => void;
   actionProps: MessageActionProps;
 }) {
   const colorScheme = useResolvedAppearance();
@@ -4028,6 +4032,15 @@ const MessageBubble = memo(function MessageBubble({
           onAccessibilityAction={actionProps.onAccessibilityAction}
         />
       ))}
+      {message.blocks
+        .filter(
+          (block): block is Extract<MessageBlock, { kind: "action_offer" }> =>
+            block.kind === "action_offer",
+        )
+        .flatMap((block) => block.offers)
+        .map((card) => (
+          <OfferCard key={card.id} card={card} onOpenMessage={onJumpToMessage} />
+        ))}
       {computerBlocks.map((block, index) => (
         <ComputerCard
           key={`computer-${index}`}

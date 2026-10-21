@@ -844,4 +844,16 @@ export const NL_MESSAGES: Record<string, string> = {
   "Try again": "Opnieuw proberen",
   "Your session expired": "Je sessie is verlopen",
   "The server had a problem": "Er is een probleem met de server",
+  // components/OfferCard.tsx
+  "Save as a skill": "Opslaan als skill",
+  "Answer {bot}'s question first.": "Beantwoord eerst de vraag van {bot}.",
+  "That bot has left this group.": "Die bot heeft de groep verlaten.",
+  // app/actions.tsx, app/(settings)/account.tsx
+  Actions: "Acties",
+  "Action cards": "Actiekaarten",
+  "Offer next steps": "Volgende stappen voorstellen",
+  "Cards per reply": "Kaarten per antwoord",
+  "Open cards per chat": "Open kaarten per chat",
+  "Keep cards for (days)": "Kaarten bewaren (dagen)",
+  "Steps before offering to save a skill": "Stappen voordat opslaan als skill wordt voorgesteld",
 };

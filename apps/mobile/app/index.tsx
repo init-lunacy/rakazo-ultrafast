@@ -1,7 +1,7 @@
 import { MenuView } from "@expo/ui/community/menu";
 import type { RunActivityRow, SpaceBot, SpaceGroup } from "@rakazo/contracts";
 import { normalizeCreateBotProfile } from "@rakazo/contracts";
-import { ACTIVE_RUN_STATUSES, accountDisplay } from "@rakazo/core";
+import { ACTIVE_RUN_STATUSES, accountDisplay, openOfferTotal } from "@rakazo/core";
 import { botColors } from "@rakazo/ui-tokens";
 import type { Href } from "expo-router";
 import {
@@ -53,6 +53,7 @@ import { GroupAvatar } from "../components/group-avatar";
 import { HomeErrorState } from "../components/home-error-state";
 import { InboxSwipeRow } from "../components/inbox-swipe-row";
 import { NativeSymbol } from "../components/native-symbol";
+import { SettingsGroup, SettingsRow } from "../components/settings-group";
 import { WorkingIndicator } from "../components/WorkingIndicator";
 import {
   activityPreview,
@@ -457,6 +458,7 @@ function Home({ embedded, onSelectSpace }: InboxPaneProps & { embedded: boolean 
     () => applyUnreadOverrides("group", groups, unreadOverrides),
     [groups, unreadOverrides],
   );
+  const offerTotal = openOfferTotal(visible, visibleGroups);
   const inboxSpaces = useMemo(
     () =>
       spaces.length > 0
@@ -1322,6 +1324,17 @@ function Home({ embedded, onSelectSpace }: InboxPaneProps & { embedded: boolean 
                   >
                     <Text style={styles.spaceTitle}>{t("Try again.")}</Text>
                   </Pressable>
+                ) : null}
+                {offerTotal > 0 ? (
+                  <SettingsGroup>
+                    <SettingsRow
+                      accessibilityRole="button"
+                      title={t("Actions")}
+                      value={String(offerTotal)}
+                      chevron="right"
+                      onPress={() => router.push("/actions")}
+                    />
+                  </SettingsGroup>
                 ) : null}
                 {activityMode && (activity.active.length > 0 || activity.recent.length > 0) ? (
                   <ActivitySection activity={activity} bots={bots} />

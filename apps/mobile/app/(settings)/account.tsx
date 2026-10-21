@@ -1,4 +1,5 @@
-import type { AccountSecurity, AvatarStyle } from "@rakazo/contracts";
+import type { AccountSecurity, ActionOfferSettings, AvatarStyle } from "@rakazo/contracts";
+import { DEFAULT_ACTION_OFFER_SETTINGS } from "@rakazo/contracts";
 import { accountDisplay } from "@rakazo/core";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -18,6 +19,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { AppMark } from "../../components/app-mark";
 import { useAvatarStyle } from "../../components/avatar-style";
 import { BotAvatar } from "../../components/bot-avatar";
+import { MenuPicker } from "../../components/menu-picker";
 import { NativeActionButton } from "../../components/native-action-button";
 import { NativeSegmentedControl } from "../../components/native-segmented-control";
 import { NativeSymbol } from "../../components/native-symbol";
@@ -28,6 +30,7 @@ import {
   SettingsSwitch,
   useStackedSettings,
 } from "../../components/settings-group";
+import { OFFER_SETTING_CHOICES, offerSettingChoices } from "../../lib/action-offers";
 import type { MobileMe } from "../../lib/api";
 import {
   currentApiBase,
@@ -126,6 +129,14 @@ export default function Account() {
   );
   const loadRemoteImagesLabel = t("Load web images automatically");
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const offerSettings = me?.actionOfferSettings ?? DEFAULT_ACTION_OFFER_SETTINGS;
+  async function saveOfferSettings(patch: Partial<ActionOfferSettings>) {
+    try {
+      setMe(await rpc<MobileMe>("preferences/update", { actionOfferSettings: patch }));
+    } catch {
+      // The row keeps its last saved value.
+    }
+  }
   const stackOptions = useStackedSettings();
   const styles = useThemedStyles(createAccountStyles);
   const versionInfo = getAppVersionInfo();
@@ -534,6 +545,40 @@ export default function Account() {
           ) : null}
         </SettingsGroup>
 
+        {advancedOpen ? (
+          <SettingsGroup label={t("Action cards")}>
+            <SettingsSwitch
+              label={t("Offer next steps")}
+              value={offerSettings.enabled}
+              onChange={(enabled) => void saveOfferSettings({ enabled })}
+            />
+            <OfferChoiceRow
+              title={t("Cards per reply")}
+              value={offerSettings.perReply}
+              choices={OFFER_SETTING_CHOICES.perReply}
+              onChoose={(perReply) => void saveOfferSettings({ perReply })}
+            />
+            <OfferChoiceRow
+              title={t("Open cards per chat")}
+              value={offerSettings.openPerChat}
+              choices={OFFER_SETTING_CHOICES.openPerChat}
+              onChoose={(openPerChat) => void saveOfferSettings({ openPerChat })}
+            />
+            <OfferChoiceRow
+              title={t("Keep cards for (days)")}
+              value={offerSettings.defaultLifetimeDays}
+              choices={OFFER_SETTING_CHOICES.defaultLifetimeDays}
+              onChoose={(defaultLifetimeDays) => void saveOfferSettings({ defaultLifetimeDays })}
+            />
+            <OfferChoiceRow
+              title={t("Steps before offering to save a skill")}
+              value={offerSettings.saveSkillMinSteps}
+              choices={OFFER_SETTING_CHOICES.saveSkillMinSteps}
+              onChoose={(saveSkillMinSteps) => void saveOfferSettings({ saveSkillMinSteps })}
+            />
+          </SettingsGroup>
+        ) : null}
+
         <View style={styles.section}>
           <NativeActionButton
             disabled={pending}
@@ -840,4 +885,23 @@ function createAccountStyles() {
       backgroundColor: native.fillPressed,
     },
   });
+}
+
+function OfferChoiceRow(props: {
+  title: string;
+  value: number;
+  choices: readonly number[];
+  onChoose: (value: number) => void;
+}) {
+  return (
+    <MenuPicker
+      label={props.title}
+      value={String(props.value)}
+      choices={offerSettingChoices(props.choices, props.value).map((choice) => ({
+        key: String(choice),
+        label: String(choice),
+      }))}
+      onChange={(key) => props.onChoose(Number(key))}
+    />
+  );
 }

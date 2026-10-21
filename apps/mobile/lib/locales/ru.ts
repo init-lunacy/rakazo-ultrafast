@@ -884,4 +884,15 @@ export const RU_MESSAGES: Record<string, string> = {
   "Try again": "Повторить",
   "Your session expired": "Сеанс истёк",
   "The server had a problem": "На сервере произошла ошибка",
+  // components/OfferCard.tsx
+  "Save as a skill": "Сохранить как навык",
+  "Answer {bot}'s question first.": "Сначала ответьте на вопрос {bot}.",
+  "That bot has left this group.": "Этот бот покинул группу.",
+  // app/actions.tsx, app/(settings)/account.tsx
+  "Action cards": "Карточки действий",
+  "Offer next steps": "Предлагать следующие шаги",
+  "Cards per reply": "Карточек на ответ",
+  "Open cards per chat": "Открытых карточек на чат",
+  "Keep cards for (days)": "Хранить карточки (дней)",
+  "Steps before offering to save a skill": "Шагов до предложения сохранить навык",
 };
