@@ -245,3 +245,8 @@ export function skillSourceContext(lines: string[]): string {
     "</tool_calls>",
   ].join("\n");
 }
+
+/** A save-skill run writes a skill from untrusted recorded text, so the user approves it first. */
+export function saveSkillRunRequiresApproval(toolName: string, inSaveSkillRun: boolean): boolean {
+  return inSaveSkillRun && toolName === "skill_create";
+}

@@ -40,7 +40,9 @@ describeWithDatabase("action cards (PostgreSQL)", () => {
     setBotIntroHarness(handles);
     owner = await signup(app, `cards-${stamp}@rakazo.test`, "Cards Owner");
     // Signup creates no bot; bots/create discards the intro run.
-    botId = (await rpc<Bot>(app, owner, "bots/create", botInput("Card Bot"))).id;
+    botId = (
+      await rpc<Bot>(app, owner, "bots/create", { ...botInput("Card Bot"), notifyOnFinish: true })
+    ).id;
   });
 
   afterAll(async () => {
@@ -98,7 +100,7 @@ describeWithDatabase("action cards (PostgreSQL)", () => {
       botId,
       text: "offer to save this as a skill",
     });
-    await runUntilDone(sent.runId);
+    expect((await runUntilDone(sent.runId)).status).toBe("completed");
     const skill = (
       await rpc<Array<{ id: string; label: string; kind: string }>>(app, owner, "actionOffers/list")
     ).find((card) => card.kind === "save_skill");
@@ -118,7 +120,7 @@ describeWithDatabase("action cards (PostgreSQL)", () => {
     const fired = await rpc<{ runId: string }>(app, owner, "routines/testRun", {
       routineId: routine.id,
     });
-    await runUntilDone(fired.runId);
+    expect((await runUntilDone(fired.runId)).status).toBe("completed");
     expect(pushes("offer")).toEqual([
       expect.objectContaining({ body: "Answer 3 emails", messageId: expect.any(String) }),
     ]);
@@ -128,7 +130,7 @@ describeWithDatabase("action cards (PostgreSQL)", () => {
     const again = await rpc<{ runId: string }>(app, owner, "routines/testRun", {
       routineId: routine.id,
     });
-    await runUntilDone(again.runId);
+    expect((await runUntilDone(again.runId)).status).toBe("completed");
     expect(pushes("offer")).toHaveLength(1);
     expect(
       (await rpc<Array<{ label: string }>>(app, owner, "actionOffers/list")).filter(

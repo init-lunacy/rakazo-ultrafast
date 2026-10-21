@@ -141,6 +141,7 @@ import {
   actionOffersAllowedForRun,
   offerActionsFromTool,
   recordToolCall,
+  saveSkillRunRequiresApproval,
   skillSourceContext,
 } from "./action-offer-tool.js";
 import {
@@ -4211,12 +4212,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const sourceClientNonce = sourceMessage?.clientNonce ?? null;
         const saveSkillOffer = sourceClientNonce
           ? await deps.prisma.actionOffer.findFirst({
-              where: { id: sourceClientNonce, kind: "save_skill", userId: run.userId },
+              where: {
+                id: sourceClientNonce,
+                kind: "save_skill",
+                userId: run.userId,
+                botId: run.botId,
+                status: "taken",
+              },
               select: { skillSource: true },
             })
           : null;
         const saveSkillSource = saveSkillOffer
-          ? ((saveSkillOffer.skillSource as string[] | null) ?? [])
+          ? Array.isArray(saveSkillOffer.skillSource)
+            ? saveSkillOffer.skillSource.filter((line): line is string => typeof line === "string")
+            : []
           : null;
         // A follow-up can be queued by a bot (group handoffs); only the user's own counts.
         const ownerStartedRun = isOwnerStartedRun(run.trigger, sourceMessage?.role === "user");
@@ -4829,12 +4838,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
           // the command once, rather than letting an allow rule or reviewer schedule it.
           const commandWatch =
             name === "schedule_create" && commandWatchFromTool(args.watch) !== undefined;
+          // The saved run's tool calls are untrusted text: the user sees the skill before it exists.
+          const saveSkillReview = saveSkillRunRequiresApproval(name, saveSkillSource !== null);
           const requiresApprovalByDefault =
             commandWatch ||
+            saveSkillReview ||
             requiresUnattendedApproval ||
             toolRequiresApproval(name, viaConnector, declaredReadOnly);
           const requiresMandatoryApproval =
-            commandWatch || requiresUnattendedApproval || toolRequiresExplicitApproval(name);
+            commandWatch ||
+            saveSkillReview ||
+            requiresUnattendedApproval ||
+            toolRequiresExplicitApproval(name);
           const connectorKind = connectorKindFromToolName(
             name,
             connectedPlugins.map((plugin) => plugin.provider),
@@ -8437,13 +8452,10 @@ async function notifyRun(
 ) {
   if (
     !deps.notifications ||
-    (isBackgroundRunTrigger(run.trigger) &&
-      message.kind !== "help" &&
-      message.kind !== "takeover" &&
-      message.kind !== "offer")
+    (isBackgroundRunTrigger(run.trigger) && message.kind !== "help" && message.kind !== "takeover")
   )
     return;
-  const routineId = message.kind === "failure" || message.kind === "offer" ? run.routineId : null;
+  const routineId = message.kind === "failure" ? run.routineId : null;
   const notice = await runNotice(deps.prisma, run, routineId).catch((error) => {
     if (options.retryOnFailure) throw error;
     getLogger().error("notification preference lookup", error);
