@@ -77,3 +77,6 @@ export const ActionOfferListItemSchema = ActionOfferCardSchema.extend({
   createdAt: IsoDate,
 });
 export type ActionOfferListItem = z.infer<typeof ActionOfferListItemSchema>;
+
+/** Steering origin of a taken card queued behind a busy run: never steers it, runs next. The one value of `originTrigger` that does not name the trigger a held message resumes as. */
+export const ACTION_OFFER_STEERING_ORIGIN = "action_offer";

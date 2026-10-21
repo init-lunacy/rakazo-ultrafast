@@ -39,5 +39,15 @@ export function previewFromBlocks(blocks: unknown): string {
       return plainTextFromMarkdown((block as { text: string }).text);
     }
   }
+  const offers = rows.find(
+    (block) =>
+      block && typeof block === "object" && (block as { kind?: unknown }).kind === "action_offer",
+  ) as { offers?: Array<{ label?: unknown }> } | undefined;
+  if (offers?.offers?.length) {
+    return offers.offers
+      .map((offer) => String(offer.label ?? ""))
+      .filter(Boolean)
+      .join(" · ");
+  }
   return "";
 }
