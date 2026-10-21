@@ -52,6 +52,8 @@ model User {
 
   @@unique([email])
   @@map("user")
+  /// Action card settings (ActionOfferSettingsSchema); null until the user changes one.
+  actionOfferSettings         Json?
 }
 
 model Session {
@@ -250,6 +252,7 @@ model Space {
   @@index([organizationId, createdAt])
   @@index([createdByUserId])
   @@map("spaces")
+  actionOffers ActionOffer[]
 }
 
 model SpaceMember {
@@ -459,6 +462,7 @@ model Bot {
   @@index([computerId])
   @@index([parentBotId])
   @@map("bots")
+  actionOffers ActionOffer[]
 }
 
 model BotSection {
@@ -552,6 +556,7 @@ model Thread {
 
   @@index([spaceId])
   @@map("threads")
+  actionOffers ActionOffer[]
 }
 
 model Message {
@@ -578,6 +583,7 @@ model Message {
   @@index([threadId, seq])
   @@index([replyToMessageId])
   @@map("messages")
+  actionOffers ActionOffer[]
 }
 
 model Event {
@@ -675,6 +681,7 @@ model Run {
   @@index([threadId, status, createdAt])
   @@index([routineId])
   @@map("runs")
+  actionOffers ActionOffer[]
 }
 
 model SteeringMessage {
@@ -1492,4 +1499,37 @@ model TicketComment {
 
   @@index([ticketId, createdAt])
   @@map("ticket_comments")
+}
+
+model ActionOffer {
+  id           String   @id @default(cuid())
+  spaceId      String
+  space        Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  /// The run's user: bots, groups and threads are per user, so only they act on it.
+  userId       String
+  threadId     String
+  thread       Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  botId        String
+  bot          Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  runId        String
+  run          Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  messageId    String?
+  message      Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  kind         String
+  label        String
+  task         String
+  /// save_skill only: the offering run's tool calls, redacted.
+  skillSource  Json?
+  status       String   @default("held")
+  /// The run that asked to close this card; it closes only if that run completes.
+  closingRunId String?
+  expiresAt    DateTime
+  takenRunId   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([spaceId, userId, status, expiresAt])
+  @@index([threadId, botId, status])
+  @@index([runId, status])
+  @@map("action_offers")
 }
