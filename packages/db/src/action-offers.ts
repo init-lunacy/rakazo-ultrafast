@@ -44,14 +44,18 @@ export async function replaceHeldActionOffers(
   },
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
+    // The same thread-then-rows lock order as finalizeRun.
+    await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
     await tx.actionOffer.deleteMany({ where: { runId: input.runId, status: "held" } });
     await tx.actionOffer.updateMany({
       where: { closingRunId: input.runId },
       data: { closingRunId: null },
     });
     if (input.offers.length > 0) {
+      const createdAt = Date.now();
       await tx.actionOffer.createMany({
-        data: input.offers.map((offer) => ({
+        // Explicit, increasing creation times keep the model's order through createMany.
+        data: input.offers.map((offer, index) => ({
           spaceId: input.spaceId,
           userId: input.userId,
           threadId: input.threadId,
@@ -61,6 +65,7 @@ export async function replaceHeldActionOffers(
           label: offer.label,
           task: offer.task,
           expiresAt: offer.expiresAt,
+          createdAt: new Date(createdAt + index),
           ...(offer.skillSource === undefined ? {} : { skillSource: offer.skillSource }),
         })),
       });
@@ -250,7 +255,7 @@ export async function publishRunActionOffersInTransaction(
   });
   const held = await tx.actionOffer.findMany({
     where: { runId: input.runId, status: "held" },
-    orderBy: { createdAt: "asc" },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });
   const open = await tx.actionOffer.findMany({
     where: {

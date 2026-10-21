@@ -154,11 +154,12 @@ describePostgres("action offers (PostgreSQL)", () => {
     expect(
       (await listOpenActionOffers(prisma, ids, now)).some((item) => item.id === stale!.id),
     ).toBe(false);
-    const counts = await countOpenActionOffers(prisma, ids, now);
     const [fresh] = await openCards(["Fresh"]);
-    const after = await countOpenActionOffers(prisma, ids, new Date());
-    expect(after.byBot.get(ids.botId)).toBe((counts.byBot.get(ids.botId) ?? 0) + 1);
-    expect(fresh).toBeDefined();
+    const listed = await listOpenActionOffers(prisma, ids, new Date());
+    expect(listed.some((item) => item.id === stale!.id)).toBe(false);
+    expect(listed.some((item) => item.id === fresh!.id)).toBe(true);
+    const counts = await countOpenActionOffers(prisma, ids, new Date());
+    expect(counts.byBot.get(ids.botId)).toBe(listed.filter((item) => !item.groupId).length);
     expect(await dismissActionOffer(prisma, { offerId: stale!.id, ...ids, now })).toMatchObject({
       status: "expired",
     });
@@ -214,6 +215,7 @@ describePostgres("action offers (PostgreSQL)", () => {
       leaseFence: 1,
       outcome: "completed",
       blocks,
+      markUnread: false,
       publishOffers,
     });
     if (!result) throw new Error("Run was not finalized");
@@ -250,6 +252,7 @@ describePostgres("action offers (PostgreSQL)", () => {
   });
 
   it("posts a cards-only message when a completed run had nothing to say", async () => {
+    await prisma.thread.update({ where: { id: ids.threadId }, data: { unread: false } });
     const fixture = await runningRun("routine");
     await replaceHeldActionOffers(prisma, {
       ...ids,
@@ -379,5 +382,167 @@ describePostgres("action offers (PostgreSQL)", () => {
       data: { runId: next.id, claimedAt: new Date() },
     });
     expect(await runTookOutsideSteering(prisma, next.id)).toBe(false);
+  });
+
+  it("leaves the chat read when a run with no cards and markUnread false completes", async () => {
+    const fixture = await runningRun();
+    await prisma.thread.update({ where: { id: ids.threadId }, data: { unread: false } });
+    await completeRun(fixture, [{ kind: "text", text: "Done." }]);
+    expect((await prisma.thread.findUniqueOrThrow({ where: { id: ids.threadId } })).unread).toBe(
+      false,
+    );
+  });
+
+  it("opens cards in the order the model gave them", async () => {
+    const fixture = await runningRun();
+    const labels = ["First", "Second", "Third", "Fourth"];
+    await replaceHeldActionOffers(prisma, {
+      ...ids,
+      runId: fixture.run.id,
+      offers: labels.map((label) => ({
+        kind: "task" as const,
+        label,
+        task: label,
+        expiresAt: soon(),
+      })),
+      close: [],
+    });
+    const result = await completeRun(fixture, [{ kind: "text", text: "Done." }]);
+    expect(result.publishedOffers?.map((offer) => offer.label)).toEqual(labels);
+    const reply = await prisma.message.findUniqueOrThrow({
+      where: { id: result.publishedOffers![0]!.messageId },
+    });
+    const block = (reply.blocks as MessageBlock[]).find((item) => item.kind === "action_offer");
+    expect(block?.kind === "action_offer" && block.offers.map((offer) => offer.label)).toEqual(
+      labels,
+    );
+  });
+
+  it("drops cards of an archived bot and of an archived group", async () => {
+    const [botCard] = await openCards(["Bot card"]);
+    await prisma.bot.update({ where: { id: ids.botId }, data: { archivedAt: new Date() } });
+    try {
+      expect(
+        (await listOpenActionOffers(prisma, ids, new Date())).some(
+          (item) => item.id === botCard!.id,
+        ),
+      ).toBe(false);
+      expect((await countOpenActionOffers(prisma, ids, new Date())).byBot.has(ids.botId)).toBe(
+        false,
+      );
+    } finally {
+      await prisma.bot.update({ where: { id: ids.botId }, data: { archivedAt: null } });
+    }
+    const group = await prisma.chatGroup.create({
+      data: { spaceId: ids.spaceId, userId: ids.userId, name: "Trip" },
+    });
+    const thread = await prisma.thread.create({
+      data: { spaceId: ids.spaceId, userId: ids.userId, groupId: group.id },
+    });
+    const { run } = await runningRun();
+    const message = await createThreadMessage(prisma, {
+      threadId: thread.id,
+      role: "bot",
+      botId: ids.botId,
+      runId: run.id,
+      blocks: [{ kind: "text", text: "Plan." }],
+    });
+    const card = await prisma.actionOffer.create({
+      data: {
+        ...ids,
+        threadId: thread.id,
+        runId: run.id,
+        messageId: message.id,
+        kind: "task",
+        label: "Group card",
+        task: "Do it.",
+        status: "open",
+        expiresAt: soon(),
+      },
+    });
+    expect((await countOpenActionOffers(prisma, ids, new Date())).byGroup.get(group.id)).toBe(1);
+    expect(
+      (await listOpenActionOffers(prisma, ids, new Date())).some((item) => item.id === card.id),
+    ).toBe(true);
+    await prisma.chatGroup.update({ where: { id: group.id }, data: { archivedAt: new Date() } });
+    expect((await countOpenActionOffers(prisma, ids, new Date())).byGroup.has(group.id)).toBe(
+      false,
+    );
+    expect(
+      (await listOpenActionOffers(prisma, ids, new Date())).some((item) => item.id === card.id),
+    ).toBe(false);
+  });
+
+  it("counts a claimed webhook or channel message as outside steering", async () => {
+    const run = (await runningRun()).run;
+    const plain = await createThreadMessage(prisma, {
+      threadId: ids.threadId,
+      role: "user",
+      blocks: [{ kind: "text", text: "hello" }],
+    });
+    const claimedRow = await prisma.steeringMessage.create({
+      data: {
+        messageId: plain.id,
+        botId: ids.botId,
+        userId: ids.userId,
+        runId: run.id,
+        claimedAt: new Date(),
+        originTrigger: "webhook",
+      },
+    });
+    expect(await runTookOutsideSteering(prisma, run.id)).toBe(true);
+    await prisma.steeringMessage.delete({ where: { id: claimedRow.id } });
+    const channel = await createThreadMessage(prisma, {
+      threadId: ids.threadId,
+      role: "user",
+      blocks: [
+        {
+          kind: "channel_message",
+          provider: "sendblue",
+          channelId: "chan-1",
+          fromAddress: "+15550000000",
+          fromLabel: "Sam",
+          text: "hi",
+        },
+      ],
+    });
+    await prisma.steeringMessage.create({
+      data: {
+        messageId: channel.id,
+        botId: ids.botId,
+        userId: ids.userId,
+        runId: run.id,
+        claimedAt: new Date(),
+      },
+    });
+    expect(await runTookOutsideSteering(prisma, run.id)).toBe(true);
+  });
+
+  it("does not make a follow-up of a batch that mixes a queued card with a messaging row", async () => {
+    const busy = await runningRun();
+    for (const [text, originTrigger] of [
+      ["Book it.", ACTION_OFFER_STEERING_ORIGIN],
+      ["Also this.", "messaging"],
+    ] as const) {
+      const message = await createThreadMessage(prisma, {
+        threadId: ids.threadId,
+        role: "user",
+        blocks: [{ kind: "text", text }],
+      });
+      await prisma.steeringMessage.create({
+        data: {
+          messageId: message.id,
+          botId: ids.botId,
+          userId: ids.userId,
+          runId: null,
+          originTrigger,
+        },
+      });
+    }
+    const result = await completeRun(busy, [{ kind: "text", text: "Done." }]);
+    const next = result.continuationRunId
+      ? await prisma.run.findUniqueOrThrow({ where: { id: result.continuationRunId } })
+      : null;
+    expect(next?.trigger).not.toBe("follow_up");
   });
 });
