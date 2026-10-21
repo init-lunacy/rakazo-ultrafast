@@ -58,6 +58,7 @@ export async function takeActionOffer(
         queueBehindActiveRun: true,
         ...(offer.groupId ? { targetBotIds: [offer.botId] } : {}),
         beforeSend: async (tx) => {
+          started = undefined;
           const { status } = await lockActionOfferInTransaction(tx, {
             offerId: offer.id,
             spaceId: actor.spaceId,

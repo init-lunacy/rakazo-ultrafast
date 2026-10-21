@@ -203,6 +203,12 @@ describePostgres("taking an action card (PostgreSQL)", () => {
     expect((await prisma.actionOffer.findUniqueOrThrow({ where: { id: offer.id } })).status).toBe(
       "open",
     );
+    const again = await take(offer);
+    expect(again.runId).toEqual(expect.any(String));
+    expect(await prisma.actionOffer.findUniqueOrThrow({ where: { id: offer.id } })).toMatchObject({
+      status: "taken",
+      takenRunId: again.runId,
+    });
   });
 
   it("refuses while the bot waits for an answer, and leaves the card open", async () => {
@@ -228,8 +234,18 @@ describePostgres("taking an action card (PostgreSQL)", () => {
     });
     await expect(take(offer)).rejects.toMatchObject({
       code: "CONFLICT",
-      data: { status: "expired" },
+      data: { reason: "card_closed", status: "expired" },
     });
+  });
+
+  it("refuses a dismissed card before sending anything", async () => {
+    const { offer } = await openCard();
+    await prisma.actionOffer.update({ where: { id: offer.id }, data: { status: "dismissed" } });
+    await expect(take(offer)).rejects.toMatchObject({
+      code: "CONFLICT",
+      data: { reason: "card_closed", status: "dismissed" },
+    });
+    expect(await prisma.message.count({ where: { clientNonce: offer.id } })).toBe(0);
   });
 
   it("wakes only the offering bot in a group, even when the task names others", async () => {
@@ -263,6 +279,25 @@ describePostgres("taking an action card (PostgreSQL)", () => {
       where: { threadId: thread.id, sourceMessage: { clientNonce: offer.id } },
     });
     expect(runs.map((run) => run.botId)).toEqual([second.id]);
+    // Another member's pending question does not block a take from a different bot.
+    const { offer: other } = await openCard("Book it too.", {
+      botId: second.id,
+      threadId: thread.id,
+      groupId: group.id,
+    });
+    const asking = await prisma.task.create({
+      data: { ...ids, prompt: "ask", status: "running", threadId: thread.id },
+    });
+    await prisma.run.create({
+      data: {
+        ...ids,
+        threadId: thread.id,
+        taskId: asking.id,
+        status: "waiting_input",
+        trigger: "user",
+      },
+    });
+    expect((await take(other)).runId).toEqual(expect.any(String));
     await prisma.chatGroupMember.deleteMany({ where: { groupId: group.id, botId: second.id } });
     const { offer: orphan } = await openCard("Book it.", {
       botId: second.id,
