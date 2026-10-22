@@ -14,6 +14,7 @@ import { observeSyntheticHistory } from "../evals/history-observer.js";
 import type { CacheDecisionMeasurement, EvalPricing } from "../evals/measurement.js";
 import { measureCalls, SpendBudget, validatePricing } from "../evals/measurement.js";
 import { emptyTrial, redact, summarize, validateControls } from "../evals/report.js";
+import type { ComputerFixture } from "../evals/runner.js";
 import { resolveControls, resolveSuite } from "../evals/suites.js";
 import type { DiagnosticWireObservation } from "../evals/wire-observer.js";
 import { diagnosticWireFetch } from "../evals/wire-observer.js";
@@ -198,7 +199,7 @@ async function main() {
   report.pricing = pricing;
   budget = new SpendBudget(report.spendCapUsd, pricing);
   const liveBudget = budget;
-  if (suite.computer === "docker") {
+  if (suite.computerFixture) {
     try {
       assertComputerImage(DEFAULT_COMPUTER_IMAGE);
     } catch (error) {
@@ -287,7 +288,9 @@ async function main() {
   // This CLI owns a disposable database. Never migrate or evaluate against an inherited database.
   const dataDir = mkdtempSync(path.join(tmpdir(), "rakazo-evals-"));
   let postgres: StartedPostgreSqlContainer | undefined;
-  let docker: { sandbox: SandboxProvider; close(): Promise<void> } | undefined;
+  let docker:
+    | { sandbox: SandboxProvider; fixture: ComputerFixture; close(): Promise<void> }
+    | undefined;
   let stopRequested = false;
   // Set while a trial runs real computers: a second Ctrl-C stops at once but still removes them.
   let stopNow: (() => Promise<void>) | undefined;
@@ -349,18 +352,19 @@ async function main() {
       "@rakazo/adapters"
     );
     const { destroyComputers, EvalSandboxProvider } = await import("../evals/sandbox.js");
-    const { browsingComputerFixture } = await import("../evals/browsing/install.js");
-    if (suite.computer === "docker") {
+    if (suite.computerFixture) {
+      const createFixture = await suite.computerFixture();
       Object.assign(process.env, dockerComputerEnv(dataDir, DEFAULT_COMPUTER_IMAGE));
       // A root supervisor runs computers as uid 1000 and never changes ownership itself. Keep the
       // homes this disposable run creates writable by that user. Everything written after this
       // lives under the 0700 data directory or sets its own mode, like the report.
       if (process.getuid?.() === 0) process.umask(0);
       const supervisor = await serveSupervisor();
-      docker = {
-        sandbox: new DockerSandboxProvider(supervisor.url, process.env.SANDBOX_SUPERVISOR_TOKEN!),
-        close: supervisor.close,
-      };
+      const sandbox = new DockerSandboxProvider(
+        supervisor.url,
+        process.env.SANDBOX_SUPERVISOR_TOKEN!,
+      );
+      docker = { sandbox, fixture: createFixture(sandbox), close: supervisor.close };
     }
     for (let i = 0; i < trials.length; i++) {
       if (stopRequested) {
@@ -387,7 +391,7 @@ async function main() {
           ...controls,
           connection,
           pricing,
-          ...(docker ? { computerFixture: browsingComputerFixture(docker.sandbox) } : {}),
+          ...(docker ? { computerFixture: docker.fixture } : {}),
           createApp: async (composio, messaging, witnesses) => {
             const evalSandbox = docker ? undefined : new EvalSandboxProvider();
             const sandbox = docker?.sandbox ?? evalSandbox!;
@@ -500,6 +504,7 @@ async function main() {
               },
               stop: async () => {
                 acceptingCalls = false;
+                stopNow = undefined;
                 try {
                   if (docker) await destroyComputers(handles.prisma, docker.sandbox);
                 } finally {

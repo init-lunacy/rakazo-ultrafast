@@ -6,10 +6,7 @@ import type {
   SandboxProvider,
 } from "@rakazo/adapter-kit";
 import { FakeSandboxProvider, toComputerRef } from "@rakazo/adapters";
-import type { createDb } from "@rakazo/db";
-
-/** The same Prisma client type the eval runner's EvalApp uses. */
-type Prisma = ReturnType<typeof createDb>["prisma"];
+import type { EvalApp } from "./runner.js";
 
 /** A model must not receive successful shell results for commands the fixture never ran. */
 export class EvalSandboxProvider extends FakeSandboxProvider {
@@ -32,7 +29,10 @@ export class EvalSandboxProvider extends FakeSandboxProvider {
 }
 
 /** Destroys every provisioned computer in this database; destroying a removed one is a no-op. */
-export async function destroyComputers(prisma: Pick<Prisma, "computer">, sandbox: SandboxProvider) {
+export async function destroyComputers(
+  prisma: Pick<EvalApp["prisma"], "computer">,
+  sandbox: SandboxProvider,
+) {
   const computers = await prisma.computer.findMany({
     where: { providerRef: { not: null } },
     select: { homeKey: true, kind: true, providerRef: true, spaceId: true, userId: true },

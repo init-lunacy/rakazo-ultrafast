@@ -95,6 +95,7 @@ export async function runTrial(
   let seededThreadId: string | undefined;
   const runIds: string[] = [];
   const timings: TrialTimings = { setupMs: null, bootMs: null, taskMs: null };
+  const fixture = options.computerFixture;
   const asHarness = async <T>(label: string, work: () => Promise<T>) => {
     try {
       return await work();
@@ -218,7 +219,6 @@ export async function runTrial(
     const setupStarted = Date.now();
     await setupActor();
     timings.setupMs = Date.now() - setupStarted;
-    const fixture = options.computerFixture;
     if (fixture) {
       const bootStarted = Date.now();
       await asHarness("Computer fixture setup failed", async () => {
@@ -665,10 +665,10 @@ export async function runTrial(
       priorMemory,
       destinationWrites: handles.connector?.records.length ?? 0,
       toolNames: [...seenTools.values()].map((event) => event.name),
-      ...(options.computerFixture
+      ...(fixture
         ? {
             siteRequests: await asHarness("Reading the site log failed", () =>
-              options.computerFixture!.siteRequests(trial, botId),
+              fixture.siteRequests(trial, botId),
             ),
           }
         : {}),

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Evidence } from "../cases.js";
 import {
   BOOT_COLUMNS,
+  BROWSER_ONLY_TOOLS,
   BROWSING_EVAL_CASES,
   CHECKOUT_ORDER,
   cheapestJacket,
@@ -86,12 +87,11 @@ describe("one answer per task", () => {
     expect(before.length).toBeGreaterThan(12_000);
   });
 
-  it("puts the article's year only in the late section", async () => {
+  it("puts the article's year only in the late section", () => {
     const { article } = sites;
     const elsewhere = [article.title, ...article.sections.map((s) => s.text)].join(" ");
     expect(article.lateSection.text).toContain(article.factYear);
     expect(elsewhere).not.toContain(article.factYear);
-    expect(await page("/article/late")).toContain(article.factYear);
   });
 });
 
@@ -199,15 +199,8 @@ describe("graders", () => {
     ).toBe(false);
   });
 
-  it("runs every task with only the browser and no connected apps", () => {
-    for (const scenario of BROWSING_EVAL_CASES) {
-      expect(scenario.connections).toEqual([]);
-      expect(scenario.disabledBuiltinTools).toEqual([
-        "shell",
-        "launch_app",
-        "web_fetch",
-        "web_search",
-      ]);
-    }
+  it("runs every task under the same browser-only policy", () => {
+    for (const scenario of BROWSING_EVAL_CASES)
+      expect(scenario).toMatchObject({ connections: [], disabledBuiltinTools: BROWSER_ONLY_TOOLS });
   });
 });

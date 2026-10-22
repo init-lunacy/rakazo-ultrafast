@@ -18,7 +18,6 @@ export type Product = {
 };
 type Section = { heading: string; text: string };
 export type BrowsingSites = {
-  version: string;
   shop: { pageSize: number; products: Product[] };
   checkout: { shipping: string[] };
   article: {

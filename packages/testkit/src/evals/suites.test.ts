@@ -1,23 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { BROWSING_EVAL_CASES } from "./browsing/cases.js";
+import { browsingComputerFixture } from "./browsing/install.js";
 import { EVAL_SUITES, resolveControls, resolveSuite } from "./suites.js";
 
-// Pinned: the offline suites' controls and report text must not drift.
-const OFFLINE_FIXTURES = "synthetic services, messaging and fake sandbox";
-const OFFLINE_LIMITATIONS = [
-  "Does not evaluate browser perception, native recording perception, or real external services.",
-  "Silence cases observe routine chat, transient progress, and provider notification requests; native push delivery and UI pixels are outside the fixture.",
-  "Deterministic fact checks are deliberately narrow; they do not grade overall writing quality.",
-  "Cost uses provider-reported charges where available and explicit pricing estimates otherwise. Spend reservations are a guard, not a billing guarantee.",
-  "Tool trace contains names and statuses only; raw requests and responses are omitted.",
-];
-
 describe("eval suites", () => {
-  it("keeps the offline suites exactly as they were", () => {
+  it("runs the offline suites in the fake sandbox with their usual limits", () => {
     for (const name of ["product", "history", "silence"] as const) {
       const suite = EVAL_SUITES[name];
-      expect(suite).not.toHaveProperty("computer");
-      expect(suite.fixtures).toBe(OFFLINE_FIXTURES);
-      expect(suite.limitations).toEqual(OFFLINE_LIMITATIONS);
+      expect(suite).not.toHaveProperty("computerFixture");
       expect(resolveControls(suite, { trials: "3" })).toEqual({
         trials: 3,
         timeoutMs: 180_000,
@@ -26,15 +16,10 @@ describe("eval suites", () => {
     }
   });
 
-  it("runs browsing on a real computer with more room per task", () => {
+  it("runs browsing on a real computer with its sites and more room per task", async () => {
     const suite = resolveSuite("browsing");
-    expect(suite.computer).toBe("docker");
-    expect(suite.cases.map((c) => c.id)).toEqual([
-      "browse-compare-cheapest",
-      "browse-form-checkout",
-      "browse-extract-csv",
-      "browse-hard-page",
-    ]);
+    expect(suite.cases).toBe(BROWSING_EVAL_CASES);
+    expect(await suite.computerFixture?.()).toBe(browsingComputerFixture);
     expect(resolveControls(suite, { trials: "1" })).toEqual({
       trials: 1,
       timeoutMs: 300_000,

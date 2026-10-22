@@ -1,19 +1,23 @@
+import type { BuiltinToolName } from "@rakazo/contracts";
 import type { Criterion, EvalCase, Evidence } from "../cases.js";
 import { check, file } from "../cases.js";
 import type { BrowsingSites, Product } from "./sites.js";
 import { formatPrice, loadSites, SITE_URL } from "./sites.js";
 
+/** Bump when the sites, prompts or graders change, so reports are never compared across them. */
+export const BROWSING_FIXTURE_VERSION = "browsing-v1";
 const SITES = loadSites();
-export const BROWSING_FIXTURE_VERSION = SITES.version;
 
-/**
- * The shell, app launching and server-side web tools are off, so the sites are reached through the
- * browser. The desktop stays reachable through computer_act; graders check the requests came from
- * Chrome.
- */
+/** Off for every task, so the sites are reached through the browser. */
+export const BROWSER_ONLY_TOOLS: BuiltinToolName[] = [
+  "shell",
+  "launch_app",
+  "web_fetch",
+  "web_search",
+];
 const BROWSER_ONLY: Pick<EvalCase, "connections" | "disabledBuiltinTools"> = {
   connections: [],
-  disabledBuiltinTools: ["shell", "launch_app", "web_fetch", "web_search"],
+  disabledBuiltinTools: BROWSER_ONLY_TOOLS,
 };
 
 export const CHECKOUT_ORDER = {

@@ -1,14 +1,20 @@
-import { BROWSING_EVAL_CASES, BROWSING_FIXTURE_VERSION } from "./browsing/cases.js";
+import type { SandboxProvider } from "@rakazo/adapter-kit";
+import {
+  BROWSER_ONLY_TOOLS,
+  BROWSING_EVAL_CASES,
+  BROWSING_FIXTURE_VERSION,
+} from "./browsing/cases.js";
 import type { EvalCase } from "./cases.js";
 import { EVAL_CASES, HISTORY_EVAL_CASES } from "./cases.js";
 import { HISTORY_FIXTURE_VERSION } from "./history-fixtures.js";
+import type { ComputerFixture } from "./runner.js";
 import { SILENCE_EVAL_CASES, SILENCE_FIXTURE_VERSION } from "./silence.js";
 
 export type EvalSuite = {
   cases: EvalCase[];
   fixtureVersion: string;
-  /** "docker" runs each trial against a real bot computer instead of the offline eval sandbox. */
-  computer?: "docker";
+  /** Runs each trial on a real Docker bot computer, with this fixture installed in it. */
+  computerFixture?: () => Promise<(sandbox: SandboxProvider) => ComputerFixture>;
   controls: { timeoutMs: number; maxToolCalls: number };
   fixtures: string;
   limitations: string[];
@@ -37,11 +43,12 @@ export const EVAL_SUITES = {
   browsing: {
     cases: BROWSING_EVAL_CASES,
     fixtureVersion: BROWSING_FIXTURE_VERSION,
-    computer: "docker",
+    // Deferred: the fixture loads the adapters, which --list must not import.
+    computerFixture: async () => (await import("./browsing/install.js")).browsingComputerFixture,
     controls: { timeoutMs: 300_000, maxToolCalls: 60 },
     fixtures: "synthetic local websites served inside a real Docker bot computer",
     limitations: [
-      "Shell, launch_app, web_fetch and web_search are off for the bot. The desktop stays reachable through computer_act, so graders require the site requests to come from Chrome.",
+      `The bot's ${BROWSER_ONLY_TOOLS.join(", ")} tools are off. The desktop stays reachable through computer_act, so graders require the site requests to come from Chrome.`,
       "The sites are synthetic and local; real websites are slower and change.",
       "Each run uses one model connection; a few trials give a baseline, not a precise rate.",
       COST_LIMITATION,
