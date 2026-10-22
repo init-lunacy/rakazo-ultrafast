@@ -14,6 +14,7 @@ model can demonstrate that it chooses a useful action for a natural request.
 | Computer replay | Pi, browser tool handlers, page state | Model endpoint, browser and sandbox | `pnpm test` |
 | Docker computer replay | Pi, supervisor, Chromium, page helper, downloads and files | Model endpoint, local fixture website | `pnpm test:computer-replay` |
 | Agent quality | Product API, Postgres, executor, Pi, real model | Sandbox and connected services | `pnpm test:evals --live ...` |
+| Browsing benchmark | Product API, Postgres, executor, Pi, real model, Docker computer, Chromium | Synthetic local sites | `pnpm test:evals --live --suite browsing ...` |
 | Vision acceptance | Product API, Pi, real vision model, Boat or E2B desktop | Fixture website | `pnpm test:computer` |
 
 Default and PR tests never require paid inference. Nightly runs only the web
@@ -192,6 +193,53 @@ injection warnings must not be mistaken for compliance with the injection.
 Keep functional criteria deterministic. Add a model judge only for a quality
 that cannot be graded directly, with a versioned rubric and human calibration.
 Do not let a judge override forbidden effects or missing artifacts.
+
+### Browsing benchmark
+
+The `browsing` suite measures how fast and how reliably a bot gets browsing work done. Each
+trial runs the real product against a real Docker computer, with Chromium visiting synthetic
+sites served inside that computer. The four tasks cover the core browsing jobs:
+
+- comparing items across search, filters and pages;
+- a two-step checkout placed exactly once;
+- extracting a table into a CSV;
+- a page that hides its content behind a cookie banner, a long scroll and a late load.
+
+Build the computer image first (`pnpm sandbox:build`), then run:
+
+```bash
+pnpm test:evals --live --suite browsing --provider anthropic --model claude-sonnet-5-5 \
+  --api-key-env ANTHROPIC_API_KEY \
+  --pricing packages/testkit/src/evals/fixtures/pricing-anthropic-sonnet-5-5-2026-10-22.json \
+  --trials 3 --spend-cap-usd 5 --output test-report/evals/browsing.json
+```
+
+**Reading the report.** Each trial's `timings.taskMs` is the time its runs actually spent
+running, taken from the product's own run records. It excludes app startup, account setup
+(`setupMs`) and computer boot (`bootMs`). Each summary row gives `taskMsP50` and `taskMsP95` per
+task. Compare these, together with the success rate, tool calls and cost, before and after a
+browsing change.
+
+**Grading** uses the site's own request log and the files the bot wrote, never the model's
+claims:
+
+- every task requires requests from the computer's Chrome;
+- the checkout must be submitted exactly once;
+- every expected answer is computed from `sites.json`.
+
+**What this does not measure:**
+
+- **Only the browser path.** The bot's `shell`, `web_fetch` and `web_search` tools are off, so
+  the browser is its only route to the sites.
+- **Synthetic sites.** They are local; real websites are slower and change.
+- **One model per run.** Three trials per task give a baseline, not a precise rate.
+
+**Housekeeping.**
+
+- **Cleanup:** each trial destroys its computer. If the process is killed hard, list leftovers
+  with `docker ps --filter label=rakazo.managed` and remove them by name.
+- **Data folder:** the run's data lives under the OS temp directory. If that is a small RAM
+  disk, point `TMPDIR` at a disk folder first.
 
 ### Routine silence evals
 
