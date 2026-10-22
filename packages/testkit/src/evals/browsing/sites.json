@@ -1,0 +1,292 @@
+{
+  "version": "browsing-v1",
+  "shop": {
+    "pageSize": 10,
+    "products": [
+      {
+        "id": "alder-rain-shell",
+        "name": "Alder Rain Shell",
+        "category": "jackets",
+        "price": 59,
+        "waterproof": true,
+        "sizes": ["S", "M", "L"],
+        "inStock": false,
+        "specs": { "weight": "380 g" }
+      },
+      {
+        "id": "birch-windbreaker",
+        "name": "Birch Windbreaker",
+        "category": "jackets",
+        "price": 49,
+        "waterproof": false,
+        "sizes": ["S", "M", "L"],
+        "inStock": true,
+        "specs": { "weight": "240 g" }
+      },
+      {
+        "id": "cedar-storm-jacket",
+        "name": "Cedar Storm Jacket",
+        "category": "jackets",
+        "price": 64,
+        "waterproof": true,
+        "sizes": ["S", "L"],
+        "inStock": true,
+        "specs": { "weight": "450 g" }
+      },
+      {
+        "id": "dune-insulated-parka",
+        "name": "Dune Insulated Parka",
+        "category": "jackets",
+        "price": 189,
+        "waterproof": true,
+        "sizes": ["S", "M", "L"],
+        "inStock": true,
+        "specs": { "weight": "910 g" }
+      },
+      {
+        "id": "elm-softshell",
+        "name": "Elm Softshell",
+        "category": "jackets",
+        "price": 119,
+        "waterproof": false,
+        "sizes": ["M", "L"],
+        "inStock": true,
+        "specs": { "weight": "520 g" }
+      },
+      {
+        "id": "fjord-hardshell",
+        "name": "Fjord Hardshell",
+        "category": "jackets",
+        "price": 149,
+        "waterproof": true,
+        "sizes": ["S", "M", "L"],
+        "inStock": true,
+        "specs": { "weight": "430 g" }
+      },
+      {
+        "id": "glacier-down-jacket",
+        "name": "Glacier Down Jacket",
+        "category": "jackets",
+        "price": 229,
+        "waterproof": false,
+        "sizes": ["S", "M"],
+        "inStock": true,
+        "specs": { "weight": "610 g" }
+      },
+      {
+        "id": "heath-trail-jacket",
+        "name": "Heath Trail Jacket",
+        "category": "jackets",
+        "price": 99,
+        "waterproof": true,
+        "sizes": ["M", "L"],
+        "inStock": true,
+        "specs": { "weight": "400 g" }
+      },
+      {
+        "id": "iris-packable-shell",
+        "name": "Iris Packable Shell",
+        "category": "jackets",
+        "price": 89,
+        "waterproof": true,
+        "sizes": ["S", "M"],
+        "inStock": true,
+        "specs": { "weight": "210 g" }
+      },
+      {
+        "id": "juniper-field-jacket",
+        "name": "Juniper Field Jacket",
+        "category": "jackets",
+        "price": 139,
+        "waterproof": true,
+        "sizes": ["M", "L", "XL"],
+        "inStock": true,
+        "specs": { "weight": "700 g" }
+      },
+      {
+        "id": "kestrel-rain-jacket",
+        "name": "Kestrel Rain Jacket",
+        "category": "jackets",
+        "price": 72,
+        "waterproof": true,
+        "sizes": ["S", "M", "L"],
+        "inStock": true,
+        "specs": { "weight": "360 g" }
+      },
+      {
+        "id": "larch-fleece-jacket",
+        "name": "Larch Fleece Jacket",
+        "category": "jackets",
+        "price": 55,
+        "waterproof": false,
+        "sizes": ["S", "M", "L"],
+        "inStock": true,
+        "specs": { "weight": "330 g" }
+      },
+      {
+        "id": "moss-waxed-jacket",
+        "name": "Moss Waxed Jacket",
+        "category": "jackets",
+        "price": 79,
+        "waterproof": true,
+        "sizes": ["M"],
+        "inStock": true,
+        "specs": { "weight": "880 g" }
+      },
+      {
+        "id": "nimbus-ultralight-shell",
+        "name": "Nimbus Ultralight Shell",
+        "category": "jackets",
+        "price": 69,
+        "waterproof": true,
+        "sizes": ["S", "L"],
+        "inStock": true,
+        "specs": { "weight": "180 g" }
+      },
+      {
+        "id": "basalt-hiking-boot",
+        "name": "Basalt Hiking Boot",
+        "category": "boots",
+        "price": 145,
+        "waterproof": true,
+        "sizes": ["40", "41", "42", "43", "44"],
+        "inStock": true,
+        "specs": { "weight": "1.1 kg", "drop": "8 mm" }
+      },
+      {
+        "id": "ridge-hiking-boot",
+        "name": "Ridge Hiking Boot",
+        "category": "boots",
+        "price": 129,
+        "waterproof": false,
+        "sizes": ["40", "41", "42", "43"],
+        "inStock": true,
+        "specs": { "weight": "0.9 kg", "drop": "6 mm" }
+      },
+      {
+        "id": "summit-hiking-boot",
+        "name": "Summit Hiking Boot",
+        "category": "boots",
+        "price": 169,
+        "waterproof": true,
+        "sizes": ["41", "42", "43", "44", "45"],
+        "inStock": true,
+        "specs": { "weight": "1.3 kg", "drop": "10 mm" }
+      },
+      {
+        "id": "harbor-rain-boot",
+        "name": "Harbor Rain Boot",
+        "category": "boots",
+        "price": 59,
+        "waterproof": true,
+        "sizes": ["39", "40", "41", "42"],
+        "inStock": true,
+        "specs": { "weight": "1.4 kg", "drop": "0 mm" }
+      },
+      {
+        "id": "trail-thermos-750",
+        "name": "Trail Thermos 750",
+        "category": "accessories",
+        "price": 24,
+        "waterproof": false,
+        "sizes": [],
+        "inStock": true,
+        "specs": { "weight": "410 g" }
+      },
+      {
+        "id": "trail-thermos-500",
+        "name": "Trail Thermos 500",
+        "category": "accessories",
+        "price": 19,
+        "waterproof": false,
+        "sizes": [],
+        "inStock": true,
+        "specs": { "weight": "320 g" }
+      },
+      {
+        "id": "camp-mug",
+        "name": "Camp Mug",
+        "category": "accessories",
+        "price": 12,
+        "waterproof": false,
+        "sizes": [],
+        "inStock": true,
+        "specs": { "weight": "150 g" }
+      },
+      {
+        "id": "lumen-headlamp",
+        "name": "Lumen Headlamp",
+        "category": "accessories",
+        "price": 35,
+        "waterproof": true,
+        "sizes": [],
+        "inStock": true,
+        "specs": { "weight": "90 g" }
+      },
+      {
+        "id": "ridgeline-trekking-poles",
+        "name": "Ridgeline Trekking Poles",
+        "category": "accessories",
+        "price": 59,
+        "waterproof": false,
+        "sizes": [],
+        "inStock": false,
+        "specs": { "weight": "520 g" }
+      },
+      {
+        "id": "dry-bag-20l",
+        "name": "Dry Bag 20L",
+        "category": "accessories",
+        "price": 29,
+        "waterproof": true,
+        "sizes": [],
+        "inStock": true,
+        "specs": { "weight": "110 g" }
+      }
+    ]
+  },
+  "checkout": { "shipping": ["standard", "express"] },
+  "article": {
+    "title": "The Kestrel Ridge Trail",
+    "sections": [
+      {
+        "heading": "Overview",
+        "text": "The Kestrel Ridge trail climbs 900 metres over twelve kilometres of mixed forest and open ridge. Most walkers finish it in five to six hours."
+      },
+      {
+        "heading": "Getting there",
+        "text": "The trailhead car park fills early on weekends. A seasonal bus runs from the valley station every ninety minutes."
+      },
+      {
+        "heading": "The forest section",
+        "text": "The first four kilometres follow an old logging road, widened in 1955 when the sawmill reopened."
+      },
+      {
+        "heading": "The ridge",
+        "text": "Above the tree line the path is exposed. Check the forecast; afternoon storms are common in summer."
+      },
+      {
+        "heading": "The hut",
+        "text": "A stone hut built in 1902 offers shelter halfway along the ridge. It has no water source."
+      },
+      {
+        "heading": "Wildlife",
+        "text": "Kestrels nest on the southern cliffs from April to July, which gave the ridge its name."
+      },
+      {
+        "heading": "Seasons",
+        "text": "Snow can linger on the north side into June. Autumn brings the clearest views."
+      },
+      {
+        "heading": "Safety",
+        "text": "Carry a map and a headlamp. Phone coverage drops out between the hut and the summit cairn."
+      }
+    ],
+    "lateSection": {
+      "heading": "History",
+      "text": "Surveyors first mapped the Kestrel Ridge trail in 1887, following a shepherds' route between the two valleys."
+    },
+    "factYear": "1887",
+    "lateDelayMs": 3000
+  }
+}
