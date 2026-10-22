@@ -382,10 +382,13 @@ export function subagentBlockFromPayload(
 }
 
 export function redactSecrets(value: string, secrets: string[]): string {
-  return secrets.reduce((acc, secret) => {
-    if (!secret) return acc;
-    return acc.split(secret).join("[redacted]");
-  }, value);
+  // Longest first, so a secret that contains a shorter one is not left partly visible.
+  return [...secrets]
+    .sort((a, b) => b.length - a.length)
+    .reduce((acc, secret) => {
+      if (!secret) return acc;
+      return acc.split(secret).join("[redacted]");
+    }, value);
 }
 
 export function containsSecret(value: unknown, secrets: string[]): boolean {
