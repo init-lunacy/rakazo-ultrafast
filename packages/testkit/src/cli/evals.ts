@@ -20,7 +20,6 @@ import { diagnosticWireFetch } from "../evals/wire-observer.js";
 import {
   assertComputerImage,
   DEFAULT_COMPUTER_IMAGE,
-  destroyComputers,
   dockerComputerEnv,
   serveSupervisor,
 } from "./docker-computers.js";
@@ -338,7 +337,7 @@ async function main() {
     const { dispatcherFetch, DockerSandboxProvider, PiAgentRuntime } = await import(
       "@rakazo/adapters"
     );
-    const { EvalSandboxProvider } = await import("../evals/sandbox.js");
+    const { destroyComputers, EvalSandboxProvider } = await import("../evals/sandbox.js");
     const { browsingComputerFixture } = await import("../evals/browsing/install.js");
     if (suite.computer === "docker") {
       Object.assign(process.env, dockerComputerEnv(dataDir, DEFAULT_COMPUTER_IMAGE));

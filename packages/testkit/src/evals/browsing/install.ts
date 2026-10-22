@@ -6,7 +6,10 @@ import type { ComputerFixture, EvalApp } from "../runner.js";
 import type { SiteRequest } from "./sites.js";
 import { parseSiteRequests, SITE_PORT, SITE_SERVER_PATH, SITE_URL, SITES_PATH } from "./sites.js";
 
-/** Outside the bot's home, so read_file and write_file cannot reach the data or the log. */
+/**
+ * Outside the bot's home, so read_file and write_file cannot reach it. The desktop can (a terminal
+ * runs as the same user), so the data files are deleted once the server has loaded them.
+ */
 export const SITES_DIR = "/tmp/rakazo-sites";
 const SERVER_FILE = "rakazo-site-server.py";
 const DATA_FILE = "rakazo-sites.json";
@@ -31,6 +34,12 @@ export async function installBrowsingSites(
     readyUrl: `${SITE_URL}/health`,
     logPath: `${SITES_DIR}/server.log`,
   });
+  await executeChecked(
+    sandbox,
+    computer,
+    context,
+    `rm ${SITES_DIR}/site_server.py ${SITES_DIR}/sites.json`,
+  );
 }
 
 export async function readSiteRequests(
@@ -39,12 +48,7 @@ export async function readSiteRequests(
   context: AdapterContext,
 ): Promise<SiteRequest[]> {
   return parseSiteRequests(
-    await executeChecked(
-      sandbox,
-      computer,
-      context,
-      `cat ${SITES_DIR}/requests.jsonl 2>/dev/null || true`,
-    ),
+    await executeChecked(sandbox, computer, context, `cat ${SITES_DIR}/requests.jsonl`),
   );
 }
 

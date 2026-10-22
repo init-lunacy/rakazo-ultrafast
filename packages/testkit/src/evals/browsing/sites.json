@@ -11,7 +11,9 @@
         "waterproof": true,
         "sizes": ["S", "M", "L"],
         "inStock": false,
-        "specs": { "weight": "380 g" }
+        "specs": {
+          "weight": "380 g"
+        }
       },
       {
         "id": "birch-windbreaker",
@@ -21,7 +23,9 @@
         "waterproof": false,
         "sizes": ["S", "M", "L"],
         "inStock": true,
-        "specs": { "weight": "240 g" }
+        "specs": {
+          "weight": "240 g"
+        }
       },
       {
         "id": "cedar-storm-jacket",
@@ -31,7 +35,9 @@
         "waterproof": true,
         "sizes": ["S", "L"],
         "inStock": true,
-        "specs": { "weight": "450 g" }
+        "specs": {
+          "weight": "450 g"
+        }
       },
       {
         "id": "dune-insulated-parka",
@@ -41,7 +47,9 @@
         "waterproof": true,
         "sizes": ["S", "M", "L"],
         "inStock": true,
-        "specs": { "weight": "910 g" }
+        "specs": {
+          "weight": "910 g"
+        }
       },
       {
         "id": "elm-softshell",
@@ -51,7 +59,9 @@
         "waterproof": false,
         "sizes": ["M", "L"],
         "inStock": true,
-        "specs": { "weight": "520 g" }
+        "specs": {
+          "weight": "520 g"
+        }
       },
       {
         "id": "fjord-hardshell",
@@ -61,7 +71,9 @@
         "waterproof": true,
         "sizes": ["S", "M", "L"],
         "inStock": true,
-        "specs": { "weight": "430 g" }
+        "specs": {
+          "weight": "430 g"
+        }
       },
       {
         "id": "glacier-down-jacket",
@@ -71,7 +83,9 @@
         "waterproof": false,
         "sizes": ["S", "M"],
         "inStock": true,
-        "specs": { "weight": "610 g" }
+        "specs": {
+          "weight": "610 g"
+        }
       },
       {
         "id": "heath-trail-jacket",
@@ -81,7 +95,9 @@
         "waterproof": true,
         "sizes": ["M", "L"],
         "inStock": true,
-        "specs": { "weight": "400 g" }
+        "specs": {
+          "weight": "400 g"
+        }
       },
       {
         "id": "iris-packable-shell",
@@ -91,7 +107,9 @@
         "waterproof": true,
         "sizes": ["S", "M"],
         "inStock": true,
-        "specs": { "weight": "210 g" }
+        "specs": {
+          "weight": "210 g"
+        }
       },
       {
         "id": "juniper-field-jacket",
@@ -101,7 +119,9 @@
         "waterproof": true,
         "sizes": ["M", "L", "XL"],
         "inStock": true,
-        "specs": { "weight": "700 g" }
+        "specs": {
+          "weight": "700 g"
+        }
       },
       {
         "id": "kestrel-rain-jacket",
@@ -111,7 +131,9 @@
         "waterproof": true,
         "sizes": ["S", "M", "L"],
         "inStock": true,
-        "specs": { "weight": "360 g" }
+        "specs": {
+          "weight": "360 g"
+        }
       },
       {
         "id": "larch-fleece-jacket",
@@ -121,7 +143,9 @@
         "waterproof": false,
         "sizes": ["S", "M", "L"],
         "inStock": true,
-        "specs": { "weight": "330 g" }
+        "specs": {
+          "weight": "330 g"
+        }
       },
       {
         "id": "moss-waxed-jacket",
@@ -131,7 +155,9 @@
         "waterproof": true,
         "sizes": ["M"],
         "inStock": true,
-        "specs": { "weight": "880 g" }
+        "specs": {
+          "weight": "880 g"
+        }
       },
       {
         "id": "nimbus-ultralight-shell",
@@ -141,7 +167,9 @@
         "waterproof": true,
         "sizes": ["S", "L"],
         "inStock": true,
-        "specs": { "weight": "180 g" }
+        "specs": {
+          "weight": "180 g"
+        }
       },
       {
         "id": "basalt-hiking-boot",
@@ -151,7 +179,10 @@
         "waterproof": true,
         "sizes": ["40", "41", "42", "43", "44"],
         "inStock": true,
-        "specs": { "weight": "1.1 kg", "drop": "8 mm" }
+        "specs": {
+          "weight": "1.1 kg",
+          "drop": "8 mm"
+        }
       },
       {
         "id": "ridge-hiking-boot",
@@ -161,7 +192,10 @@
         "waterproof": false,
         "sizes": ["40", "41", "42", "43"],
         "inStock": true,
-        "specs": { "weight": "0.9 kg", "drop": "6 mm" }
+        "specs": {
+          "weight": "0.9 kg",
+          "drop": "6 mm"
+        }
       },
       {
         "id": "summit-hiking-boot",
@@ -171,7 +205,10 @@
         "waterproof": true,
         "sizes": ["41", "42", "43", "44", "45"],
         "inStock": true,
-        "specs": { "weight": "1.3 kg", "drop": "10 mm" }
+        "specs": {
+          "weight": "1.3 kg",
+          "drop": "10 mm"
+        }
       },
       {
         "id": "harbor-rain-boot",
@@ -181,7 +218,10 @@
         "waterproof": true,
         "sizes": ["39", "40", "41", "42"],
         "inStock": true,
-        "specs": { "weight": "1.4 kg", "drop": "0 mm" }
+        "specs": {
+          "weight": "1.4 kg",
+          "drop": "0 mm"
+        }
       },
       {
         "id": "trail-thermos-750",
@@ -191,7 +231,9 @@
         "waterproof": false,
         "sizes": [],
         "inStock": true,
-        "specs": { "weight": "410 g" }
+        "specs": {
+          "weight": "410 g"
+        }
       },
       {
         "id": "trail-thermos-500",
@@ -201,7 +243,9 @@
         "waterproof": false,
         "sizes": [],
         "inStock": true,
-        "specs": { "weight": "320 g" }
+        "specs": {
+          "weight": "320 g"
+        }
       },
       {
         "id": "camp-mug",
@@ -211,7 +255,9 @@
         "waterproof": false,
         "sizes": [],
         "inStock": true,
-        "specs": { "weight": "150 g" }
+        "specs": {
+          "weight": "150 g"
+        }
       },
       {
         "id": "lumen-headlamp",
@@ -221,7 +267,9 @@
         "waterproof": true,
         "sizes": [],
         "inStock": true,
-        "specs": { "weight": "90 g" }
+        "specs": {
+          "weight": "90 g"
+        }
       },
       {
         "id": "ridgeline-trekking-poles",
@@ -231,7 +279,9 @@
         "waterproof": false,
         "sizes": [],
         "inStock": false,
-        "specs": { "weight": "520 g" }
+        "specs": {
+          "weight": "520 g"
+        }
       },
       {
         "id": "dry-bag-20l",
@@ -241,45 +291,177 @@
         "waterproof": true,
         "sizes": [],
         "inStock": true,
-        "specs": { "weight": "110 g" }
+        "specs": {
+          "weight": "110 g"
+        }
       }
     ]
   },
-  "checkout": { "shipping": ["standard", "express"] },
+  "checkout": {
+    "shipping": ["standard", "express"]
+  },
   "article": {
     "title": "The Kestrel Ridge Trail",
     "sections": [
       {
         "heading": "Overview",
-        "text": "The Kestrel Ridge trail climbs 900 metres over twelve kilometres of mixed forest and open ridge. Most walkers finish it in five to six hours."
+        "text": "The Kestrel Ridge trail climbs 900 metres over twelve kilometres of mixed forest and open ridge. Most walkers finish it in five to six hours, though a slower pace with long stops at the viewpoints can stretch the day to eight. The route is a loop, so you return to the same car park you started from. It is waymarked with red paint flashes on rocks and trees, and the junctions carry small wooden signs that are easy to miss in poor light."
       },
       {
         "heading": "Getting there",
-        "text": "The trailhead car park fills early on weekends. A seasonal bus runs from the valley station every ninety minutes."
+        "text": "The trailhead car park fills early on weekends, often before eight in the morning in summer. A seasonal bus runs from the valley station every ninety minutes and stops at the forest gate, a short walk from the start. Cyclists can leave bikes at the rack beside the information board. There is no fuel or shop at the trailhead, so bring everything you need from the valley."
+      },
+      {
+        "heading": "Facilities",
+        "text": "The car park has toilets that are open from spring to autumn and a tap with drinking water. There are no bins on the trail, so carry out everything you carry in. A small kiosk at the forest gate sells maps and snacks on summer weekends. Mobile signal is reliable at the car park and patchy beyond the first bend."
       },
       {
         "heading": "The forest section",
-        "text": "The first four kilometres follow an old logging road, widened in 1955 when the sawmill reopened."
+        "text": "The first four kilometres follow an old logging road, widened in 1955 when the sawmill reopened. The gradient is gentle and the surface is firm gravel, which makes this the easiest part of the walk. Beech and spruce shade the road for most of its length. Look for the stone mile markers left from the logging years; several still carry their painted numbers."
+      },
+      {
+        "heading": "The sawmill ruins",
+        "text": "Halfway along the logging road the trail passes the ruins of the old sawmill. Only the stone foundations and part of the water channel remain. The site is fenced in places because the walls are unstable, so keep to the path. A bench beside the channel is a popular first stop and catches the morning sun."
+      },
+      {
+        "heading": "The stream crossings",
+        "text": "After the sawmill the trail leaves the road and crosses the same stream three times on stepping stones. In spring the water can rise over the stones, and walkers sometimes have to wade. Poles help on the wet rock. In late summer the stream shrinks to a trickle and the crossings are dry."
+      },
+      {
+        "heading": "The beech hollow",
+        "text": "Beyond the last crossing the path climbs through a hollow of old beech trees. The ground here stays damp all year and the roots are slippery after rain. In autumn the hollow turns copper and gold, and it is one of the most photographed places on the route. Fallen leaves can hide the waymarks, so watch for the red flashes on the trunks."
+      },
+      {
+        "heading": "The switchbacks",
+        "text": "The steepest climb of the day is a set of eleven switchbacks that lift the path out of the forest. The turns are tight and the steps are uneven in places. Take it slowly and stop to look back over the valley at the bends. Most walkers need forty minutes to an hour for this stretch."
+      },
+      {
+        "heading": "The tree line",
+        "text": "At the top of the switchbacks the trees thin out quickly into dwarf pine and heather. The view opens to the south over the valley and the lake. This is a good place to add a layer before the ridge, because the wind picks up as soon as you leave the shelter of the trees. The path here is narrow and edged with loose stones."
       },
       {
         "heading": "The ridge",
-        "text": "Above the tree line the path is exposed. Check the forecast; afternoon storms are common in summer."
+        "text": "Above the tree line the path is exposed. Check the forecast; afternoon storms are common in summer. The ridge runs for almost three kilometres with steep drops on the north side. In fog the line of cairns is the safest guide, and walkers should not leave the path to shorten the route."
+      },
+      {
+        "heading": "The cairns",
+        "text": "Walkers have built cairns along the ridge for generations, and they mark the way when the paint flashes fade. Please do not add stones or take them away. Some of the larger cairns have small niches where people leave notes for each other. The tallest cairn stands at the ridge's highest point and is visible from the valley on clear days."
       },
       {
         "heading": "The hut",
-        "text": "A stone hut built in 1902 offers shelter halfway along the ridge. It has no water source."
+        "text": "A stone hut built in 1902 offers shelter halfway along the ridge. It has no water source. The hut has a wooden bench, a logbook and an emergency blanket, and it is not staffed. It is meant for shelter in bad weather rather than overnight stays. Please close the door when you leave so that sheep do not wander in."
+      },
+      {
+        "heading": "The summit cairn",
+        "text": "The summit cairn sits at the eastern end of the ridge. From here you can see three valleys and, on the clearest days, the distant coast. There is a brass plate on a low stone that names the peaks on the horizon. Many walkers have lunch here, sheltered behind the cairn from the prevailing wind."
+      },
+      {
+        "heading": "The descent",
+        "text": "The descent follows a different spur back towards the forest. It is steady rather than steep, but the gravel can roll underfoot. Walkers with weak knees often prefer poles for this section. The path rejoins the trees after about two kilometres and then follows a stream back to the car park."
+      },
+      {
+        "heading": "The lower meadows",
+        "text": "Before the forest the descent crosses a series of hay meadows. They are private farmland, so keep to the path and close every gate behind you. In early summer the meadows are full of orchids and the air hums with insects. Farmers cut the hay in midsummer, and the path may be diverted around the work for a few days."
       },
       {
         "heading": "Wildlife",
-        "text": "Kestrels nest on the southern cliffs from April to July, which gave the ridge its name."
+        "text": "Kestrels nest on the southern cliffs from April to July, which gave the ridge its name. Chamois are often seen on the north slopes early in the morning. In the forest, listen for woodpeckers and the call of the black grouse. Please keep dogs on a lead during the nesting season, when ground birds are easily disturbed."
+      },
+      {
+        "heading": "Plants",
+        "text": "The ridge supports alpine plants that are rare elsewhere in the region, including gentians and saxifrages. Picking flowers is not allowed anywhere on the route. In the forest, mushrooms appear after autumn rain; many are poisonous, so leave them alone. Bilberries ripen along the tree line in late summer."
       },
       {
         "heading": "Seasons",
-        "text": "Snow can linger on the north side into June. Autumn brings the clearest views."
+        "text": "Snow can linger on the north side into June. Autumn brings the clearest views. Winter walking on the ridge needs crampons, an ice axe and experience, and the bus does not run in winter. Spring is wet and muddy in the forest, but the waterfalls are at their fullest."
+      },
+      {
+        "heading": "Weather",
+        "text": "The weather changes quickly on the ridge. A bright morning can turn to cloud and rain within an hour, especially in July and August. Temperatures on the summit are usually several degrees lower than in the car park, and the wind makes it feel colder still. Turn back if thunder is forecast or you hear it approaching."
+      },
+      {
+        "heading": "What to carry",
+        "text": "Carry at least two litres of water per person, because there is none on the ridge. Pack a waterproof jacket, a warm layer, a hat and gloves even in summer. A map and a compass are essential if the cloud comes down. Sun cream matters too: there is little shade above the tree line."
+      },
+      {
+        "heading": "Navigation",
+        "text": "The route is well marked, but the waymarks can be hard to see in fog or snow. Download the map before you go, as mobile data is unreliable beyond the forest. At the junction above the switchbacks, keep right for the ridge; the left fork drops to a dead end at a quarry. If you lose the path on the ridge, retrace your steps to the last cairn you saw."
       },
       {
         "heading": "Safety",
-        "text": "Carry a map and a headlamp. Phone coverage drops out between the hut and the summit cairn."
+        "text": "Carry a map and a headlamp. Phone coverage drops out between the hut and the summit cairn. Tell someone your plans and the time you expect to be back. In an emergency, the mountain rescue number works from anywhere with signal, and the hut has a list of the nearest points with coverage."
+      },
+      {
+        "heading": "Walking with children",
+        "text": "Older children who are used to hills usually enjoy the route, but the exposed ridge needs close supervision. A shorter outing follows the logging road to the sawmill ruins and back, which takes about three hours. The stream crossings are a favourite with children in late summer, when the water is low."
+      },
+      {
+        "heading": "Walking with dogs",
+        "text": "Dogs are welcome but must be on a lead near livestock and during the bird nesting season. There is no water for dogs on the ridge, so carry extra. The stepping stones can be awkward for small dogs when the stream is high. Please clean up after your dog, including on the open hill."
+      },
+      {
+        "heading": "Accessibility",
+        "text": "The first two kilometres of the logging road are suitable for sturdy all-terrain pushchairs and some wheelchairs in dry weather. Beyond the sawmill the path becomes rough and is not accessible. There are accessible toilets at the car park. Benches are placed roughly every kilometre along the forest section."
+      },
+      {
+        "heading": "Respecting the trail",
+        "text": "The trail crosses farmland, forest and protected upland, and each has its own rules. Leave gates as you find them, keep to the path to protect the plants, and do not light fires. Camping is not allowed on the ridge. Help keep the route open by reporting fallen trees or damaged signs to the park office."
+      },
+      {
+        "heading": "Longer variations",
+        "text": "Strong walkers sometimes extend the loop by continuing east from the summit cairn to the twin tops above the lake. The extension adds four kilometres and about two hours, and it has no waymarks, so it is only for those confident with a map. The path back from the twin tops drops steeply through scree before it meets the descent spur. Allow plenty of daylight if you plan to try it."
+      },
+      {
+        "heading": "Shorter variations",
+        "text": "If the weather turns, you can leave the ridge at the hut by a marked path that drops north to the beech hollow. It shortens the day by about an hour and a half and avoids the most exposed ground. The path is steep in its upper part and can be muddy. It rejoins the main route just above the stream crossings."
+      },
+      {
+        "heading": "Photography",
+        "text": "Early morning light is best for the view south from the tree line, while the summit cairn is at its finest in the evening. The beech hollow suits a wide lens in autumn. Please do not fly drones near the southern cliffs during the nesting season. Tripods are welcome but should not block the narrow path on the ridge."
+      },
+      {
+        "heading": "The lake",
+        "text": "The lake below the ridge is fed by snowmelt and stays cold even in late summer. Swimming is allowed from the small beach on the eastern shore, but there is no lifeguard and the water deepens quickly. Fishing needs a permit from the park office. The lake is a short detour from the lower meadows on the way down."
+      },
+      {
+        "heading": "Local history",
+        "text": "The valley has been farmed for centuries, and many of the walls you pass were built by hand from stones cleared from the fields. Shepherds once drove their flocks up to the high pastures each summer and down again before the first snow. Some of their stone shelters still stand on the slopes below the ridge. The village museum in the valley has photographs of the old summer grazing."
+      },
+      {
+        "heading": "Food and drink",
+        "text": "There is nowhere to buy food on the trail. The village in the valley has two bakeries, a small grocery and an inn that serves hot meals until late evening. Many walkers stop at the bakery for bread and pastries before catching the first bus. Bring a flask; a hot drink on the summit is welcome in any season."
+      },
+      {
+        "heading": "Staying overnight",
+        "text": "There are guesthouses and a campsite in the valley village, all within walking distance of the bus stop. Book ahead for summer weekends, when the valley is busy. The campsite has hot showers and a drying room for wet gear. Wild camping is not allowed anywhere inside the park boundary."
+      },
+      {
+        "heading": "Volunteering",
+        "text": "A group of local volunteers maintains the trail, clearing fallen trees and repainting the waymarks each spring. New volunteers are welcome on the monthly work days, and no experience is needed. Tools and gloves are provided, along with lunch at the hut. Ask at the park office for the dates."
+      },
+      {
+        "heading": "Getting home",
+        "text": "The last bus from the forest gate leaves in the early evening, so check the timetable before you start. Missing it means a long walk down the valley road, which has no pavement. A taxi can be booked from the village, but phone signal at the forest gate is weak, so arrange it in advance. On summer weekends the bus can fill up, and an extra service sometimes runs."
+      },
+      {
+        "heading": "Feedback",
+        "text": "The park office welcomes reports of damaged signs, blocked paths or problems with the stepping stones. You can leave a note in the hut logbook or speak to the staff at the forest gate kiosk. Photographs of any damage help the volunteers plan their work. Thank you for helping to keep the Kestrel Ridge trail in good order for everyone."
+      },
+      {
+        "heading": "Geology",
+        "text": "The ridge is made of hard sandstone laid down in layers, which is why the rock breaks into the flat slabs used for the cairns and the hut. On the north side the layers tilt steeply, creating the long cliffs above the scree. Small fossils of shells and ferns turn up in the loose stones near the switchbacks. Please leave them where you find them so that others can enjoy them too."
+      },
+      {
+        "heading": "Night sky",
+        "text": "The valley has very little artificial light, and on clear nights the stars are remarkable from the car park. Some walkers time their descent to watch the sunset from the summit, but this means finishing the forest section in the dark. Only do this with a good headlamp and spare batteries, and never in uncertain weather. The park office runs guided night walks in late summer."
+      },
+      {
+        "heading": "Running the route",
+        "text": "Trail runners use the loop for training, and the fastest times are well under two hours. Runners should give way to walkers on the narrow ridge and the switchbacks. Lightweight shoes struggle on the wet stepping stones, so take care at the crossings. Carry a jacket even on a short run, as the ridge can turn cold without warning."
+      },
+      {
+        "heading": "Visiting in winter",
+        "text": "In winter the forest section is often passable on foot, and the logging road makes a fine snowshoe walk as far as the sawmill ruins. Above the tree line the ridge becomes a serious mountaineering route with cornices on the north side. The hut is buried by drifts in some years. Check the avalanche bulletin before going beyond the switchbacks."
       }
     ],
     "lateSection": {

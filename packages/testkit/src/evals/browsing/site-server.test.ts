@@ -26,6 +26,10 @@ beforeAll(async () => {
 afterAll(() => server?.close());
 
 describe("site server", () => {
+  it("creates its request log before the first request", () => {
+    expect(server.requests()).toEqual([]);
+  });
+
   it("pages a category from sites.json, sorted by name", async () => {
     const first = await get("/shop?category=jackets");
     expect(first).toContain("Page 1 of 2");

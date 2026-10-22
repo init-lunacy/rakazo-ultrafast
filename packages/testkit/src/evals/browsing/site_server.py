@@ -231,4 +231,6 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(400, document("Check your details", "<h1>Some details are missing</h1><p><a href='/shop'>Back to shop</a></p>"))
 
 
+# Created up front, so a missing log means a broken harness rather than an idle bot.
+open(LOG_PATH, "a", encoding="utf-8").close()
 ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

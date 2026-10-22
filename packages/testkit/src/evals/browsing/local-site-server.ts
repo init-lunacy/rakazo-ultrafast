@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -38,8 +38,7 @@ export async function startLocalSiteServer() {
   }
   return {
     url,
-    requests: (): SiteRequest[] =>
-      existsSync(logPath) ? parseSiteRequests(readFileSync(logPath, "utf8")) : [],
+    requests: (): SiteRequest[] => parseSiteRequests(readFileSync(logPath, "utf8")),
     close,
   };
 }

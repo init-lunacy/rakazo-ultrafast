@@ -76,6 +76,16 @@ describe("one answer per task", () => {
     }
   });
 
+  it("puts the late section past the text a page snapshot returns", async () => {
+    // rakazo-page-browser's snapshot keeps the first 12,000 characters of the page's text.
+    const html = await page("/article");
+    // Once the banner is accepted only the article remains, so count from <main>.
+    const before = html
+      .slice(html.indexOf("<main"), html.indexOf("<div id='late'>"))
+      .replace(/<[^>]*>/g, "");
+    expect(before.length).toBeGreaterThan(12_000);
+  });
+
   it("puts the article's year only in the late section", async () => {
     const { article } = sites;
     const elsewhere = [article.title, ...article.sections.map((s) => s.text)].join(" ");
@@ -96,6 +106,16 @@ describe("graders", () => {
         siteRequests: [request("/shop")],
       }),
     ).toEqual({ "cheapest-jacket": true, "used-browser": true });
+  });
+
+  it("fails a hedged answer that also names another jacket", () => {
+    const moss = sites.shop.products.find((p) => p.id === "moss-waxed-jacket")!;
+    expect(
+      grade("browse-compare-cheapest", {
+        files: { "results/cheapest.md": `${cheapest}\n${moss.name} — ${formatPrice(moss)}` },
+        siteRequests: [request("/shop")],
+      })["cheapest-jacket"],
+    ).toBe(false);
   });
 
   it("fails requests that did not come from Chrome, or no browser use at all", () => {
@@ -182,7 +202,12 @@ describe("graders", () => {
   it("runs every task with only the browser and no connected apps", () => {
     for (const scenario of BROWSING_EVAL_CASES) {
       expect(scenario.connections).toEqual([]);
-      expect(scenario.disabledBuiltinTools).toEqual(["shell", "web_fetch", "web_search"]);
+      expect(scenario.disabledBuiltinTools).toEqual([
+        "shell",
+        "launch_app",
+        "web_fetch",
+        "web_search",
+      ]);
     }
   });
 });

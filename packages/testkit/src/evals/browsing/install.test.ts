@@ -18,6 +18,8 @@ describe("installBrowsingSites", () => {
       `${SITES_DIR}/site_server.py ${SITES_DIR}/sites.json 8800 ${SITES_DIR}/requests.jsonl`,
     );
     expect(sandbox.commands[1]).toContain("http://127.0.0.1:8800/health");
+    // The server holds the data in memory; nothing on disk gives the answers away.
+    expect(sandbox.commands[2]).toBe(`rm ${SITES_DIR}/site_server.py ${SITES_DIR}/sites.json`);
   });
 });
 
@@ -36,6 +38,16 @@ describe("readSiteRequests", () => {
     }));
     expect(await readSiteRequests(sandbox, computer, context)).toHaveLength(2);
     expect(sandbox.commands[0]).toContain(`${SITES_DIR}/requests.jsonl`);
+  });
+
+  it("fails when the request log is missing", async () => {
+    const { sandbox, computer, context } = await scriptedComputer(() => ({
+      code: 1,
+      stderr: "No such file or directory",
+    }));
+    await expect(readSiteRequests(sandbox, computer, context)).rejects.toThrow(/No such file/);
+    // No fallback in the command: a missing log is a broken harness, not an idle bot.
+    expect(sandbox.commands[0]).toBe(`cat ${SITES_DIR}/requests.jsonl`);
   });
 
   it("has no requests when nothing reached the site", async () => {

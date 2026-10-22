@@ -6,10 +6,14 @@ import { formatPrice, loadSites, SITE_URL } from "./sites.js";
 const SITES = loadSites();
 export const BROWSING_FIXTURE_VERSION = SITES.version;
 
-/** Shell and server-side web tools are off, so the browser is the only way to the sites. */
+/**
+ * The shell, app launching and server-side web tools are off, so the sites are reached through the
+ * browser. The desktop stays reachable through computer_act; graders check the requests came from
+ * Chrome.
+ */
 const BROWSER_ONLY = {
   connections: [] as string[],
-  disabledBuiltinTools: ["shell", "web_fetch", "web_search"],
+  disabledBuiltinTools: ["shell", "launch_app", "web_fetch", "web_search"],
 };
 
 export const CHECKOUT_ORDER = {
@@ -100,7 +104,11 @@ export const BROWSING_EVAL_CASES: EvalCase[] = [
       return [
         check(
           "cheapest-jacket",
-          text.includes(normalize(answer.name)) && text.includes(formatPrice(answer)),
+          text.includes(normalize(answer.name)) &&
+            text.includes(formatPrice(answer)) &&
+            SITES.shop.products.every(
+              (product) => product === answer || !text.includes(normalize(product.name)),
+            ),
         ),
         usedBrowser(evidence, "/shop"),
       ];
