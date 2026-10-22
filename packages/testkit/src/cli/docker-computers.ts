@@ -16,6 +16,7 @@ export function dockerComputerEnv(dataDir: string, image: string): Record<string
     SANDBOX_CONTROL_VIA_LOOPBACK: "true",
     SANDBOX_IDLE_MS: "0",
     SANDBOX_COMPUTER_EGRESS: "open",
+    BROWSER_PROVIDER: "computer",
   };
 }
 

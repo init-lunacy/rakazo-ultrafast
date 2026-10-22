@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
-import { assertComputerImage, dockerComputerEnv } from "./docker-computers.js";
+import {
+  assertComputerImage,
+  DEFAULT_COMPUTER_IMAGE,
+  dockerComputerEnv,
+} from "./docker-computers.js";
 
 /** Offline by default. Only explicit --live --record loads a model key for a manual capture. */
 async function main() {
@@ -29,7 +33,7 @@ async function main() {
     throw new Error(
       "Usage: computer-replay.ts [--image=rakazo/computer:local] [--subnet=unused-private-CIDR] [--live --record=new-fixture.json]",
     );
-  const image = imageArg?.slice("--image=".length) || "rakazo/computer:local";
+  const image = imageArg?.slice("--image=".length) || DEFAULT_COMPUTER_IMAGE;
   let captureKey: string | undefined;
   if (live) {
     loadRootEnv();

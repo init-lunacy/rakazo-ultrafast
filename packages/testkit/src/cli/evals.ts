@@ -198,6 +198,13 @@ async function main() {
   report.pricing = pricing;
   budget = new SpendBudget(report.spendCapUsd, pricing);
   const liveBudget = budget;
+  if (suite.computer === "docker") {
+    try {
+      assertComputerImage(DEFAULT_COMPUTER_IMAGE);
+    } catch (error) {
+      return notRun(`${(error as Error).message}. All trials remain not-run.`);
+    }
+  }
   const connection = parsedConnection.data;
   report.model = connection.modelId!;
   report.provider = connection.provider;
@@ -280,7 +287,7 @@ async function main() {
   // This CLI owns a disposable database. Never migrate or evaluate against an inherited database.
   const dataDir = mkdtempSync(path.join(tmpdir(), "rakazo-evals-"));
   let postgres: StartedPostgreSqlContainer | undefined;
-  let docker: { url: string; sandbox: SandboxProvider; close(): Promise<void> } | undefined;
+  let docker: { sandbox: SandboxProvider; close(): Promise<void> } | undefined;
   let stopRequested = false;
   // Set while a trial runs real computers: a second Ctrl-C stops at once but still removes them.
   let stopNow: (() => Promise<void>) | undefined;
@@ -291,7 +298,6 @@ async function main() {
   process.on("SIGINT", requestStop);
   process.on("SIGTERM", requestStop);
   try {
-    if (suite.computer === "docker") assertComputerImage(DEFAULT_COMPUTER_IMAGE);
     // Per-run secrets: a real computer has network access, and the database holds the model key.
     const secret = () => randomBytes(32).toString("base64url");
     postgres = await new PostgreSqlContainer("postgres:16-alpine").withPassword(secret()).start();
@@ -347,11 +353,11 @@ async function main() {
     if (suite.computer === "docker") {
       Object.assign(process.env, dockerComputerEnv(dataDir, DEFAULT_COMPUTER_IMAGE));
       // A root supervisor runs computers as uid 1000 and never changes ownership itself. Keep the
-      // homes this disposable run creates writable by that user.
+      // homes this disposable run creates writable by that user. Everything written after this
+      // lives under the 0700 data directory or sets its own mode, like the report.
       if (process.getuid?.() === 0) process.umask(0);
       const supervisor = await serveSupervisor();
       docker = {
-        url: supervisor.url,
         sandbox: new DockerSandboxProvider(supervisor.url, process.env.SANDBOX_SUPERVISOR_TOKEN!),
         close: supervisor.close,
       };

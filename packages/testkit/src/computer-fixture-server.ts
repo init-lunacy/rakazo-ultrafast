@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import type { AdapterContext, ComputerRef, SandboxProvider } from "@rakazo/adapter-kit";
 
-/** A local website a test runs inside a bot's computer. */
+/**
+ * A local website a test runs inside a bot's computer. `command`, `readyUrl` and `logPath` go into
+ * bash unescaped, so they must be trusted constants.
+ */
 export type FixtureServer = {
   /** Home-relative paths and their contents, written before `command` runs. */
   files: Record<string, string>;

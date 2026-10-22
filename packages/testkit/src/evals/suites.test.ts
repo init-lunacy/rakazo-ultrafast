@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EVAL_SUITES, resolveControls, resolveSuite } from "./suites.js";
 
-// Today's values for the offline suites, copied from cli/evals.ts before this change.
+// Pinned: the offline suites' controls and report text must not drift.
 const OFFLINE_FIXTURES = "synthetic services, messaging and fake sandbox";
 const OFFLINE_LIMITATIONS = [
   "Does not evaluate browser perception, native recording perception, or real external services.",

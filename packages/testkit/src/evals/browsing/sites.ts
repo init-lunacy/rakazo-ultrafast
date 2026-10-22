@@ -48,9 +48,11 @@ export function formatPrice(product: Product) {
   return `$${product.price.toFixed(2)}`;
 }
 
+/** Every complete line; a last line without its newline is still being written. */
 export function parseSiteRequests(text: string): SiteRequest[] {
   return text
     .split("\n")
+    .slice(0, -1)
     .filter((line) => line.trim())
     .map((line) => JSON.parse(line) as SiteRequest);
 }

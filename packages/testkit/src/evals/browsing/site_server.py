@@ -222,6 +222,7 @@ class Handler(BaseHTTPRequestHandler):
             url.path == "/checkout/confirm"
             and complete
             and fields.get("quantity", "").isdigit()
+            and int(fields["quantity"]) > 0
             and fields.get("shipping") in SITES["checkout"]["shipping"]
         ):
             order_number = f"TO-{secrets.token_hex(3).upper()}"

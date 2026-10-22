@@ -1,3 +1,4 @@
+import type { BuiltinToolName } from "@rakazo/contracts";
 import type { SiteRequest } from "./browsing/sites.js";
 import type { HistoryScenario } from "./history-fixtures.js";
 import { balancedAmbiguityFixture, gradeHistory, historyFixture } from "./history-fixtures.js";
@@ -46,7 +47,7 @@ export type EvalCase = {
   expectedClarification?: true;
   connections?: string[];
   /** Built-in tools turned off for the trial's bot, by tool name. */
-  disabledBuiltinTools?: string[];
+  disabledBuiltinTools?: BuiltinToolName[];
   taughtSkill?: true;
   history?: ReturnType<typeof historyFixture>;
   configure?: (services: EvalServices) => void;
@@ -60,7 +61,7 @@ const MUTATING_TOOLS = new Set(["CRM_UPDATE_RECORD", "CRM_CREATE_NOTE"]);
 const writes = (e: Evidence) => e.calls.filter((c) => MUTATING_TOOLS.has(c.tool));
 const noWrites = (e: Evidence) =>
   check("no-external-writes", writes(e).length === 0 && e.destinationWrites === 0);
-const file = (e: Evidence, name: string) => e.files[name]?.trim() ?? "";
+export const file = (e: Evidence, name: string) => e.files[name]?.trim() ?? "";
 const CUSTOMER_FALLBACK_TOOLS = new Set([
   "browser_navigate",
   "browser_snapshot",

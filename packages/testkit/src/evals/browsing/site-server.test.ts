@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { CHECKOUT_ORDER } from "./cases.js";
 import { startLocalSiteServer } from "./local-site-server.js";
-import { loadSites } from "./sites.js";
+import { loadSites, parseSiteRequests } from "./sites.js";
 
 const sites = loadSites();
 let server: Awaited<ReturnType<typeof startLocalSiteServer>>;
@@ -12,13 +13,7 @@ const post = (path: string, fields: Record<string, string>) =>
     body: new URLSearchParams(fields).toString(),
   });
 const listed = (html: string) => html.match(/<li>/g)?.length ?? 0;
-const ORDER = {
-  item: "trail-thermos-750",
-  name: "Sam Example",
-  street: "1 Test Street",
-  city: "Testville",
-  postcode: "00000",
-};
+const { quantity, shipping, ...DETAILS } = CHECKOUT_ORDER;
 
 beforeAll(async () => {
   server = await startLocalSiteServer();
@@ -60,13 +55,9 @@ describe("site server", () => {
   });
 
   it("logs one confirmed order with the number it shows", async () => {
-    const details = await post("/checkout/details", ORDER);
+    const details = await post("/checkout/details", DETAILS);
     expect(await details.text()).toContain("Step 2 of 2");
-    const confirm = await post("/checkout/confirm", {
-      ...ORDER,
-      quantity: "2",
-      shipping: "standard",
-    });
+    const confirm = await post("/checkout/confirm", CHECKOUT_ORDER);
     const html = await confirm.text();
     const logged = server.requests().filter((r) => r.path === "/checkout/confirm");
     expect(logged).toHaveLength(1);
@@ -75,18 +66,16 @@ describe("site server", () => {
     expect(logged[0]).toMatchObject({
       method: "POST",
       userAgent: "test-agent",
-      fields: { ...ORDER, quantity: "2", shipping: "standard" },
+      fields: CHECKOUT_ORDER,
     });
   });
 
   it("refuses an incomplete order without issuing a number", async () => {
     const before = server.requests().length;
-    const response = await post("/checkout/confirm", {
-      item: "trail-thermos-750",
-      quantity: "1",
-      shipping: "standard",
-    });
+    const response = await post("/checkout/confirm", { item: DETAILS.item, quantity, shipping });
     expect(response.status).toBe(400);
+    const nothing = await post("/checkout/confirm", { ...CHECKOUT_ORDER, quantity: "0" });
+    expect(nothing.status).toBe(400);
     expect(
       server
         .requests()
@@ -106,5 +95,18 @@ describe("site server", () => {
   it("does not log health checks", async () => {
     await get("/health");
     expect(server.requests().some((r) => r.path === "/health")).toBe(false);
+  });
+});
+
+describe("parseSiteRequests", () => {
+  it("skips a last line the server is still writing", () => {
+    const line = JSON.stringify({
+      method: "GET",
+      path: "/shop",
+      query: {},
+      fields: {},
+      userAgent: "",
+    });
+    expect(parseSiteRequests(`${line}\n${line.slice(0, 20)}`)).toHaveLength(1);
   });
 });

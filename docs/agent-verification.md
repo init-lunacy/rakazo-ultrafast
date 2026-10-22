@@ -221,7 +221,7 @@ roughly $0.35 with Sonnet 5.5.
 **Reading the report.** Each trial's `timings.taskMs` is the time its runs actually spent
 running, taken from the product's own run records. It excludes app startup, account setup
 (`setupMs`) and computer boot (`bootMs`). Each summary row gives `taskMsP50` and `taskMsP95` per
-task. Compare these, together with the success rate, tool calls and cost, before and after a
+task, over every attempted trial, passed or not, like the latency figures. Compare these, together with the success rate, tool calls and cost, before and after a
 browsing change.
 
 **Grading** uses the site's own request log and the files the bot wrote, never the model's

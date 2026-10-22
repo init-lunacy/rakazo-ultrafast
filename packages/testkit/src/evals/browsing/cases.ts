@@ -1,5 +1,5 @@
 import type { Criterion, EvalCase, Evidence } from "../cases.js";
-import { check } from "../cases.js";
+import { check, file } from "../cases.js";
 import type { BrowsingSites, Product } from "./sites.js";
 import { formatPrice, loadSites, SITE_URL } from "./sites.js";
 
@@ -11,8 +11,8 @@ export const BROWSING_FIXTURE_VERSION = SITES.version;
  * browser. The desktop stays reachable through computer_act; graders check the requests came from
  * Chrome.
  */
-const BROWSER_ONLY = {
-  connections: [] as string[],
+const BROWSER_ONLY: Pick<EvalCase, "connections" | "disabledBuiltinTools"> = {
+  connections: [],
   disabledBuiltinTools: ["shell", "launch_app", "web_fetch", "web_search"],
 };
 
@@ -52,7 +52,8 @@ export function hikingBootRows(sites: BrowsingSites): string[][] {
     ]);
 }
 
-export function parseCsv(text: string): string[][] {
+/** A plain comma splitter: no fixture value contains a comma. */
+function parseCsv(text: string): string[][] {
   return text
     .trim()
     .split(/\r?\n/)
@@ -69,7 +70,6 @@ export function parseCsv(text: string): string[][] {
 
 const normalize = (text: string) => text.trim().toLowerCase().replace(/\s+/g, " ");
 const rowKey = (row: readonly string[]) => row.map(normalize).join("|");
-const file = (evidence: Evidence, name: string) => evidence.files[name]?.trim() ?? "";
 const requestsTo = (evidence: Evidence, prefix: string) =>
   (evidence.siteRequests ?? []).filter((request) => request.path.startsWith(prefix));
 
