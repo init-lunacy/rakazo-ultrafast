@@ -48,7 +48,7 @@ export async function serveSupervisor() {
             ? reject(error)
             : resolve(),
         );
-        server.closeAllConnections();
+        if ("closeAllConnections" in server) server.closeAllConnections();
       }),
   };
 }

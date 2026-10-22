@@ -30,6 +30,21 @@ it("lists eval cases without importing a generated database client or runtime ad
   );
   expect(output).toContain("workspace-memory-isolation:");
   expect(output.trim().split("\n")).toHaveLength(16);
+  const browsing = execFileSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--import",
+      `data:text/javascript,${encodeURIComponent(guard)}`,
+      path.resolve(import.meta.dirname, "../cli/evals.ts"),
+      "--list",
+      "--suite",
+      "browsing",
+    ],
+    { encoding: "utf8", timeout: 20_000 },
+  );
+  expect(browsing).toContain("browse-hard-page:");
 });
 
 it("records explicit not-run reasons without live execution", async () => {

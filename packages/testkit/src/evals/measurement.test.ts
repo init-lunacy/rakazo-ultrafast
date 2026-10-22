@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 import { gradeHistory, historyFixture } from "./history-fixtures.js";
 import {
@@ -227,4 +228,16 @@ it("retains spend and blocks further calls when observed one-hour writes lack th
   unknown.settleUsage(unknownId, { cacheWrite1hTokens: 100 });
   expect(unknown.usedUsd).toBe(unknownReserved);
   expect(() => unknown.reserve(100, 10)).toThrow("no configured pricing");
+});
+
+it("accepts the checked-in Anthropic pricing, including one-hour cache writes", () => {
+  const pricing = validatePricing(
+    JSON.parse(
+      readFileSync(
+        new URL("./fixtures/pricing-anthropic-sonnet-5-5-2026-10-22.json", import.meta.url),
+        "utf8",
+      ),
+    ),
+  );
+  expect(pricing.cacheWrite1h).toBeGreaterThan(pricing.cacheWrite);
 });
