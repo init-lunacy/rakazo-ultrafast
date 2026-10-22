@@ -528,6 +528,15 @@ describe("reaction turns", () => {
     expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ name: "run.continue" }));
   });
 
+  it("locks the group before the thread, like a group send", async () => {
+    const { tx, react } = fixture({ groupMembers: ["bot-1", "bot-2"] });
+    await react();
+    const locked = tx.$queryRaw.mock.calls.map(([strings]) =>
+      String(strings).includes("chat_groups") ? "group" : "thread",
+    );
+    expect(locked.slice(0, 2)).toEqual(["group", "thread"]);
+  });
+
   it.each([
     ["a recent reaction turn", { recentReaction: true }],
     ["a departed group bot", { groupMembers: ["bot-2", "bot-3"] }],

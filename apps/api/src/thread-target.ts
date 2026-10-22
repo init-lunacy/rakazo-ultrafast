@@ -1135,73 +1135,76 @@ export async function reactToThreadMessage(
   },
   releaseTakeover?: (runId: string) => Promise<void>,
 ) {
-  const committed = await deps.prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR UPDATE`;
-    const parent = await tx.message.findFirst({
-      where: { id: input.messageId, threadId: target.threadId },
-      select: { id: true, seq: true, role: true, botId: true, runId: true },
-    });
-    if (!parent) throw new IsolationError();
-    const existing = await tx.message.findUnique({
-      where: {
-        threadId_clientNonce: { threadId: target.threadId, clientNonce: input.clientNonce },
-      },
-      select: { id: true },
-    });
-    if (existing) {
-      // A retry finishes a takeover handoff whose release failed after the 👍 was saved.
-      const steering = releaseTakeover
-        ? await tx.steeringMessage.findFirst({
-            where: { messageId: existing.id, claimedAt: null },
-            select: { run: { select: { id: true, taskId: true, status: true } } },
-          })
-        : null;
-      const run = steering?.run;
-      return { eventSeq: null, runs: run?.status === "waiting_takeover" ? [run] : [] };
-    }
-    const members =
-      target.kind === "group" ? await lockAndLoadGroupMembers(tx, actor, target) : undefined;
-    const currentTarget = members
-      ? { ...target, memberBotIds: members.map((member) => member.botId) }
-      : target;
-    const replyBotId = input.mayStartTurn
-      ? await reactionReplyBotId(tx, currentTarget, parent)
-      : undefined;
-    const botId =
-      replyBotId ??
-      (currentTarget.kind === "bot" ? currentTarget.botId : currentTarget.memberBotIds[0]);
-    if (!botId) throw new IsolationError();
-    const blocks: MessageBlock[] = [{ kind: "text", text: input.reaction }];
-    const message = await createThreadMessageInTransaction(tx, {
-      threadId: target.threadId,
-      role: "user",
-      blocks,
-      replyToMessageId: parent.id,
-      clientNonce: input.clientNonce,
-    });
-    const runs = replyBotId
-      ? await startReactionTurn(tx, actor, target.threadId, replyBotId, parent, message, {
-          ...input,
-          canReleaseTakeover: Boolean(releaseTakeover),
-        })
-      : [];
-    if (target.kind === "group") await touchGroupUpdatedAt(tx, target.groupId);
-    const event = await appendEventInTransaction(tx, {
-      spaceId: actor.spaceId,
-      threadId: target.threadId,
-      botId,
-      type: "thread.message.created",
-      ...(runs[0] ? { runId: runs[0].id } : {}),
-      payload: {
-        messageId: message.id,
+  const commit = () =>
+    deps.prisma.$transaction(async (tx) => {
+      // Group then thread, like every group send, so a reaction cannot deadlock one.
+      const members =
+        target.kind === "group" ? await lockAndLoadGroupMembers(tx, actor, target) : undefined;
+      await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR UPDATE`;
+      const parent = await tx.message.findFirst({
+        where: { id: input.messageId, threadId: target.threadId },
+        select: { id: true, seq: true, role: true, botId: true, runId: true },
+      });
+      if (!parent) throw new IsolationError();
+      const existing = await tx.message.findUnique({
+        where: {
+          threadId_clientNonce: { threadId: target.threadId, clientNonce: input.clientNonce },
+        },
+        select: { id: true },
+      });
+      if (existing) {
+        // A retry finishes a takeover handoff whose release failed after the 👍 was saved.
+        const steering = releaseTakeover
+          ? await tx.steeringMessage.findFirst({
+              where: { messageId: existing.id, claimedAt: null },
+              select: { run: { select: { id: true, taskId: true, status: true } } },
+            })
+          : null;
+        const run = steering?.run;
+        return { eventSeq: null, runs: run?.status === "waiting_takeover" ? [run] : [] };
+      }
+      const currentTarget = members
+        ? { ...target, memberBotIds: members.map((member) => member.botId) }
+        : target;
+      const replyBotId = input.mayStartTurn
+        ? await reactionReplyBotId(tx, currentTarget, parent)
+        : undefined;
+      const botId =
+        replyBotId ??
+        (currentTarget.kind === "bot" ? currentTarget.botId : currentTarget.memberBotIds[0]);
+      if (!botId) throw new IsolationError();
+      const blocks: MessageBlock[] = [{ kind: "text", text: input.reaction }];
+      const message = await createThreadMessageInTransaction(tx, {
+        threadId: target.threadId,
         role: "user",
         blocks,
         replyToMessageId: parent.id,
-        ...(runs.length ? { runIds: runs.map((run) => run.id) } : {}),
-      },
+        clientNonce: input.clientNonce,
+      });
+      const runs = replyBotId
+        ? await startReactionTurn(tx, actor, target.threadId, replyBotId, parent, message, {
+            ...input,
+            canReleaseTakeover: Boolean(releaseTakeover),
+          })
+        : [];
+      if (target.kind === "group") await touchGroupUpdatedAt(tx, target.groupId);
+      const event = await appendEventInTransaction(tx, {
+        spaceId: actor.spaceId,
+        threadId: target.threadId,
+        botId,
+        type: "thread.message.created",
+        ...(runs[0] ? { runId: runs[0].id } : {}),
+        payload: {
+          messageId: message.id,
+          role: "user",
+          blocks,
+          replyToMessageId: parent.id,
+          ...(runs.length ? { runIds: runs.map((run) => run.id) } : {}),
+        },
+      });
+      return { eventSeq: event.seq, runs };
     });
-    return { eventSeq: event.seq, runs };
-  });
+  const committed = await withSerializableRetry(commit);
   if (releaseTakeover) {
     for (const run of committed.runs) {
       if (run.status === "waiting_takeover") await releaseTakeover(run.id);
