@@ -79,7 +79,7 @@ export async function runTrial(
 ): Promise<TrialResult> {
   const result = emptyTrial(scenario.id, trial);
   const started = Date.now();
-  const deadline = started + options.timeoutMs;
+  let deadline = started + options.timeoutMs;
   const services = new EvalServices();
   const messaging = new MessagingTeamChatEmulator({
     provider: "slack",
@@ -226,6 +226,8 @@ export async function runTrial(
         await fixture.install(trial, botId);
       });
       timings.bootMs = Date.now() - bootStarted;
+      // A slow computer boot must not eat into the model's time for the task.
+      deadline += timings.bootMs;
     }
     if (scenario.routine) {
       await rpc(app, cookie, "routines/create", {
