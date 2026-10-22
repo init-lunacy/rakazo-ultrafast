@@ -41,7 +41,7 @@ export const EVAL_SUITES = {
     controls: { timeoutMs: 300_000, maxToolCalls: 60 },
     fixtures: "synthetic local websites served inside a real Docker bot computer",
     limitations: [
-      "Shell, web_fetch and web_search are off for the bot, so this measures the browser path only.",
+      "Shell, launch_app, web_fetch and web_search are off for the bot. The desktop stays reachable through computer_act, so graders require the site requests to come from Chrome.",
       "The sites are synthetic and local; real websites are slower and change.",
       "Each run uses one model connection; a few trials give a baseline, not a precise rate.",
       COST_LIMITATION,

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -282,23 +282,28 @@ async function main() {
   let postgres: StartedPostgreSqlContainer | undefined;
   let docker: { url: string; sandbox: SandboxProvider; close(): Promise<void> } | undefined;
   let stopRequested = false;
+  // Set while a trial runs real computers: a second Ctrl-C stops at once but still removes them.
+  let stopNow: (() => Promise<void>) | undefined;
   const requestStop = () => {
+    if (stopRequested && stopNow) void stopNow().finally(() => process.exit(130));
     stopRequested = true;
   };
   process.on("SIGINT", requestStop);
   process.on("SIGTERM", requestStop);
   try {
     if (suite.computer === "docker") assertComputerImage(DEFAULT_COMPUTER_IMAGE);
-    postgres = await new PostgreSqlContainer("postgres:16-alpine").start();
+    // Per-run secrets: a real computer has network access, and the database holds the model key.
+    const secret = () => randomBytes(32).toString("base64url");
+    postgres = await new PostgreSqlContainer("postgres:16-alpine").withPassword(secret()).start();
     const databaseUrl = postgres.getConnectionUri();
     Object.assign(process.env, {
       DATABASE_URL: databaseUrl,
       REALTIME_DATABASE_URL: databaseUrl,
       WAKEUP_DRIVER: "memory",
-      BETTER_AUTH_SECRET: "synthetic-eval-auth-secret-at-least-32-characters",
-      ENCRYPTION_KEY: "synthetic-eval-encryption-key-at-least-32-characters",
-      SANDBOX_SUPERVISOR_TOKEN: "synthetic-eval-supervisor-token-at-least-32-characters",
-      SCREEN_PROXY_SECRET: "synthetic-eval-screen-secret-at-least-32-characters",
+      BETTER_AUTH_SECRET: secret(),
+      ENCRYPTION_KEY: secret(),
+      SANDBOX_SUPERVISOR_TOKEN: secret(),
+      SCREEN_PROXY_SECRET: secret(),
       BETTER_AUTH_URL: "http://127.0.0.1:5173",
       WEB_ORIGIN: "http://127.0.0.1:5173",
       SIGNUPS_ENABLED: "true",
@@ -470,6 +475,13 @@ async function main() {
               updaterUrl: undefined,
               updaterToken: undefined,
             });
+            if (docker) {
+              const computers = docker.sandbox;
+              stopNow = async () => {
+                await destroyComputers(handles.prisma, computers).catch(() => undefined);
+                rmSync(dataDir, { recursive: true, force: true });
+              };
+            }
             return {
               ...handles,
               harnessIssues: evalSandbox?.harnessIssues ?? [],

@@ -229,15 +229,21 @@ claims:
 
 **What this does not measure:**
 
-- **Only the browser path.** The bot's `shell`, `web_fetch` and `web_search` tools are off, so
-  the browser is its only route to the sites.
+- **Anything but the browser path.** The bot's `shell`, `launch_app`, `web_fetch` and
+  `web_search` tools are off. The desktop stays reachable through `computer_act`, so the
+  answer data is deleted once the sites start, and graders require the site requests to come
+  from Chrome. A bot set on tampering could still edit the request log from a desktop terminal.
 - **Synthetic sites.** They are local; real websites are slower and change.
 - **One model per run.** Three trials per task give a baseline, not a precise rate.
 
 **Housekeeping.**
 
-- **Cleanup:** each trial destroys its computer. If the process is killed hard, list leftovers
-  with `docker ps --filter label=rakazo.managed` and remove them by name.
+- **Stopping:** the first Ctrl-C stops after the current trial. A second stops at once and
+  still removes the trial's computer.
+- **Cleanup:** each trial destroys its computer. If the process is killed outright, its computer
+  keeps running. `docker ps --filter label=rakazo.managed` lists it, but your own bots'
+  computers carry the same label, so remove only the containers created during the run, and
+  their networks (`docker network ls --filter label=rakazo.computerOwner`).
 - **Data folder:** the run's data lives under the OS temp directory. If that is a small RAM
   disk, point `TMPDIR` at a disk folder first.
 
