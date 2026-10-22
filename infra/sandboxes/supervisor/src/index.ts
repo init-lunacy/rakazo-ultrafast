@@ -60,6 +60,7 @@ import {
   assertRequestIdentity,
   attemptComputerControl,
   browserProfilePathForScreen,
+  browserRunningCommand,
   ComputerControlUnavailableError,
   clearComputerScreenRegistry,
   completeWarmReleasedScreen,
@@ -552,6 +553,8 @@ app.post("/computers/:id/browser", async (c) => {
       c.req.header("x-rakazo-space-id"),
       c.req.header("x-rakazo-screen-id"),
       c.req.header("x-rakazo-screen-lease-id"),
+      true,
+      c.req.header("x-rakazo-skip-browser-launch") !== "1",
     );
     const result = await runContainerCommand(
       container,
@@ -1277,11 +1280,21 @@ async function managedScreen(
   screenId: string | undefined,
   screenLeaseId: string | undefined,
   restoreControl = true,
+  launchBrowser = true,
 ) {
   const { container } = await managedContainer(id, botId, spaceId);
-  return withComputerScreenLock(id, () =>
-    ensureManagedScreen(id, container, botId, screenId, screenLeaseId, restoreControl),
-  );
+  return withComputerScreenLock(id, async () => {
+    // Under the lock, so a Stop releasing the screen cannot land between check and setup.
+    if (!launchBrowser) {
+      const running = await runContainerCommand(container, [
+        "bash",
+        "-c",
+        browserRunningCommand(screenId || botId || id),
+      ]);
+      if (running.code !== 0) throw new Error("The computer's browser is not running.");
+    }
+    return ensureManagedScreen(id, container, botId, screenId, screenLeaseId, restoreControl);
+  });
 }
 
 async function ensureManagedScreen(

@@ -129,21 +129,21 @@ export class RunBrowserTabs {
       this.supported = false;
       return false;
     }
-    this.probing ??= this.refresh(this.deps.context.signal).finally(() => {
+    this.probing ??= this.refresh(this.deps.context).finally(() => {
       this.probing = undefined;
     });
     return this.probing;
   }
 
   /** Re-read the live tabs. A listing never drops a tab learned while it was in flight. */
-  private async refresh(signal: AbortSignal): Promise<boolean> {
-    const { browser, context } = this.deps;
+  private async refresh(context: AdapterContext): Promise<boolean> {
+    const { browser } = this.deps;
     if (!browser.tabs) return false;
     const mark = this.registry.mark();
     // A computer that fails to start answers like one that is not answering yet.
     const listed = await this.deps.computer
       .get()
-      .then((computer) => browser.tabs?.(computer, { signal }, { ...context, signal }))
+      .then((computer) => browser.tabs?.(computer, { signal: context.signal }, context))
       .catch(() => undefined);
     if (!listed || listed.fallback || listed.error) {
       if (listed?.error && NO_TAB_COMMANDS.test(listed.error)) this.supported = false;
@@ -411,7 +411,7 @@ export class RunBrowserTabs {
     // A first call's probe is itself a fresh listing: no need to list twice.
     const probed = this.supported === undefined;
     if (!(await this.support())) return { error: this.unsupported() };
-    if (!probed) await this.refresh(this.deps.context.signal);
+    if (!probed) await this.refresh(this.deps.context);
     await this.publishIfChanged();
     const current = this.registry.lastTabOf(agent)?.target;
     return {
@@ -444,29 +444,29 @@ export class RunBrowserTabs {
    * with a signal of its own: a cancelled run's signal is already aborted.
    */
   async closeOpened(signal: AbortSignal): Promise<void> {
-    const { browser, context } = this.deps;
+    const { browser } = this.deps;
     // Only a computer this run already started: tidying up never starts or wakes one.
     const computer = this.deps.computer.ready;
     if (!computer || !browser.closeTab || !this.registry.list().some((tab) => tab.opened)) return;
+    // Nor its browser: Stop shuts it down, and a relaunch restores every tab under new ids.
+    const context = { ...this.deps.context, signal, skipBrowserLaunch: true };
     // Decide from the live tabs: one the user closed must not count as still open.
-    if (!(await this.refresh(signal))) return;
+    if (!(await this.refresh(context))) return;
     // Leave the user looking at where the main agent finished; a pin still wins.
     const last = this.registry.lastTabOf(MAIN_AGENT);
     const { activateTab } = browser;
     if (last && activateTab) {
       const shown = await this.serialized(() =>
         activateTab
-          .call(browser, computer, { target: last.target, signal }, { ...context, signal })
+          .call(browser, computer, { target: last.target, signal }, context)
           .catch(() => undefined),
       );
       if (shown && !shown.fallback && !shown.error) this.registry.fronted(shown);
     }
     for (const target of this.registry.closable()) {
-      await browser
-        .closeTab(computer, { target, signal }, { ...context, signal })
-        .catch(() => undefined);
+      await browser.closeTab(computer, { target, signal }, context).catch(() => undefined);
     }
-    await this.refresh(signal);
+    await this.refresh(context);
     await this.publishIfChanged();
   }
 

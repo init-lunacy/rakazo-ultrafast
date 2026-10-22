@@ -17,6 +17,8 @@ export interface AdapterContext {
   keepScreenWarm?: boolean;
   /** When releasing a screen after cancel, also stop orphaned browser work on that screen. */
   cancelRunWork?: boolean;
+  /** Use the computer's browser only if it is already running: never launch it. */
+  skipBrowserLaunch?: boolean;
   signal: AbortSignal;
   /** Connected external accounts available to this run, including their owning connector. */
   connectedConnections?: ConnectedConnector[];

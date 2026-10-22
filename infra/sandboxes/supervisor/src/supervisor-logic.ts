@@ -10,6 +10,7 @@ import {
 
 export {
   browserProfilePathForScreen,
+  browserRunningCommand,
   ensureScreenCommand,
   interactiveScreenCommand,
   prepareBrowserProfileCommand,

@@ -440,6 +440,39 @@ describe("run browser tabs", () => {
     expect(listTabs).not.toHaveBeenCalled();
   });
 
+  // Stop shuts the browser down; a relaunch would restore every tab of the run under new ids.
+  it("never launches the browser to tidy up, and skips quietly when it is not running", async () => {
+    const { browser, tabs } = setup();
+    await tabs.support();
+    await helperTab(tabs);
+    await helperTab(tabs, "https://b.test/");
+    const listTabs = vi.spyOn(browser, "tabs");
+    const activateTab = vi.spyOn(browser, "activateTab");
+    const closeTab = vi.spyOn(browser, "closeTab");
+    await tabs.closeOpened(new AbortController().signal);
+    expect(closeTab).toHaveBeenCalled();
+    for (const call of [...listTabs.mock.calls, ...activateTab.mock.calls, ...closeTab.mock.calls])
+      expect(call[2]).toMatchObject({ skipBrowserLaunch: true });
+
+    // The computer answers that its browser is not running: nothing more is asked of it.
+    const stopped = setup();
+    await stopped.tabs.support();
+    await helperTab(stopped.tabs);
+    await helperTab(stopped.tabs, "https://b.test/");
+    const strip = stopped.published.length;
+    vi.spyOn(stopped.browser, "tabs").mockResolvedValue({
+      tabs: [],
+      fallback: "computer_act",
+      error: "The computer's browser is not running.",
+    });
+    const notActivated = vi.spyOn(stopped.browser, "activateTab");
+    const notClosed = vi.spyOn(stopped.browser, "closeTab");
+    await stopped.tabs.closeOpened(new AbortController().signal);
+    expect(notActivated).not.toHaveBeenCalled();
+    expect(notClosed).not.toHaveBeenCalled();
+    expect(stopped.published).toHaveLength(strip);
+  });
+
   it("publishes tab addresses without their query or fragment, which can carry login codes", async () => {
     const { browser, tabs, published } = setup(
       new FakeBrowserProvider({

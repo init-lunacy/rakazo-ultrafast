@@ -16,6 +16,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   browserCloseProgram,
+  browserProfilePathForScreen,
+  browserRunningCommand,
   DEFAULT_DESKTOP_ENV,
   desktopControlCommand,
   desktopTerminalCommand,
@@ -541,6 +543,48 @@ describe("shared Linux desktop lifecycle", () => {
             child.kill("SIGKILL");
           }
         }
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "answers whether a screen's browser runs without launching one",
+    () => {
+      const root = mkdtempSync(path.join(tmpdir(), "desktop-running-"));
+      roots.push(root);
+      const profiles = { ...DEFAULT_DESKTOP_ENV, browserProfilesDir: path.join(root, "profiles") };
+      const probe = () =>
+        spawnSync(
+          "bash",
+          [
+            "-eu",
+            "-c",
+            browserRunningCommand("bot", profiles).replaceAll(
+              "/tmp/rakazo",
+              path.join(root, "run"),
+            ),
+          ],
+          { encoding: "utf8", timeout: 20_000 },
+        );
+      expect(probe().status).toBe(1);
+      expect(readdirSync(root)).toEqual([]);
+      const sleeper = path.join(root, "sleeper");
+      writeFileSync(sleeper, "#!/usr/bin/env python3\nimport time\ntime.sleep(120)\n");
+      chmodSync(sleeper, 0o755);
+      const browser = spawn(
+        sleeper,
+        [
+          `--user-data-dir=${browserProfilePathForScreen("bot", profiles)}`,
+          "--remote-debugging-port=9333",
+        ],
+        { stdio: "ignore" },
+      );
+      try {
+        const deadline = Date.now() + 2_000;
+        while (probe().status !== 0 && Date.now() < deadline) spawnSync("sleep", ["0.02"]);
+        expect(probe().status).toBe(0);
+      } finally {
+        browser.kill("SIGKILL");
       }
     },
   );

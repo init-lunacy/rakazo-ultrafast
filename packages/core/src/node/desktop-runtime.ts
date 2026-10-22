@@ -257,6 +257,17 @@ export function browserCloseProgram() {
   return CLOSE_BROWSER;
 }
 
+/** Exits 0 only while this screen's browser runs; it launches nothing. */
+export function browserRunningCommand(screenId: string, env = DEFAULT_DESKTOP_ENV) {
+  return [
+    ...browserRunningFunction(
+      browserProfilePathForScreen(screenId, env),
+      browserPidPathForScreen(screenId),
+    ),
+    "browser_running",
+  ].join("\n");
+}
+
 export function stopBrowserCommand(screenId: string, env = DEFAULT_DESKTOP_ENV) {
   return stopBrowserProfileCommand(
     browserProfilePathForScreen(screenId, env),
