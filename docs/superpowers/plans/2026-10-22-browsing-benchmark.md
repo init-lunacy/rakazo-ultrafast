@@ -30,15 +30,22 @@
   - `connections: []`.
 - **Site placement:** port `8800` inside the computer. Data and log live in `/tmp/rakazo-sites`, outside the bot home.
 - **Fixture version:** `browsing-v1`, from `sites.json` `version`.
-- **Lint and format:** Biome (`pnpm exec biome check <files>`). Python must run on the image's `python3` (3.11+) with the standard library only.
+- **Lint and format:** Biome (`pnpm exec biome check <files>`). Python must run on the image's `python3` (3.11+) with the standard library only. CI has no Python linter, so `python3 -m py_compile` is the check.
+- **Typecheck:** `pnpm --filter @rakazo/testkit check`.
+- **No provider-specific settings:** no new provider- or model-specific environment variables. The model comes only through the existing generic flags (`--provider`, `--model`, `--api-key-env`, `--connection`).
+- **Test fixtures:** extend existing ones. Fake sandboxes extend `FakeSandboxProvider` from `@rakazo/adapters`, the way `EvalSandboxProvider` does. Prisma shapes reuse `ReturnType<typeof createDb>["prisma"]`, as `EvalApp` does.
 
 ## Review Focus
 
 1. **The bot's own tools reaching the site data.** `read_file` and `write_file` must not reach `/tmp/rakazo-sites`. The install must leave nothing of the site in the home. Pinned by Task 6's "moves the site out of the home" test.
 2. **A double or partial checkout.** Graders must fail two confirms. The server must refuse a confirm with missing fields and issue no order number for it. Pinned by Task 3's "refuses an incomplete order" test and Task 5's "fails a double submit" test.
 3. **A task with more than one defensible answer.** This includes ties on price and decoys on the wrong page. Pinned by Task 5's "one answer per task" tests, which run against the rendered pages.
-4. **Leaked computers when a trial fails partway.** `stop` must destroy computers even when the trial threw, and destroy must tolerate already-destroyed computers. Pinned by Task 2's `destroyComputers` tests (the adapter treats 404 as done).
-5. **Existing suites drifting.** Changes to `evals.ts`, the controls defaults and the report text must not alter product, history or silence. Pinned by Task 7's suite tests, which compare against today's literal values.
+4. **Leaked computers when a trial fails partway.** `stop` must destroy computers even when the trial threw, and destroying an already-destroyed computer must be harmless (the adapter treats 404 as done).
+   - Task 2's `destroyComputers` tests pin trying every computer even after one fails.
+   - The final live check pins that no container remains.
+   - The `stop` wiring in `cli/evals.ts` has no unit test; the runner's existing `finally` always calls `stop`.
+5. **A broken site or computer read counted against the model.** If the computer, the server or the request log can't be reached, the trial is a harness failure, not an agent failure. Pinned in Task 4: both fixture calls are wrapped as `EvalFailure("harness", ...)`.
+6. **Existing suites drifting.** Changes to `evals.ts`, the controls defaults and the report text must not alter product, history or silence. Pinned by Task 7's suite tests, which compare against today's literal values.
 
 ---
 
@@ -48,7 +55,7 @@ Extract the write → start → poll-until-ready code that `installContactsFixtu
 
 **Files:**
 - Create: `packages/testkit/src/computer-fixture-server.ts`
-- Create: `packages/testkit/src/stub-sandbox.ts` (test helper, reused by Task 6)
+- Create: `packages/testkit/src/scripted-sandbox.ts` (test helper extending `FakeSandboxProvider`, reused by Task 6)
 - Test: `packages/testkit/src/computer-fixture-server.test.ts`
 - Modify: `packages/testkit/src/computer-replay-fixture.ts` (around lines 116-201: `installContactsFixture` body and the private `executeChecked`)
 
@@ -57,50 +64,60 @@ Extract the write → start → poll-until-ready code that `installContactsFixtu
   - `executeChecked(sandbox: SandboxProvider, computer: ComputerRef, context: AdapterContext, command: string): Promise<string>` returns stdout and throws on a non-zero exit with stderr in the message.
   - `type FixtureServer = { files: Record<string, string>; command: string; readyUrl: string; logPath: string }`
   - `startFixtureServer(sandbox, computer, context, server: FixtureServer): Promise<void>`
-  - `stubSandbox(answer: (command: string) => { code: number; stdout?: string; stderr?: string })` returns `{ sandbox: SandboxProvider; writes: Array<{ path: string; text: string }>; commands: string[] }`.
-  - `STUB_COMPUTER: ComputerRef` and `STUB_CONTEXT: AdapterContext`.
+  - `class ScriptedSandboxProvider extends FakeSandboxProvider`, with `constructor(answer: (command: string) => { code: number; stdout?: string; stderr?: string })` and `readonly commands: string[]`. Files written through it are real fake-sandbox files, read back with the base `readFile`.
+  - `scriptedComputer(answer)` returns `Promise<{ sandbox: ScriptedSandboxProvider; computer: ComputerRef; context: AdapterContext; text(path: string): Promise<string> }>`.
 
 - [ ] **Step 1: Write the test helper and the failing tests**
 
-`packages/testkit/src/stub-sandbox.ts`:
+`packages/testkit/src/scripted-sandbox.ts`. It follows the existing `EvalSandboxProvider`, which also extends the shared fake and overrides only `execute`:
 
 ```ts
-import type { AdapterContext, ComputerRef, SandboxProvider } from "@rakazo/adapter-kit";
+import type {
+  AdapterContext,
+  CommandRequest,
+  ComputerRef,
+  ProcessEvent,
+} from "@rakazo/adapter-kit";
+import { FakeSandboxProvider } from "@rakazo/adapters";
 
-export const STUB_COMPUTER: ComputerRef = {
-  id: "computer",
-  botId: "home",
-  kind: "docker",
-  providerRef: "computer",
-};
-export const STUB_CONTEXT: AdapterContext = {
-  operationId: "test",
-  traceId: "test",
-  spaceId: "space",
-  userId: "user",
-  signal: new AbortController().signal,
-};
+type Answer = (command: string) => { code: number; stdout?: string; stderr?: string };
 
-/** A sandbox that records file writes and answers each bash command from `answer`. */
-export function stubSandbox(
-  answer: (command: string) => { code: number; stdout?: string; stderr?: string },
-) {
-  const writes: Array<{ path: string; text: string }> = [];
-  const commands: string[] = [];
-  const sandbox = {
-    async writeFile(_computer: ComputerRef, file: { path: string; content: Uint8Array }) {
-      writes.push({ path: file.path, text: new TextDecoder().decode(file.content) });
-    },
-    async *execute(_computer: ComputerRef, request: { argv: string[] }) {
-      const command = request.argv[2] ?? "";
-      commands.push(command);
-      const result = answer(command);
-      if (result.stdout) yield { type: "stdout" as const, data: result.stdout };
-      if (result.stderr) yield { type: "stderr" as const, data: result.stderr };
-      yield { type: "exit" as const, code: result.code };
-    },
-  } as unknown as SandboxProvider;
-  return { sandbox, writes, commands };
+/** The fake sandbox with scripted bash answers; files still go through the fake's own store. */
+export class ScriptedSandboxProvider extends FakeSandboxProvider {
+  readonly commands: string[] = [];
+
+  constructor(private readonly answer: Answer) {
+    super();
+  }
+
+  override async *execute(
+    _computer: ComputerRef,
+    request: CommandRequest,
+    _context: AdapterContext,
+  ): AsyncIterable<ProcessEvent> {
+    const command = request.argv[2] ?? "";
+    this.commands.push(command);
+    const result = this.answer(command);
+    if (result.stdout) yield { type: "stdout", data: result.stdout };
+    if (result.stderr) yield { type: "stderr", data: result.stderr };
+    yield { type: "exit", code: result.code };
+  }
+}
+
+/** A provisioned computer on a scripted sandbox, with a reader for the files written to it. */
+export async function scriptedComputer(answer: Answer) {
+  const sandbox = new ScriptedSandboxProvider(answer);
+  const context: AdapterContext = {
+    operationId: "test",
+    traceId: "test",
+    spaceId: "space",
+    userId: "user",
+    signal: new AbortController().signal,
+  };
+  const computer = await sandbox.provision({ botId: "home", homePath: "/unused" }, context);
+  const text = async (path: string) =>
+    new TextDecoder().decode(await sandbox.readFile(computer, path, context));
+  return { sandbox, computer, context, text };
 }
 ```
 
@@ -109,7 +126,7 @@ export function stubSandbox(
 ```ts
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { executeChecked, startFixtureServer } from "./computer-fixture-server.js";
-import { STUB_COMPUTER, STUB_CONTEXT, stubSandbox } from "./stub-sandbox.js";
+import { scriptedComputer } from "./scripted-sandbox.js";
 
 const SERVER = {
   files: { "server.py": "print('hi')" },
@@ -124,15 +141,16 @@ afterEach(() => {
 
 describe("executeChecked", () => {
   it("returns the command's stdout", async () => {
-    const { sandbox } = stubSandbox(() => ({ code: 0, stdout: "out" }));
-    await expect(executeChecked(sandbox, STUB_COMPUTER, STUB_CONTEXT, "echo out")).resolves.toBe(
-      "out",
-    );
+    const { sandbox, computer, context } = await scriptedComputer(() => ({ code: 0, stdout: "out" }));
+    await expect(executeChecked(sandbox, computer, context, "echo out")).resolves.toBe("out");
   });
 
   it("fails with stderr when the command exits non-zero", async () => {
-    const { sandbox } = stubSandbox(() => ({ code: 2, stderr: "no such file" }));
-    await expect(executeChecked(sandbox, STUB_COMPUTER, STUB_CONTEXT, "cat x")).rejects.toThrow(
+    const { sandbox, computer, context } = await scriptedComputer(() => ({
+      code: 2,
+      stderr: "no such file",
+    }));
+    await expect(executeChecked(sandbox, computer, context, "cat x")).rejects.toThrow(
       /no such file/,
     );
   });
@@ -140,23 +158,23 @@ describe("executeChecked", () => {
 
 describe("startFixtureServer", () => {
   it("writes the files, starts the server and returns once it answers", async () => {
-    const { sandbox, writes, commands } = stubSandbox(() => ({ code: 0 }));
-    await startFixtureServer(sandbox, STUB_COMPUTER, STUB_CONTEXT, SERVER);
-    expect(writes).toEqual([{ path: "server.py", text: "print('hi')" }]);
-    expect(commands[0]).toBe(SERVER.command);
-    expect(commands[1]).toContain(SERVER.readyUrl);
+    const { sandbox, computer, context, text } = await scriptedComputer(() => ({ code: 0 }));
+    await startFixtureServer(sandbox, computer, context, SERVER);
+    expect(await text("server.py")).toBe("print('hi')");
+    expect(sandbox.commands[0]).toBe(SERVER.command);
+    expect(sandbox.commands[1]).toContain(SERVER.readyUrl);
   });
 
   it("reports the server log when the server never answers", async () => {
     vi.useFakeTimers();
-    const { sandbox } = stubSandbox((command) =>
+    const { sandbox, computer, context } = await scriptedComputer((command) =>
       command.startsWith("cat ")
         ? { code: 0, stdout: "Traceback: port in use" }
         : command.includes("urlopen")
           ? { code: 1, stderr: "connection refused" }
           : { code: 0 },
     );
-    const started = startFixtureServer(sandbox, STUB_COMPUTER, STUB_CONTEXT, SERVER);
+    const started = startFixtureServer(sandbox, computer, context, SERVER);
     const failure = expect(started).rejects.toThrow(/did not become ready: Traceback: port in use/);
     await vi.runAllTimersAsync();
     await failure;
@@ -271,14 +289,14 @@ In `packages/testkit/src/computer-replay-fixture.ts`:
 Run:
 ```bash
 pnpm exec vitest run packages/testkit/src/computer-replay.test.ts packages/testkit/src/computer-recording.test.ts packages/testkit/src/computer-fixture-server.test.ts
-pnpm exec biome check packages/testkit/src/computer-fixture-server.ts packages/testkit/src/computer-fixture-server.test.ts packages/testkit/src/stub-sandbox.ts packages/testkit/src/computer-replay-fixture.ts
+pnpm exec biome check packages/testkit/src/computer-fixture-server.ts packages/testkit/src/computer-fixture-server.test.ts packages/testkit/src/scripted-sandbox.ts packages/testkit/src/computer-replay-fixture.ts
 ```
 Expected: all PASS, and Biome reports no errors. If a test asserted the old message "Contacts fixture did not become ready", update it to "Fixture server did not become ready".
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add packages/testkit/src/computer-fixture-server.ts packages/testkit/src/computer-fixture-server.test.ts packages/testkit/src/stub-sandbox.ts packages/testkit/src/computer-replay-fixture.ts
+git add packages/testkit/src/computer-fixture-server.ts packages/testkit/src/computer-fixture-server.test.ts packages/testkit/src/scripted-sandbox.ts packages/testkit/src/computer-replay-fixture.ts
 git commit -m "test(testkit): share the in-computer fixture server between fixtures"
 ```
 
@@ -300,7 +318,7 @@ Extract the supervisor startup (written out inline in `computer-replay.docker.te
   - `dockerComputerEnv(dataDir: string, image: string): Record<string, string>`
   - `assertComputerImage(image: string): void`, which throws `The computer image <image> is missing; build it with pnpm sandbox:build`
   - `serveSupervisor(): Promise<{ url: string; close(): Promise<void> }>`
-  - `destroyComputers(prisma: { computer: { findMany: ... } }, sandbox: SandboxProvider): Promise<void>`
+  - `destroyComputers(prisma: Pick<ReturnType<typeof createDb>["prisma"], "computer">, sandbox: SandboxProvider): Promise<void>`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -334,7 +352,7 @@ describe("destroyComputers", () => {
   it("destroys every provisioned computer through the sandbox", async () => {
     const findMany = vi.fn(async () => rows);
     const destroy = vi.fn(async () => undefined);
-    await destroyComputers({ computer: { findMany } }, { destroy } as never);
+    await destroyComputers({ computer: { findMany } } as never, { destroy } as never);
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { providerRef: { not: null } } }),
     );
@@ -350,7 +368,7 @@ describe("destroyComputers", () => {
       .mockRejectedValueOnce(new Error("supervisor down"))
       .mockResolvedValueOnce(undefined);
     await expect(
-      destroyComputers({ computer: { findMany: async () => rows } }, { destroy } as never),
+      destroyComputers({ computer: { findMany: async () => rows } } as never, { destroy } as never),
     ).rejects.toThrow(/Could not destroy every eval computer/);
     expect(destroy).toHaveBeenCalledTimes(2);
   });
@@ -372,25 +390,12 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { serve } from "@hono/node-server";
 import type { SandboxProvider } from "@rakazo/adapter-kit";
+import type { createDb } from "@rakazo/db";
 
 export const DEFAULT_COMPUTER_IMAGE = "rakazo/computer:local";
 
-type ComputerRows = {
-  computer: {
-    findMany(args: {
-      where: { providerRef: { not: null } };
-      select: { homeKey: true; kind: true; providerRef: true; spaceId: true; userId: true };
-    }): Promise<
-      Array<{
-        homeKey: string;
-        kind: string;
-        providerRef: string | null;
-        spaceId: string;
-        userId: string;
-      }>
-    >;
-  };
-};
+/** The same Prisma client type the eval runner's EvalApp uses. */
+type Prisma = ReturnType<typeof createDb>["prisma"];
 
 /** Settings a test's supervisor and API read, pinned so a developer's .env cannot change them. */
 export function dockerComputerEnv(dataDir: string, image: string): Record<string, string> {
@@ -436,7 +441,7 @@ export async function serveSupervisor() {
 }
 
 /** Destroys every provisioned computer in this database; destroying a removed one is a no-op. */
-export async function destroyComputers(prisma: ComputerRows, sandbox: SandboxProvider) {
+export async function destroyComputers(prisma: Pick<Prisma, "computer">, sandbox: SandboxProvider) {
   // Deferred: the replay CLI imports this module and must stay free of the generated database client.
   const { toComputerRef } = await import("@rakazo/adapters");
   const computers = await prisma.computer.findMany({
@@ -498,12 +503,12 @@ Expected: PASS (3 tests).
 
 Run:
 ```bash
-pnpm --filter @rakazo/testkit exec tsc --noEmit -p .
+pnpm --filter @rakazo/testkit check
 pnpm exec biome check packages/testkit/src/docker-computers.ts packages/testkit/src/docker-computers.test.ts packages/testkit/src/cli/computer-replay.ts packages/testkit/src/computer-replay.docker.test.ts
 pnpm exec vitest run packages/testkit/src/docker-computers.test.ts packages/testkit/src/computer-replay.docker.test.ts
 ```
 Expected:
-- **tsc:** clean. If the package has no `tsconfig` at that path, use the repo's typecheck command for testkit from its `package.json`.
+- **Typecheck:** clean.
 - **Biome:** clean.
 - **Tests:** the docker test reports skipped, since `RUN_COMPUTER_REPLAY_DOCKER` is unset, and the helper tests pass.
 
@@ -1220,23 +1225,34 @@ export type ComputerFixture = {
       });
 ```
 
+- Next to `const timings`, add one wrapper, so a broken computer or site is never blamed on the model:
+
+```ts
+  const asHarness = async <T>(label: string, work: () => Promise<T>) => {
+    try {
+      return await work();
+    } catch (error) {
+      throw new EvalFailure(
+        "harness",
+        `${label}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+```
+
 - Replace the first `await setupActor();` (the one right after the `setupActor` definition) with:
 
 ```ts
     const setupStarted = Date.now();
     await setupActor();
     timings.setupMs = Date.now() - setupStarted;
-    if (options.computerFixture) {
+    const fixture = options.computerFixture;
+    if (fixture) {
       const bootStarted = Date.now();
-      try {
+      await asHarness("Computer fixture setup failed", async () => {
         await rpc(app, cookie, "computer/boot", { botId });
-        await options.computerFixture.install(trial, botId);
-      } catch (error) {
-        throw new EvalFailure(
-          "harness",
-          `Computer fixture setup failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+        await fixture.install(trial, botId);
+      });
       timings.bootMs = Date.now() - bootStarted;
     }
 ```
@@ -1245,7 +1261,11 @@ export type ComputerFixture = {
 
 ```ts
       ...(options.computerFixture
-        ? { siteRequests: await options.computerFixture.siteRequests(trial, botId) }
+        ? {
+            siteRequests: await asHarness("Reading the site log failed", () =>
+              options.computerFixture!.siteRequests(trial, botId),
+            ),
+          }
         : {}),
 ```
 
@@ -1270,7 +1290,7 @@ export type ComputerFixture = {
 
 Run:
 ```bash
-pnpm --filter @rakazo/testkit exec tsc --noEmit -p .
+pnpm --filter @rakazo/testkit check
 pnpm exec vitest run packages/testkit/src/evals/
 pnpm exec biome check packages/testkit/src/evals/cases.ts packages/testkit/src/evals/runner.ts packages/testkit/src/evals/report.ts packages/testkit/src/evals/evals.test.ts
 ```
@@ -1692,7 +1712,7 @@ git commit -m "test(evals): four browsing tasks graded from the sites data"
 **Interfaces:**
 - Consumes:
   - `executeChecked`, `startFixtureServer` (Task 1);
-  - `stubSandbox`, `STUB_COMPUTER`, `STUB_CONTEXT` (Task 1, tests);
+  - `scriptedComputer` (Task 1, tests);
   - `SITES_PATH`, `SITE_SERVER_PATH`, `SITE_PORT`, `SITE_URL`, `parseSiteRequests`, `SiteRequest` (Task 3);
   - `ComputerFixture`, `EvalApp` (Task 4);
   - `toComputerRef` from `@rakazo/adapters`.
@@ -1709,37 +1729,47 @@ git commit -m "test(evals): four browsing tasks graded from the sites data"
 ```ts
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { STUB_COMPUTER, STUB_CONTEXT, stubSandbox } from "../../stub-sandbox.js";
+import { scriptedComputer } from "../../scripted-sandbox.js";
 import { installBrowsingSites, readSiteRequests, SITES_DIR } from "./install.js";
 import { SITE_SERVER_PATH, SITES_PATH } from "./sites.js";
 
 describe("installBrowsingSites", () => {
   it("moves the site out of the home before starting it on the benchmark port", async () => {
-    const { sandbox, writes, commands } = stubSandbox(() => ({ code: 0 }));
-    await installBrowsingSites(sandbox, STUB_COMPUTER, STUB_CONTEXT);
-    expect(writes.map((w) => w.text)).toEqual([
-      readFileSync(SITE_SERVER_PATH, "utf8"),
-      readFileSync(SITES_PATH, "utf8"),
-    ]);
-    const start = commands[0]!;
-    for (const { path } of writes) expect(start).toContain(`mv ${path} ${SITES_DIR}/`);
-    expect(start.indexOf("mv ")).toBeLessThan(start.indexOf("python3"));
-    expect(start).toContain(`${SITES_DIR}/site_server.py ${SITES_DIR}/sites.json 8800 ${SITES_DIR}/requests.jsonl`);
-    expect(commands[1]).toContain("http://127.0.0.1:8800/health");
+    const { sandbox, computer, context, text } = await scriptedComputer(() => ({ code: 0 }));
+    await installBrowsingSites(sandbox, computer, context);
+    expect(await text("rakazo-site-server.py")).toBe(readFileSync(SITE_SERVER_PATH, "utf8"));
+    expect(await text("rakazo-sites.json")).toBe(readFileSync(SITES_PATH, "utf8"));
+    const start = sandbox.commands[0]!;
+    expect(start).toContain(`mv rakazo-site-server.py ${SITES_DIR}/site_server.py`);
+    expect(start).toContain(`mv rakazo-sites.json ${SITES_DIR}/sites.json`);
+    expect(start.lastIndexOf("mv ")).toBeLessThan(start.indexOf("python3"));
+    expect(start).toContain(
+      `${SITES_DIR}/site_server.py ${SITES_DIR}/sites.json 8800 ${SITES_DIR}/requests.jsonl`,
+    );
+    expect(sandbox.commands[1]).toContain("http://127.0.0.1:8800/health");
   });
 });
 
 describe("readSiteRequests", () => {
   it("reads the request log from outside the home", async () => {
-    const line = JSON.stringify({ method: "GET", path: "/shop", query: {}, fields: {}, userAgent: "Chrome" });
-    const { sandbox, commands } = stubSandbox(() => ({ code: 0, stdout: `${line}\n${line}\n` }));
-    expect(await readSiteRequests(sandbox, STUB_COMPUTER, STUB_CONTEXT)).toHaveLength(2);
-    expect(commands[0]).toContain(`${SITES_DIR}/requests.jsonl`);
+    const line = JSON.stringify({
+      method: "GET",
+      path: "/shop",
+      query: {},
+      fields: {},
+      userAgent: "Chrome",
+    });
+    const { sandbox, computer, context } = await scriptedComputer(() => ({
+      code: 0,
+      stdout: `${line}\n${line}\n`,
+    }));
+    expect(await readSiteRequests(sandbox, computer, context)).toHaveLength(2);
+    expect(sandbox.commands[0]).toContain(`${SITES_DIR}/requests.jsonl`);
   });
 
   it("has no requests when nothing reached the site", async () => {
-    const { sandbox } = stubSandbox(() => ({ code: 0, stdout: "" }));
-    expect(await readSiteRequests(sandbox, STUB_COMPUTER, STUB_CONTEXT)).toEqual([]);
+    const { sandbox, computer, context } = await scriptedComputer(() => ({ code: 0, stdout: "" }));
+    expect(await readSiteRequests(sandbox, computer, context)).toEqual([]);
   });
 });
 ```
@@ -1835,14 +1865,12 @@ export function browsingComputerFixture(sandbox: SandboxProvider): ComputerFixtu
 }
 ```
 
-The test's `mv ${path} ${SITES_DIR}/` assertion matches `mv rakazo-site-server.py /tmp/rakazo-sites/site_server.py`, because the expected text is a prefix of it.
-
 - [ ] **Step 4: Run the tests, typecheck and lint**
 
 Run:
 ```bash
 pnpm exec vitest run packages/testkit/src/evals/browsing/
-pnpm --filter @rakazo/testkit exec tsc --noEmit -p .
+pnpm --filter @rakazo/testkit check
 pnpm exec biome check packages/testkit/src/evals/browsing/
 ```
 Expected: all PASS and clean.
@@ -2082,7 +2110,7 @@ In `packages/testkit/src/cli/evals.ts`:
      - `import { assertComputerImage, DEFAULT_COMPUTER_IMAGE, destroyComputers, dockerComputerEnv, serveSupervisor } from "../docker-computers.js";`
      - `import type { SandboxProvider } from "@rakazo/adapter-kit";`
 
-     `docker-computers.ts` statically imports only `node:*`, `@hono/node-server` and erased types, and loads `@rakazo/adapters` only inside `destroyComputers`. So the `--list` guard still holds.
+     `docker-computers.ts` statically imports only `node:*`, `@hono/node-server` and erased types (`@rakazo/db` is `import type`), and loads `@rakazo/adapters` only inside `destroyComputers`. So the `--list` guard still holds.
 2. **Flag defaults.** In `parseArgs`, delete `default: "180000"` from `"timeout-ms"` and `default: "30"` from `"max-tool-calls"`.
 3. **Suite lookup.** Replace the `const suites = {...}`, the `Object.hasOwn` check and the destructuring with:
    ```ts
@@ -2147,7 +2175,7 @@ In `packages/testkit/src/cli/evals.ts`:
               },
 ```
 
-10. **Fixture hook.** In the `runTrial(scenario, planned.trial, {...})` options, add `...(docker ? { computerFixture: browsingComputerFixture(docker.sandbox) } : {}),`. The browsing suite is Phase 1's only Docker suite. If a second Docker suite ever exists, move this choice into its `EvalSuite` entry.
+10. **Fixture hook.** In the `runTrial(scenario, planned.trial, {...})` options, add `...(docker ? { computerFixture: browsingComputerFixture(docker.sandbox) } : {}),`. The CLI picks the fixture, not `suites.ts`, because `install.ts` imports `@rakazo/adapters` and `suites.ts` must stay light enough for `--list`. Browsing is Phase 1's only Docker suite. If a second one ever exists, give `EvalSuite` a fixture name and keep the lookup in the CLI.
 11. **Shutdown.** In the outer `finally`, before `await postgres?.stop();`, add `await docker?.close().catch(() => undefined);`.
 
 - [ ] **Step 5: Run the tests, typecheck and lint**
@@ -2155,7 +2183,7 @@ In `packages/testkit/src/cli/evals.ts`:
 Run:
 ```bash
 pnpm exec vitest run packages/testkit/src/evals/
-pnpm --filter @rakazo/testkit exec tsc --noEmit -p .
+pnpm --filter @rakazo/testkit check
 pnpm exec biome check packages/testkit/src/evals/suites.ts packages/testkit/src/evals/suites.test.ts packages/testkit/src/evals/measurement.test.ts packages/testkit/src/evals/cli.test.ts packages/testkit/src/cli/evals.ts packages/testkit/src/evals/fixtures/
 pnpm test:evals --list --suite browsing
 ```
