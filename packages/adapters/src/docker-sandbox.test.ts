@@ -528,6 +528,30 @@ describe("Docker page browser", () => {
       }),
     );
   });
+
+  it("asks the supervisor not to launch the browser only when the context says so", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => Response.json({ ok: true, tabs: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new DockerSandboxProvider("http://supervisor.test", "test-token");
+    const computer = {
+      id: "computer",
+      botId: "team-home",
+      kind: "docker",
+      providerRef: "computer",
+    } as const;
+    await provider.pageBrowser(
+      computer,
+      { command: "tabs" },
+      { ...context, skipBrowserLaunch: true },
+    );
+    await provider.pageBrowser(computer, { command: "tabs" }, context);
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+      "x-rakazo-skip-browser-launch": "1",
+    });
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).not.toHaveProperty(
+      "x-rakazo-skip-browser-launch",
+    );
+  });
 });
 
 describe("Docker page capture", () => {

@@ -12,6 +12,7 @@ vi.mock("dockerode", () => ({
 }));
 
 import { supervisorApp } from "./index.js";
+import { browserRunningCommand } from "./supervisor-logic.js";
 
 beforeEach(() => {
   mock.exec.mockReset();
@@ -126,6 +127,39 @@ it("returns a page capture larger than the snapshot output cap", async () => {
     data,
     scale: 1,
   });
+});
+
+// Run cleanup after Stop: launching the browser would restore every tab Stop shut down.
+it.each([
+  [false, 1],
+  [true, 0],
+])("with launch skipped, runs the helper only if the browser runs: %s", async (runs, code) => {
+  const defaultExec = mock.exec.getMockImplementation()!;
+  mock.exec.mockImplementation(async (options: { Cmd: string[] }) =>
+    options.Cmd[2] === browserRunningCommand("home")
+      ? { ...(await defaultExec(options)), inspect: async () => ({ ExitCode: code }) }
+      : defaultExec(options),
+  );
+  const response = await supervisorApp.request(`/computers/computer-skip-${runs}/browser`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+      "content-type": "application/json",
+      "x-rakazo-bot-id": "home",
+      "x-rakazo-space-id": "space",
+      "x-rakazo-skip-browser-launch": "1",
+    },
+    body: JSON.stringify({ command: "tabs" }),
+  });
+  const commands = mock.exec.mock.calls.map(([options]) => options.Cmd.join(" "));
+  expect(commands[0]).toBe(`bash -c ${browserRunningCommand("home")}`);
+  if (runs) {
+    expect(await response.json()).toMatchObject({ ok: true });
+    expect(commands.at(-1)).toContain("/usr/local/bin/rakazo-page-browser");
+  } else {
+    expect(await response.json()).toMatchObject({ ok: false, fallback: "computer_act" });
+    expect(commands).toHaveLength(1);
+  }
 });
 
 it("rejects another computer identity before any command executes", async () => {

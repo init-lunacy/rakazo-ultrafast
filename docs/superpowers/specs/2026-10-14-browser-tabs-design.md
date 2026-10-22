@@ -260,8 +260,11 @@ navigated, acted in or read. Reading another agent's tab does not change it.
   - one tab always stays.
 
   The check runs in one place, at the end of the run's lifecycle, from the run's
-  committed status. A run that dies before cleanup leaves its tabs behind, unowned.
-  That is harmless, because they do not count toward any later run's cap.
+  committed status. Cleanup never starts the computer or launches its browser; with
+  the browser not running, it skips. Stop shuts the browser down, usually before
+  that check, so a stopped run's tabs come back unowned the next time the browser
+  starts, from its restored session. A run that dies before cleanup also leaves its tabs behind,
+  unowned. Both are harmless, because they do not count toward any later run's cap.
 - **Helpers.** The helper cap stays at `MAX_PARALLEL_SUBAGENTS = 4`.
 
 ### Desktop actions
