@@ -1,9 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import type { AddressInfo } from "node:net";
 import path from "node:path";
-import { serve } from "@hono/node-server";
 import type { ComputerRef } from "@rakazo/adapter-kit";
 import {
   ComputerBrowserProvider,
@@ -11,6 +9,7 @@ import {
   FakeSandboxProvider,
 } from "@rakazo/adapters";
 import { describe, expect, it } from "vitest";
+import { serveSupervisor } from "./cli/docker-computers.js";
 import {
   assertContactsExport,
   createContactsRecorder,
@@ -35,20 +34,10 @@ describe.skipIf(process.env.RUN_COMPUTER_REPLAY_DOCKER !== "1")(
           "Run through the computer-replay CLI to create an isolated supervisor environment",
         );
       }
-      const { supervisorApp } = await import("../../../infra/sandboxes/supervisor/src/index.js");
-      const server = serve({ fetch: supervisorApp.fetch, hostname: "127.0.0.1", port: 0 });
+      const supervisor = await serveSupervisor();
       try {
-        if (!server.listening)
-          await new Promise<void>((resolve, reject) => {
-            server.once("error", reject);
-            server.once("listening", () => {
-              server.off("error", reject);
-              resolve();
-            });
-          });
-        const port = (server.address() as AddressInfo).port;
         const sandbox = new DockerSandboxProvider(
-          `http://127.0.0.1:${port}`,
+          supervisor.url,
           process.env.SANDBOX_SUPERVISOR_TOKEN,
         );
         const context = {
@@ -195,14 +184,7 @@ describe.skipIf(process.env.RUN_COMPUTER_REPLAY_DOCKER !== "1")(
           }
         }
       } finally {
-        await new Promise<void>((resolve, reject) => {
-          server.close((error) =>
-            error && (!("code" in error) || error.code !== "ERR_SERVER_NOT_RUNNING")
-              ? reject(error)
-              : resolve(),
-          );
-          server.closeAllConnections();
-        });
+        await supervisor.close();
       }
     }, 300_000);
   },
