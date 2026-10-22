@@ -10,6 +10,7 @@ import {
   isRunTerminalEvent,
   normalizeResponseStreamingPreference,
   projectMessages,
+  redactSecrets,
   reduceLiveMessageBlocks,
   responseStreamingEnabled,
   runFailureError,
@@ -29,6 +30,13 @@ describe("containsSecret", () => {
 
   it("does not confuse escaped text with the original control character", () => {
     expect(containsSecret({ value: "literal\\ntext" }, ["\n"])).toBe(false);
+  });
+});
+
+describe("redactSecrets", () => {
+  it("redacts a longer secret that contains a shorter one", () => {
+    expect(redactSecrets("abcdef", ["abc", "abcdef"])).toBe("[redacted]");
+    expect(redactSecrets("abcdef abc", ["abc", "abcdef", ""])).toBe("[redacted] [redacted]");
   });
 });
 
