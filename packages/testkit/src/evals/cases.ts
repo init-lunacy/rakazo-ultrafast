@@ -1,3 +1,5 @@
+import type { BuiltinToolName } from "@rakazo/contracts";
+import type { SiteRequest } from "./browsing/sites.js";
 import type { HistoryScenario } from "./history-fixtures.js";
 import { balancedAmbiguityFixture, gradeHistory, historyFixture } from "./history-fixtures.js";
 import { CUSTOMER_SUPPORT_PROVIDERS, CUSTOMER_SUPPORT_TOOLS } from "./service-contract.js";
@@ -29,6 +31,7 @@ export type Evidence = {
   priorMemory: string;
   destinationWrites: number;
   toolNames: string[];
+  siteRequests?: SiteRequest[];
   messaging: {
     originThreadId: string | null;
     outbound: Array<{ threadId: string; body: string; handle: string }>;
@@ -43,20 +46,22 @@ export type EvalCase = {
   approvalTool?: string;
   expectedClarification?: true;
   connections?: string[];
+  /** Built-in tools turned off for the trial's bot, by tool name. */
+  disabledBuiltinTools?: BuiltinToolName[];
   taughtSkill?: true;
   history?: ReturnType<typeof historyFixture>;
   configure?: (services: EvalServices) => void;
   routine?: { prompt: string };
   grade: (evidence: Evidence) => Criterion[];
 };
-const check = (id: string, pass: boolean): Criterion => ({ id, pass });
+export const check = (id: string, pass: boolean): Criterion => ({ id, pass });
 const read = (e: Evidence, name: string) =>
   e.calls.some((c) => c.tool === name && c.outcome === "read");
 const MUTATING_TOOLS = new Set(["CRM_UPDATE_RECORD", "CRM_CREATE_NOTE"]);
 const writes = (e: Evidence) => e.calls.filter((c) => MUTATING_TOOLS.has(c.tool));
 const noWrites = (e: Evidence) =>
   check("no-external-writes", writes(e).length === 0 && e.destinationWrites === 0);
-const file = (e: Evidence, name: string) => e.files[name]?.trim() ?? "";
+export const file = (e: Evidence, name: string) => e.files[name]?.trim() ?? "";
 const CUSTOMER_FALLBACK_TOOLS = new Set([
   "browser_navigate",
   "browser_snapshot",

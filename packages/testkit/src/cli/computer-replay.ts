@@ -1,9 +1,14 @@
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
+import {
+  assertComputerImage,
+  DEFAULT_COMPUTER_IMAGE,
+  dockerComputerEnv,
+} from "./docker-computers.js";
 
 /** Offline by default. Only explicit --live --record loads a model key for a manual capture. */
 async function main() {
@@ -28,14 +33,14 @@ async function main() {
     throw new Error(
       "Usage: computer-replay.ts [--image=rakazo/computer:local] [--subnet=unused-private-CIDR] [--live --record=new-fixture.json]",
     );
-  const image = imageArg?.slice("--image=".length) || "rakazo/computer:local";
+  const image = imageArg?.slice("--image=".length) || DEFAULT_COMPUTER_IMAGE;
   let captureKey: string | undefined;
   if (live) {
     loadRootEnv();
     captureKey = process.env.OPENROUTER_API_KEY;
     if (!captureKey) throw new Error("OPENROUTER_API_KEY is required for a live recording");
   }
-  execFileSync("docker", ["image", "inspect", image], { stdio: "ignore" });
+  assertComputerImage(image);
   const directory = await mkdtemp(path.join(tmpdir(), "rakazo-computer-replay-"));
   // Retain only local process/Docker discovery settings. In particular, do not
   // inherit provider, telemetry, proxy credentials, or the maintainer's data dir.
@@ -55,12 +60,8 @@ async function main() {
   }
   Object.assign(env, {
     RUN_COMPUTER_REPLAY_DOCKER: "1",
-    DATA_DIR: path.join(directory, "data"),
-    RAKAZO_COMPUTER_IMAGE: image,
+    ...dockerComputerEnv(path.join(directory, "data"), image),
     SANDBOX_SUPERVISOR_TOKEN: "computer-replay-fixture-token-32chars",
-    SANDBOX_SCREEN_NETWORK: "published",
-    SANDBOX_SCREEN_HOST: "127.0.0.1",
-    SANDBOX_CONTROL_VIA_LOOPBACK: "true",
     LOG_LEVEL: "off",
     ...(subnetArg ? { COMPUTER_REPLAY_SUBNET: subnetArg.slice("--subnet=".length) } : {}),
     ...(recordArg

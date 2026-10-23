@@ -9,6 +9,7 @@ import type {
   SandboxProvider,
 } from "@rakazo/adapter-kit";
 import { FakeBrowserProvider, pageBrowserSessionKey } from "@rakazo/adapters";
+import { startFixtureServer } from "./computer-fixture-server.js";
 
 export const CONTACTS_CSV =
   "name,email\nAlex Example,alex@example.test\nSam Example,sam@example.test\n";
@@ -151,51 +152,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header('Content-Type','text/csv'); self.end_headers(); self.wfile.write(CSV)
 HTTPServer(('127.0.0.1',8765),Handler).serve_forever()
 `;
-  await sandbox.writeFile(
-    computer,
-    { path: "contacts_server.py", content: new TextEncoder().encode(source) },
-    context,
-  );
-  await executeChecked(
-    sandbox,
-    computer,
-    context,
-    "mkdir -p Downloads results; setsid -f python3 contacts_server.py > contacts-server.log 2>&1 < /dev/null",
-  );
-  let readinessError: unknown;
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    try {
-      await executeChecked(
-        sandbox,
-        computer,
-        context,
-        `python3 -c 'import urllib.request; urllib.request.urlopen("${EXPORT_FIXTURE_URL}", timeout=1).read()'`,
-      );
-      return;
-    } catch (error) {
-      readinessError = error;
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-  }
-  const log = await sandbox
-    .readFile(computer, "contacts-server.log", context)
-    .catch(() => new Uint8Array());
-  throw new Error(
-    `Contacts fixture did not become ready: ${new TextDecoder().decode(log).slice(0, 1000)} (${String(readinessError)})`,
-  );
-}
-
-async function executeChecked(
-  sandbox: SandboxProvider,
-  computer: ComputerRef,
-  context: AdapterContext,
-  command: string,
-) {
-  let code: number | undefined;
-  let stderr = "";
-  for await (const event of sandbox.execute(computer, { argv: ["bash", "-c", command] }, context)) {
-    if (event.type === "exit") code = event.code;
-    if (event.type === "stderr") stderr += event.data;
-  }
-  assert.equal(code, 0, `Fixture command failed: ${stderr.slice(0, 1000)}`);
+  await startFixtureServer(sandbox, computer, context, {
+    files: { "contacts_server.py": source },
+    command:
+      "mkdir -p Downloads results; setsid -f python3 contacts_server.py > contacts-server.log 2>&1 < /dev/null",
+    readyUrl: EXPORT_FIXTURE_URL,
+    logPath: "contacts-server.log",
+  });
 }

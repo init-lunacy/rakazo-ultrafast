@@ -46,7 +46,21 @@ export type TrialResult = {
   operationCosts: Record<Operation, number | null>;
   trace: Array<{ step: number; status: string; tools: string[] }>;
   artifacts: Record<string, string | null>;
+  timings?: TrialTimings;
 };
+
+export type TrialTimings = { setupMs: number | null; bootMs: number | null; taskMs: number | null };
+
+/** How long a task's runs spent running, from the product's own run records. */
+export function taskMsFromRuns(
+  runs: ReadonlyArray<{ startedAt: Date | null; completedAt: Date | null }>,
+): number | null {
+  if (!runs.length || runs.some((run) => !run.startedAt || !run.completedAt)) return null;
+  return runs.reduce(
+    (total, run) => total + (run.completedAt!.getTime() - run.startedAt!.getTime()),
+    0,
+  );
+}
 
 export function summarize(results: readonly TrialResult[]) {
   return [...new Set(results.map((r) => JSON.stringify([r.caseId, r.strategy])))].map((key) => {
@@ -56,6 +70,9 @@ export function summarize(results: readonly TrialResult[]) {
     );
     const attempted = trials.filter((r) => r.status !== "not-run");
     const passed = trials.filter((r) => r.status === "passed").length;
+    const taskTimes = attempted.flatMap((r) =>
+      r.timings?.taskMs == null ? [] : [r.timings.taskMs],
+    );
     return {
       caseId,
       ...(strategy ? { strategy } : {}),
@@ -94,6 +111,9 @@ export function summarize(results: readonly TrialResult[]) {
         attempted.map((r) => r.latencyMs),
         0.95,
       ),
+      ...(taskTimes.length
+        ? { taskMsP50: percentile(taskTimes, 0.5), taskMsP95: percentile(taskTimes, 0.95) }
+        : {}),
       operationCosts: Object.fromEntries(
         OPERATION_KINDS.map((kind) => {
           const values = attempted.map((r) => r.operationCosts[kind]);

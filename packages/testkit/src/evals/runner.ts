@@ -7,14 +7,15 @@ import { ACTIVE_RUN_STATUSES, isTerminal } from "@rakazo/core";
 import type { createDb } from "@rakazo/db";
 import { discardBotIntroRun } from "../discard-bot-intro.js";
 import { sessionCookieHeader } from "../index.js";
+import type { SiteRequest } from "./browsing/sites.js";
 import type { EvalCase, Evidence } from "./cases.js";
 import type { ClarificationBlock } from "./clarification.js";
 import { expectedClarificationText } from "./clarification.js";
 import type { DiagnosticToolObservation, HistoryDiagnostic } from "./history-observer.js";
 import type { CacheDecisionMeasurement, EvalPricing } from "./measurement.js";
 import { measureCalls } from "./measurement.js";
-import type { FailureCategory, TrialResult } from "./report.js";
-import { emptyTrial, redact } from "./report.js";
+import type { FailureCategory, TrialResult, TrialTimings } from "./report.js";
+import { emptyTrial, redact, taskMsFromRuns } from "./report.js";
 import { EvalServices } from "./services.js";
 import type { RoutineEvidence } from "./silence.js";
 import { SilenceObserver } from "./silence-observer.js";
@@ -44,11 +45,17 @@ export type EvalActor = {
   userId: string;
   spaceId: string;
 };
+/** A fixture installed in the trial bot's real computer after it boots, and the requests it saw. */
+export type ComputerFixture = {
+  install(trial: EvalApp, botId: string): Promise<void>;
+  siteRequests(trial: EvalApp, botId: string): Promise<SiteRequest[]>;
+};
 export type TrialOptions = {
   pricing?: EvalPricing;
   connection: ModelConnectInput;
   timeoutMs: number;
   maxToolCalls: number;
+  computerFixture?: ComputerFixture;
   createApp: (
     services: EvalServices,
     messaging: MessagingTeamChatEmulator,
@@ -72,7 +79,7 @@ export async function runTrial(
 ): Promise<TrialResult> {
   const result = emptyTrial(scenario.id, trial);
   const started = Date.now();
-  const deadline = started + options.timeoutMs;
+  let deadline = started + options.timeoutMs;
   const services = new EvalServices();
   const messaging = new MessagingTeamChatEmulator({
     provider: "slack",
@@ -87,6 +94,18 @@ export async function runTrial(
   let botId = "";
   let seededThreadId: string | undefined;
   const runIds: string[] = [];
+  const timings: TrialTimings = { setupMs: null, bootMs: null, taskMs: null };
+  const fixture = options.computerFixture;
+  const asHarness = async <T>(label: string, work: () => Promise<T>) => {
+    try {
+      return await work();
+    } catch (error) {
+      throw new EvalFailure(
+        "harness",
+        `${label}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
   const runSteps = new Map<string, number>();
   const setupRunIds = new Set<string>();
   const actors: EvalActor[] = [];
@@ -183,6 +202,9 @@ export async function runTrial(
         botId,
         modelProvider: options.connection.provider,
         modelId: options.connection.modelId,
+        ...(scenario.disabledBuiltinTools
+          ? { disabledBuiltinTools: scenario.disabledBuiltinTools }
+          : {}),
       });
       messagingLinked = false;
       messagingAddress = `U-eval-${randomUUID()}`;
@@ -194,7 +216,19 @@ export async function runTrial(
           matchValue: scenario.approvalTool,
         });
     };
+    const setupStarted = Date.now();
     await setupActor();
+    timings.setupMs = Date.now() - setupStarted;
+    if (fixture) {
+      const bootStarted = Date.now();
+      await asHarness("Computer fixture setup failed", async () => {
+        await rpc(app, cookie, "computer/boot", { botId });
+        await fixture.install(trial, botId);
+      });
+      timings.bootMs = Date.now() - bootStarted;
+      // A slow computer boot must not eat into the model's time for the task.
+      deadline += timings.bootMs;
+    }
     if (scenario.routine) {
       await rpc(app, cookie, "routines/create", {
         botId,
@@ -631,6 +665,13 @@ export async function runTrial(
       priorMemory,
       destinationWrites: handles.connector?.records.length ?? 0,
       toolNames: [...seenTools.values()].map((event) => event.name),
+      ...(fixture
+        ? {
+            siteRequests: await asHarness("Reading the site log failed", () =>
+              fixture.siteRequests(trial, botId),
+            ),
+          }
+        : {}),
       messaging: {
         originThreadId: messagingOriginThreadId,
         outbound: structuredClone(messaging.sent),
@@ -716,6 +757,18 @@ export async function runTrial(
       await captureUsage().catch(() => {
         result.cleanupFailed = true;
       });
+      try {
+        const taskRunIds = runIds.filter((id) => !setupRunIds.has(id));
+        timings.taskMs = taskMsFromRuns(
+          await handles.prisma.run.findMany({
+            where: { id: { in: taskRunIds } },
+            select: { startedAt: true, completedAt: true },
+          }),
+        );
+      } catch {
+        // Task time stays null; the trial's outcome does not depend on it.
+      }
+      result.timings = timings;
       Object.assign(
         result,
         measureCalls(

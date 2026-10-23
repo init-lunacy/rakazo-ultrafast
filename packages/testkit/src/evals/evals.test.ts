@@ -2,7 +2,7 @@ import type { AdapterContext, ConnectorCall } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
 import type { Evidence } from "./cases.js";
 import { EVAL_CASES, HISTORY_EVAL_CASES } from "./cases.js";
-import { emptyTrial, redact, summarize, validateControls } from "./report.js";
+import { emptyTrial, redact, summarize, taskMsFromRuns, validateControls } from "./report.js";
 import type { EvalApp } from "./runner.js";
 import { runTrial } from "./runner.js";
 import { EvalServices } from "./services.js";
@@ -591,4 +591,37 @@ it("clarification v3 requires an actual question or pending choice without chang
     HISTORY_EVAL_CASES.find((c) => c.id === "history-1000-balanced-ambiguity-v2")!
       .expectedClarification,
   ).toBeUndefined();
+});
+
+describe("task timing", () => {
+  const at = (ms: number) => new Date(ms);
+
+  it("sums the task runs' own running time", () => {
+    expect(
+      taskMsFromRuns([
+        { startedAt: at(1_000), completedAt: at(4_000) },
+        { startedAt: at(10_000), completedAt: at(10_500) },
+      ]),
+    ).toBe(3_500);
+  });
+
+  it("has no task time when a run never started or finished", () => {
+    expect(taskMsFromRuns([])).toBeNull();
+    expect(taskMsFromRuns([{ startedAt: at(1), completedAt: null }])).toBeNull();
+  });
+
+  it("summarizes task time per case only when trials have it", () => {
+    const timed = (taskMs: number) => ({
+      ...emptyTrial("browse", 1),
+      status: "passed" as const,
+      timings: { setupMs: 1, bootMs: 2, taskMs },
+    });
+    expect(summarize([timed(1_000), timed(3_000)])[0]).toMatchObject({
+      taskMsP50: 1_000,
+      taskMsP95: 3_000,
+    });
+    expect(summarize([{ ...emptyTrial("plain", 1), status: "passed" }])[0]).not.toHaveProperty(
+      "taskMsP50",
+    );
+  });
 });

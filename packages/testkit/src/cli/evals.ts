@@ -1,23 +1,29 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import type { SandboxProvider } from "@rakazo/adapter-kit";
 import { ModelConnectInputSchema } from "@rakazo/contracts";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
-import { EVAL_CASES, HISTORY_EVAL_CASES } from "../evals/cases.js";
-import { HISTORY_FIXTURE_VERSION } from "../evals/history-fixtures.js";
 import type { DiagnosticToolObservation, HistoryDiagnostic } from "../evals/history-observer.js";
 import { observeSyntheticHistory } from "../evals/history-observer.js";
 import type { CacheDecisionMeasurement, EvalPricing } from "../evals/measurement.js";
 import { measureCalls, SpendBudget, validatePricing } from "../evals/measurement.js";
 import { emptyTrial, redact, summarize, validateControls } from "../evals/report.js";
-import { SILENCE_EVAL_CASES, SILENCE_FIXTURE_VERSION } from "../evals/silence.js";
+import type { ComputerFixture } from "../evals/runner.js";
+import { resolveControls, resolveSuite } from "../evals/suites.js";
 import type { DiagnosticWireObservation } from "../evals/wire-observer.js";
 import { diagnosticWireFetch } from "../evals/wire-observer.js";
+import {
+  assertComputerImage,
+  DEFAULT_COMPUTER_IMAGE,
+  dockerComputerEnv,
+  serveSupervisor,
+} from "./docker-computers.js";
 
 async function main() {
   const { values } = parseArgs({
@@ -41,19 +47,13 @@ async function main() {
       "max-output-tokens": { type: "string" },
       trials: { type: "string", default: "3" },
       case: { type: "string", multiple: true },
-      "timeout-ms": { type: "string", default: "180000" },
-      "max-tool-calls": { type: "string", default: "30" },
+      "timeout-ms": { type: "string" },
+      "max-tool-calls": { type: "string" },
       output: { type: "string", default: "test-report/evals/report.json" },
     },
   });
-  const suites = {
-    product: { cases: EVAL_CASES, fixtureVersion: "product-v1" },
-    history: { cases: HISTORY_EVAL_CASES, fixtureVersion: HISTORY_FIXTURE_VERSION },
-    silence: { cases: SILENCE_EVAL_CASES, fixtureVersion: SILENCE_FIXTURE_VERSION },
-  };
-  if (!Object.hasOwn(suites, values.suite!))
-    throw new Error("Unknown suite; use product, history, or silence");
-  const { cases, fixtureVersion } = suites[values.suite as keyof typeof suites];
+  const suite = resolveSuite(values.suite!);
+  const { cases, fixtureVersion } = suite;
   if (values["wire-diagnostics"] && values.suite !== "history")
     throw new Error("Synthetic wire diagnostics require the history suite");
   const strategies = [...new Set(values.strategy?.length ? values.strategy : ["current"])];
@@ -67,11 +67,11 @@ async function main() {
     for (const scenario of cases) console.log(`${scenario.id}: ${scenario.purpose}`);
     return;
   }
-  const controls = {
-    trials: Number(values.trials),
-    timeoutMs: Number(values["timeout-ms"]),
-    maxToolCalls: Number(values["max-tool-calls"]),
-  };
+  const controls = resolveControls(suite, {
+    trials: values.trials!,
+    timeoutMs: values["timeout-ms"],
+    maxToolCalls: values["max-tool-calls"],
+  });
   validateControls(controls);
   const selected = values.case?.length ? cases.filter((c) => values.case!.includes(c.id)) : cases;
   if (!selected.length || values.case?.some((id) => !cases.some((c) => c.id === id)))
@@ -126,15 +126,9 @@ async function main() {
       "Per-call provider reported charge when available, otherwise explicit pricing estimate; unavailable remains null",
     firstResponseDefinition:
       "First persisted streamed text event after run creation, or final bot message if no text streamed; excludes activity/tool-only events. Polling does not define the timestamp.",
-    fixtures: "synthetic services, messaging and fake sandbox",
+    fixtures: suite.fixtures,
     assistedRetries: false,
-    limitations: [
-      "Does not evaluate browser perception, native recording perception, or real external services.",
-      "Silence cases observe routine chat, transient progress, and provider notification requests; native push delivery and UI pixels are outside the fixture.",
-      "Deterministic fact checks are deliberately narrow; they do not grade overall writing quality.",
-      "Cost uses provider-reported charges where available and explicit pricing estimates otherwise. Spend reservations are a guard, not a billing guarantee.",
-      "Tool trace contains names and statuses only; raw requests and responses are omitted.",
-    ],
+    limitations: suite.limitations,
     trials,
     summary: summarize(trials),
   };
@@ -205,6 +199,13 @@ async function main() {
   report.pricing = pricing;
   budget = new SpendBudget(report.spendCapUsd, pricing);
   const liveBudget = budget;
+  if (suite.computerFixture) {
+    try {
+      assertComputerImage(DEFAULT_COMPUTER_IMAGE);
+    } catch (error) {
+      return notRun(`${(error as Error).message}. All trials remain not-run.`);
+    }
+  }
   const connection = parsedConnection.data;
   report.model = connection.modelId!;
   report.provider = connection.provider;
@@ -287,23 +288,31 @@ async function main() {
   // This CLI owns a disposable database. Never migrate or evaluate against an inherited database.
   const dataDir = mkdtempSync(path.join(tmpdir(), "rakazo-evals-"));
   let postgres: StartedPostgreSqlContainer | undefined;
+  let docker:
+    | { sandbox: SandboxProvider; fixture: ComputerFixture; close(): Promise<void> }
+    | undefined;
   let stopRequested = false;
+  // Set while a trial runs real computers: a second Ctrl-C stops at once but still removes them.
+  let stopNow: (() => Promise<void>) | undefined;
   const requestStop = () => {
+    if (stopRequested && stopNow) void stopNow().finally(() => process.exit(130));
     stopRequested = true;
   };
   process.on("SIGINT", requestStop);
   process.on("SIGTERM", requestStop);
   try {
-    postgres = await new PostgreSqlContainer("postgres:16-alpine").start();
+    // Per-run secrets: a real computer has network access, and the database holds the model key.
+    const secret = () => randomBytes(32).toString("base64url");
+    postgres = await new PostgreSqlContainer("postgres:16-alpine").withPassword(secret()).start();
     const databaseUrl = postgres.getConnectionUri();
     Object.assign(process.env, {
       DATABASE_URL: databaseUrl,
       REALTIME_DATABASE_URL: databaseUrl,
       WAKEUP_DRIVER: "memory",
-      BETTER_AUTH_SECRET: "synthetic-eval-auth-secret-at-least-32-characters",
-      ENCRYPTION_KEY: "synthetic-eval-encryption-key-at-least-32-characters",
-      SANDBOX_SUPERVISOR_TOKEN: "synthetic-eval-supervisor-token-at-least-32-characters",
-      SCREEN_PROXY_SECRET: "synthetic-eval-screen-secret-at-least-32-characters",
+      BETTER_AUTH_SECRET: secret(),
+      ENCRYPTION_KEY: secret(),
+      SANDBOX_SUPERVISOR_TOKEN: secret(),
+      SCREEN_PROXY_SECRET: secret(),
       BETTER_AUTH_URL: "http://127.0.0.1:5173",
       WEB_ORIGIN: "http://127.0.0.1:5173",
       SIGNUPS_ENABLED: "true",
@@ -339,8 +348,24 @@ async function main() {
     // Import runtime modules only after generation; their barrel exports load Prisma.
     const { createApp } = await import("../../../../apps/api/src/app.ts");
     const { runTrial } = await import("../evals/runner.js");
-    const { dispatcherFetch, PiAgentRuntime } = await import("@rakazo/adapters");
-    const { EvalSandboxProvider } = await import("../evals/sandbox.js");
+    const { dispatcherFetch, DockerSandboxProvider, PiAgentRuntime } = await import(
+      "@rakazo/adapters"
+    );
+    const { destroyComputers, EvalSandboxProvider } = await import("../evals/sandbox.js");
+    if (suite.computerFixture) {
+      const createFixture = await suite.computerFixture();
+      Object.assign(process.env, dockerComputerEnv(dataDir, DEFAULT_COMPUTER_IMAGE));
+      // A root supervisor runs computers as uid 1000 and never changes ownership itself. Keep the
+      // homes this disposable run creates writable by that user. Everything written after this
+      // lives under the 0700 data directory or sets its own mode, like the report.
+      if (process.getuid?.() === 0) process.umask(0);
+      const supervisor = await serveSupervisor();
+      const sandbox = new DockerSandboxProvider(
+        supervisor.url,
+        process.env.SANDBOX_SUPERVISOR_TOKEN!,
+      );
+      docker = { sandbox, fixture: createFixture(sandbox), close: supervisor.close };
+    }
     for (let i = 0; i < trials.length; i++) {
       if (stopRequested) {
         for (const remaining of trials.slice(i))
@@ -366,8 +391,10 @@ async function main() {
           ...controls,
           connection,
           pricing,
+          ...(docker ? { computerFixture: docker.fixture } : {}),
           createApp: async (composio, messaging, witnesses) => {
-            const sandbox = new EvalSandboxProvider();
+            const evalSandbox = docker ? undefined : new EvalSandboxProvider();
+            const sandbox = docker?.sandbox ?? evalSandbox!;
             let acceptingCalls = true;
             const cacheDecisions: CacheDecisionMeasurement[] = [];
             const runtime = new PiAgentRuntime({
@@ -422,8 +449,11 @@ async function main() {
               sandbox,
               databaseUrl,
               realtimeDatabaseUrl: databaseUrl,
-              dataDir: path.join(dataDir, `${scenario.id}-${planned.strategy}-${planned.trial}`),
-              sandboxProvider: "fake",
+              // The supervisor accepts homes only under its own DATA_DIR.
+              dataDir: docker
+                ? dataDir
+                : path.join(dataDir, `${scenario.id}-${planned.strategy}-${planned.trial}`),
+              sandboxProvider: docker ? "docker" : "fake",
               agentRuntime: "pi",
               wakeupDriver: "memory",
               composio,
@@ -455,9 +485,16 @@ async function main() {
               updaterUrl: undefined,
               updaterToken: undefined,
             });
+            if (docker) {
+              const computers = docker.sandbox;
+              stopNow = async () => {
+                await destroyComputers(handles.prisma, computers).catch(() => undefined);
+                rmSync(dataDir, { recursive: true, force: true });
+              };
+            }
             return {
               ...handles,
-              harnessIssues: sandbox.harnessIssues,
+              harnessIssues: evalSandbox?.harnessIssues ?? [],
               cacheDecisions,
               historyDiagnostics,
               toolLoopDiagnostics,
@@ -467,7 +504,12 @@ async function main() {
               },
               stop: async () => {
                 acceptingCalls = false;
-                await handles.stop();
+                stopNow = undefined;
+                try {
+                  if (docker) await destroyComputers(handles.prisma, docker.sandbox);
+                } finally {
+                  await handles.stop();
+                }
               },
               awaitIdle: async () => {
                 if (!handles.awaitIdle) throw new Error("Eval queue cannot await idle");
@@ -506,6 +548,7 @@ async function main() {
     process.off("SIGINT", requestStop);
     process.off("SIGTERM", requestStop);
     try {
+      await docker?.close().catch(() => undefined);
       await postgres?.stop();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });

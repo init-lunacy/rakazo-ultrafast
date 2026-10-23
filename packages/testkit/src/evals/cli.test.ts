@@ -9,27 +9,32 @@ it("lists eval cases without importing a generated database client or runtime ad
     import { registerHooks } from 'node:module';
     registerHooks({
       resolve(specifier, context, nextResolve) {
-        if (specifier === '@rakazo/db' || specifier === '@rakazo/adapters') {
-          throw new Error('Runtime imported before database generation');
-        }
+        const runtime = ['@rakazo/db', '@rakazo/adapters'].some(
+          (name) => specifier === name || specifier.startsWith(name + '/'),
+        );
+        if (runtime) throw new Error('Runtime imported before database generation');
         return nextResolve(specifier, context);
       }
     });
   `;
-  const output = execFileSync(
-    process.execPath,
-    [
-      "--import",
-      "tsx",
-      "--import",
-      `data:text/javascript,${encodeURIComponent(guard)}`,
-      path.resolve(import.meta.dirname, "../cli/evals.ts"),
-      "--list",
-    ],
-    { encoding: "utf8", timeout: 20_000 },
-  );
+  const list = (...args: string[]) =>
+    execFileSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--import",
+        `data:text/javascript,${encodeURIComponent(guard)}`,
+        path.resolve(import.meta.dirname, "../cli/evals.ts"),
+        "--list",
+        ...args,
+      ],
+      { encoding: "utf8", timeout: 20_000 },
+    );
+  const output = list();
   expect(output).toContain("workspace-memory-isolation:");
   expect(output.trim().split("\n")).toHaveLength(16);
+  expect(list("--suite", "browsing")).toContain("browse-hard-page:");
 });
 
 it("records explicit not-run reasons without live execution", async () => {
