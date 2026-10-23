@@ -917,6 +917,8 @@ export interface BrowserSnapshotRequest {
    * default, so the snapshot the model sees is exactly what it was.
    */
   extended?: boolean;
+  /** Character of the page text to start from; long text comes in windows. */
+  textOffset?: number;
 }
 
 export interface BrowserSnapshotNode {
@@ -1051,7 +1053,7 @@ export interface BrowserCloseTabResult {
 
 export type PageBrowserCommand =
   | { command: "navigate"; url: string; target?: string }
-  | { command: "snapshot"; extended?: boolean; target?: string }
+  | { command: "snapshot"; extended?: boolean; textOffset?: number; target?: string }
   | { command: "screenshot"; target?: string }
   | { command: "act"; actions: BrowserActStep[]; target?: string }
   | { command: "tabs" }

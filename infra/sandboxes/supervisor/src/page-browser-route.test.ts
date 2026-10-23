@@ -110,6 +110,18 @@ it("forwards an extended snapshot to the helper", async () => {
   expect(mock.stdin.join("")).toBe(`${JSON.stringify({ command: "snapshot", extended: true })}\n`);
 });
 
+it("forwards a whole-number text offset and refuses any other", async () => {
+  expect((await browser({ command: "snapshot", textOffset: 6000 })).ok).toBe(true);
+  expect(mock.stdin.join("")).toBe(
+    `${JSON.stringify({ command: "snapshot", textOffset: 6000 })}\n`,
+  );
+  mock.stdin.length = 0;
+  for (const textOffset of [-1, 1.5, "6000"]) {
+    expect((await browser({ command: "snapshot", textOffset })).ok).toBe(false);
+  }
+  expect(mock.stdin).toEqual([]);
+});
+
 // A viewport PNG is routinely larger than any snapshot, so only the capture
 // gets the larger output cap.
 it("returns a page capture larger than the snapshot output cap", async () => {

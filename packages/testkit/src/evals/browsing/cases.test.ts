@@ -78,7 +78,8 @@ describe("one answer per task", () => {
   });
 
   it("puts the late section past the text a page snapshot returns", async () => {
-    // rakazo-page-browser's snapshot keeps the first 12,000 characters of the page's text.
+    // rakazo-page-browser's snapshot returns 6,000 characters of page text at a time, so this
+    // takes several windows (or scrolling) to reach.
     const html = await page("/article");
     // Once the banner is accepted only the article remains, so count from <main>.
     const before = html
