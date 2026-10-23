@@ -336,6 +336,11 @@ export const builtinAgentTools: ConnectorTool[] = [
           description:
             "Optional. Any tab's handle, including another agent's. Defaults to your current tab.",
         },
+        textOffset: {
+          type: "integer",
+          minimum: 0,
+          description: "Page text cursor from a snapshot that says there is more.",
+        },
       },
     },
     readOnly: true,
@@ -538,7 +543,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "secret_request",
     description:
-      "Make an authenticated HTTPS request using a saved credential name. The backend injects authentication only at its saved origin. Redirects are rejected; response echoes of the credential are redacted. Use normal request URLs and bodies without secret placeholders.",
+      "Make an authenticated HTTPS request with a saved credential that list_secrets reports; not for reading public pages. The backend injects authentication only at its saved origin. Redirects are rejected; response echoes of the credential are redacted. Use normal request URLs and bodies without secret placeholders.",
     inputSchema: z.toJSONSchema(SecretHttpRequest, { io: "input" }),
   },
   {

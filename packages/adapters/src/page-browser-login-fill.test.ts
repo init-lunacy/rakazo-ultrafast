@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
+import { serializeToolResult } from "./pi-runtime.js";
 
 /** The live page helper's isolated-world script, executed here rather than reimplemented. */
 function installPageHelper(url: string, html: string) {
@@ -20,6 +21,12 @@ function installPageHelper(url: string, html: string) {
     },
   );
   const domWindow = dom.window;
+  // JSDOM has no layout, so no innerText; the page's text content stands in for it.
+  Object.defineProperty(domWindow.HTMLElement.prototype, "innerText", {
+    get(this: { textContent: string | null }) {
+      return this.textContent ?? "";
+    },
+  });
   const elementPrototype = domWindow.Element.prototype as unknown as {
     getBoundingClientRect: () => unknown;
   };
@@ -40,7 +47,11 @@ function installPageHelper(url: string, html: string) {
   const browser = (
     domWindow as unknown as {
       __rakazoPageBrowser: {
-        snapshot: () => {
+        snapshot: (
+          extended?: boolean,
+          textOffset?: number,
+        ) => {
+          tree: string;
           elements: Array<{ ref: string; name: string; role: string; value?: string }>;
         };
         fill: (ref: string, value: string, origin?: string) => { url: string };
@@ -114,5 +125,58 @@ describe("live page helper upload targets", () => {
     expect(elements.find((el) => el.name === "Save")?.role).toBe("button");
     expect(elements.find((el) => el.name === "Receipt")?.role).toBe("file upload");
     expect(elements.filter((el) => el.role === "file upload")).toHaveLength(81);
+  });
+});
+
+describe("live page helper page text", () => {
+  const article = `<p>${"a".repeat(5_000)} MIDDLE ${"b".repeat(5_000)} LATE</p><a href="/next">Next</a>`;
+
+  it("returns long page text in windows, each saying where the rest starts", () => {
+    const { domWindow, browser } = installPageHelper("https://read.example.test/", article);
+    const total = domWindow.document.body.textContent!.length;
+    const first = browser.snapshot().tree;
+    expect(first.split("\n")[0]).toBe(
+      `[Page text 0–6000 of ${total} characters. Call browser_snapshot with textOffset 6000 for more.]`,
+    );
+    expect(first).toContain("MIDDLE");
+    expect(first).not.toContain("LATE");
+    expect(first).toMatch(/- link "Next" \[e\w+\]/);
+
+    const rest = browser.snapshot(false, 6_000).tree;
+    expect(rest.split("\n")[0]).toBe(`[Page text 6000–${total} of ${total} characters.]`);
+    expect(rest).toContain("LATE");
+    expect(rest).not.toContain("MIDDLE");
+    expect(rest).toMatch(/- link "Next" \[e\w+\]/);
+  });
+
+  it("sends the model every character of a window, however many controls the page has", () => {
+    const links = Array.from(
+      { length: 80 },
+      (_, i) => `<a href="/item/${i}">Weatherproof trail jacket, size ${i}</a>`,
+    ).join("");
+    for (const strategy of ["current", "retrieval"] as const) {
+      const { browser } = installPageHelper(
+        "https://read.example.test/",
+        `<p>${"word ".repeat(4_000)}</p>${links}`,
+      );
+      const snap = browser.snapshot();
+      const [status, text] = snap.tree.split("\n");
+      const next = Number(status!.match(/textOffset (\d+)/)![1]);
+      const seen = serializeToolResult(
+        { url: "https://read.example.test/", title: "", ...snap },
+        strategy,
+        "browser_snapshot",
+        {},
+      );
+      expect(seen).toContain(JSON.stringify(`${status}\n${text}`).slice(1, -1));
+      expect(JSON.parse(seen)).not.toHaveProperty("elements");
+      expect(JSON.parse(seen).tree).toBe(snap.tree);
+      expect(text!.length).toBe(next);
+    }
+  });
+
+  it("returns a short page's text without a status line", () => {
+    const { browser } = installPageHelper("https://read.example.test/", "<p>Short page</p>");
+    expect(browser.snapshot().tree.split("\n")[0]).toBe("Short page");
   });
 });

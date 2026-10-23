@@ -507,6 +507,7 @@ app.post("/computers/:id/browser", async (c) => {
       z.object({
         command: z.literal("snapshot"),
         extended: z.boolean().optional(),
+        textOffset: z.number().int().nonnegative().max(100_000_000).optional(),
         target: tabTarget.optional(),
       }),
       z.object({ command: z.literal("screenshot"), target: tabTarget.optional() }),

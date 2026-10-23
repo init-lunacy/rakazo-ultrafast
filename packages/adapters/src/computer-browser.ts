@@ -117,7 +117,12 @@ export class ComputerBrowserProvider implements BrowserProvider {
     }
     const live = await this.runLive(
       computer,
-      { command: "snapshot", extended: request.extended, target: request.target },
+      {
+        command: "snapshot",
+        extended: request.extended,
+        textOffset: request.textOffset,
+        target: request.target,
+      },
       context,
     );
     if (live?.ok !== true || live.fallback === "computer_act") {

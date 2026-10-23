@@ -87,6 +87,19 @@ describe("browser tools", () => {
     expect(acted).toMatchObject({ ok: true, completed: 1 });
   });
 
+  it("reads a snapshot from a whole-number text offset and refuses any other", async () => {
+    const browser = new FakeBrowserProvider({ pages: {} });
+    const snapshot = vi.spyOn(browser, "snapshot");
+    await browserSnapshotFromTool(browser, computer, context, { textOffset: 6000 });
+    expect(snapshot.mock.calls[0]?.[1]).toMatchObject({ textOffset: 6000 });
+    for (const textOffset of [-1, 1.5, "6000"]) {
+      expect(await browserSnapshotFromTool(browser, computer, context, { textOffset })).toEqual({
+        error: "textOffset must be a whole number of characters, 0 or more.",
+      });
+    }
+    expect(snapshot).toHaveBeenCalledOnce();
+  });
+
   it("parses upload steps and bounds their file list", () => {
     expect(
       parseBrowserActions([{ kind: "upload", ref: "e3", paths: [" receipts/march.pdf "] }]),

@@ -114,12 +114,23 @@ export async function browserSnapshotFromTool(
   args: Record<string, unknown>,
   options: { tabs?: ToolTabs } = {},
 ) {
+  const textOffset = args.textOffset;
+  if (
+    textOffset !== undefined &&
+    !(typeof textOffset === "number" && Number.isSafeInteger(textOffset) && textOffset >= 0)
+  ) {
+    return { error: "textOffset must be a whole number of characters, 0 or more." };
+  }
   try {
     const where = options.tabs ? await options.tabs.run.forRead(options.tabs.agent, args) : {};
     if ("error" in where) return { error: where.error };
     const requested = "target" in where ? where.target : undefined;
     const read = () =>
-      browser.snapshot(computer, { target: requested, signal: context.signal }, context);
+      browser.snapshot(
+        computer,
+        { target: requested, textOffset, signal: context.signal },
+        context,
+      );
     const result = options.tabs ? await options.tabs.run.within(where, read) : await read();
     const place = options.tabs
       ? await options.tabs.run.after(
