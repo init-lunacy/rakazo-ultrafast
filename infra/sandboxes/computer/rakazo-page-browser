@@ -538,13 +538,18 @@ EVAL_HELPERS = r"""
       })
       .join("\n");
   }
-  // Page text per snapshot, small enough that the whole result fits the model's tool-result limit.
+  // The model reads the tree as JSON clipped to 12,000 characters. Page text gets the room the
+  // element list leaves, with a floor so a page of many controls still reads on; past the limit,
+  // shortening keeps the start of the tree.
+  const SNAPSHOT_TEXT_BUDGET = 10500;
   const PAGE_TEXT_WINDOW = 6000;
+  const MIN_PAGE_TEXT_WINDOW = 1500;
   // Long text comes in windows. The status line goes first so a clipped result still says where to read on.
-  function pageText(offset) {
+  function pageText(offset, room) {
     const text = document.body?.innerText || "";
+    const window = Math.max(MIN_PAGE_TEXT_WINDOW, Math.min(PAGE_TEXT_WINDOW, room));
     const start = Math.min(Math.max(0, Math.floor(Number(offset) || 0)), text.length);
-    const end = Math.min(text.length, start + PAGE_TEXT_WINDOW);
+    const end = Math.min(text.length, start + window);
     if (start === 0 && end === text.length) return text;
     const more = end < text.length
       ? ` Call browser_snapshot with textOffset ${end} for more.`
@@ -590,11 +595,12 @@ EVAL_HELPERS = r"""
       for (const el of allFileInputs()) {
         if (!listed.has(el)) describe(el);
       }
+      const list = formatTree(elements);
       return {
         url: location.href,
         title: (document.title || "").slice(0, 200),
         elements,
-        tree: pageText(textOffset) + "\n" + formatTree(elements)
+        tree: pageText(textOffset, SNAPSHOT_TEXT_BUDGET - JSON.stringify(list).length) + "\n" + list
           + (document.querySelector("iframe,frame") ? "\nEmbedded frames require desktop tools." : ""),
       };
     },

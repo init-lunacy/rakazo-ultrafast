@@ -2197,6 +2197,18 @@ export function jsonField(spec: unknown): ReturnType<typeof Type.String> {
   return Type.String(options);
 }
 
+/**
+ * A page result's tree already lists every element with its ref, role, name and value. Its
+ * elements array stays in the result's details for the product, but the model would only read it
+ * twice.
+ */
+function modelView(result: unknown, name: string): unknown {
+  if (!PAGE_STATE_TOOL_NAMES.has(name) || !result || typeof result !== "object") return result;
+  if (typeof (result as { tree?: unknown }).tree !== "string") return result;
+  const { elements: _elements, ...view } = result as Record<string, unknown>;
+  return view;
+}
+
 export function serializeToolResult(
   result: unknown,
   strategy: AgentRunRequest["contextStrategy"],
@@ -2204,7 +2216,7 @@ export function serializeToolResult(
   args: Record<string, unknown>,
 ) {
   try {
-    const text = JSON.stringify(result);
+    const text = JSON.stringify(modelView(result, name));
     if (!text) return "ok";
     // skill-tools.ts already bounds skill content; the context budget selector may still shorten it.
     if (text.length <= 12_000 || VERBATIM_TOOL_RESULTS.has(name)) return text;

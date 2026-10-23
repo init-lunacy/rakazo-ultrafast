@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
+import { serializeToolResult } from "./pi-runtime.js";
 
 /** The live page helper's isolated-world script, executed here rather than reimplemented. */
 function installPageHelper(url: string, html: string) {
@@ -146,6 +147,32 @@ describe("live page helper page text", () => {
     expect(rest).toContain("LATE");
     expect(rest).not.toContain("MIDDLE");
     expect(rest).toMatch(/- link "Next" \[e\w+\]/);
+  });
+
+  it("sends the model every character of a window, however many controls the page has", () => {
+    const links = Array.from(
+      { length: 80 },
+      (_, i) => `<a href="/item/${i}">Weatherproof trail jacket, size ${i}</a>`,
+    ).join("");
+    for (const strategy of ["current", "retrieval"] as const) {
+      const { browser } = installPageHelper(
+        "https://read.example.test/",
+        `<p>${"word ".repeat(4_000)}</p>${links}`,
+      );
+      const snap = browser.snapshot();
+      const [status, text] = snap.tree.split("\n");
+      const next = Number(status!.match(/textOffset (\d+)/)![1]);
+      const seen = serializeToolResult(
+        { url: "https://read.example.test/", title: "", ...snap },
+        strategy,
+        "browser_snapshot",
+        {},
+      );
+      expect(seen).toContain(JSON.stringify(`${status}\n${text}`).slice(1, -1));
+      expect(JSON.parse(seen)).not.toHaveProperty("elements");
+      expect(JSON.parse(seen).tree).toBe(snap.tree);
+      expect(text!.length).toBe(next);
+    }
   });
 
   it("returns a short page's text without a status line", () => {
