@@ -538,8 +538,26 @@ EVAL_HELPERS = r"""
       })
       .join("\n");
   }
+  // The model reads the tree as JSON clipped to 12,000 characters. Page text gets the room the
+  // element list leaves, with a floor so a page of many controls still reads on; past the limit,
+  // shortening keeps the start of the tree.
+  const SNAPSHOT_TEXT_BUDGET = 10500;
+  const PAGE_TEXT_WINDOW = 6000;
+  const MIN_PAGE_TEXT_WINDOW = 1500;
+  // Long text comes in windows. The status line goes first so a clipped result still says where to read on.
+  function pageText(offset, room) {
+    const text = document.body?.innerText || "";
+    const window = Math.max(MIN_PAGE_TEXT_WINDOW, Math.min(PAGE_TEXT_WINDOW, room));
+    const start = Math.min(Math.max(0, Math.floor(Number(offset) || 0)), text.length);
+    const end = Math.min(text.length, start + window);
+    if (start === 0 && end === text.length) return text;
+    const more = end < text.length
+      ? ` Call browser_snapshot with textOffset ${end} for more.`
+      : "";
+    return `[Page text ${start}–${end} of ${text.length} characters.${more}]\n${text.slice(start, end)}`;
+  }
   window.__rakazoPageBrowser = {
-    snapshot(extended = false) {
+    snapshot(extended = false, textOffset = 0) {
       // Another agent's read of this tab must not invalidate the refs its owner holds.
       // Refs never repeat, and resolve() already refuses an element that left the page.
       for (const [ref, el] of refMap) if (!el.isConnected) refMap.delete(ref);
@@ -577,11 +595,12 @@ EVAL_HELPERS = r"""
       for (const el of allFileInputs()) {
         if (!listed.has(el)) describe(el);
       }
+      const list = formatTree(elements);
       return {
         url: location.href,
         title: (document.title || "").slice(0, 200),
         elements,
-        tree: (document.body?.innerText || "").slice(0, 12000) + "\n" + formatTree(elements)
+        tree: pageText(textOffset, SNAPSHOT_TEXT_BUDGET - JSON.stringify(list).length) + "\n" + list
           + (document.querySelector("iframe,frame") ? "\nEmbedded frames require desktop tools." : ""),
       };
     },
@@ -834,12 +853,15 @@ def upload(client: CdpClient, session_id: str, ref: str, files: list[str]) -> No
         client.call("Runtime.releaseObject", {"objectId": object_id}, session_id=session_id)
 
 
-def snapshot(client: CdpClient, session_id: str, extended: bool = False) -> dict[str, Any]:
+def snapshot(client: CdpClient, session_id: str, extended: bool = False,
+             text_offset: Any = 0) -> dict[str, Any]:
+    # int() keeps anything but a number out of the evaluated expression.
+    offset = max(0, int(text_offset or 0))
     ensure_helpers(client, session_id)
     data = eval_json(
         client,
         session_id,
-        f"window.__rakazoPageBrowser.snapshot({'true' if extended else 'false'})",
+        f"window.__rakazoPageBrowser.snapshot({'true' if extended else 'false'}, {offset})",
     )
     if not isinstance(data, dict):
         raise RuntimeError("snapshot returned non-object")
@@ -987,7 +1009,8 @@ def run(argv: list[str]) -> int:
                 if command == "navigate":
                     result = navigate(client, session_id, str(args.get("url") or ""))
                 elif command == "snapshot":
-                    result = snapshot(client, session_id, bool(args.get("extended")))
+                    result = snapshot(client, session_id, bool(args.get("extended")),
+                                      args.get("textOffset"))
                 elif command == "screenshot":
                     result = screenshot(client, session_id)
                 else:

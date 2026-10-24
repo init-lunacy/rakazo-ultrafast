@@ -62,11 +62,9 @@ export async function runComputerReplay(
   });
   const click = (id: string, expectedId: string, name: string) =>
     step((request) => {
-      const result = lastToolResult(request, expectedId);
-      const elements = result.elements as Array<{ name: string; ref: string }>;
-      const target = elements.find((element) => element.name === name);
-      assert.ok(target, `Current snapshot is missing ${name}`);
-      return tool(id, "browser_act", { actions: [{ kind: "click", ref: target.ref }] });
+      const [ref] = treeRefs(lastToolResult(request, expectedId).tree, name);
+      assert.ok(ref, `Current snapshot is missing ${name}`);
+      return tool(id, "browser_act", { actions: [{ kind: "click", ref }] });
     }, expectedId);
   const emulator = await startModelEmulator({
     steps: [
@@ -162,6 +160,17 @@ export async function runComputerReplay(
   } finally {
     await emulator.close();
   }
+}
+
+/** Refs of the elements named `name` in a page result's tree, the element list the model reads. */
+export function treeRefs(tree: unknown, name: string): string[] {
+  if (typeof tree !== "string") return [];
+  const label = ` ${JSON.stringify(name)} [`;
+  return tree.split("\n").flatMap((line) => {
+    const at = line.indexOf(label);
+    const ref = line.startsWith("- ") && at >= 0 ? line.slice(at + label.length).split("]")[0] : "";
+    return ref ? [ref] : [];
+  });
 }
 
 function lastToolResult(

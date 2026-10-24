@@ -117,7 +117,7 @@ describe("computer browser provider", () => {
     });
   });
 
-  it("forwards an extended snapshot and returns a live viewport capture", async () => {
+  it("forwards snapshot options and returns a live viewport capture", async () => {
     const liveDriver = vi.fn(async (_c, request, _ctx) =>
       request.command === "screenshot"
         ? { ok: true, data: "iVBORw0KGgo=", scale: 2 }
@@ -133,6 +133,8 @@ describe("computer browser provider", () => {
     const context = { ...baseContext, botId: "bot-a" };
     await provider.snapshot(computer, { extended: true }, context);
     expect(liveDriver.mock.calls[0]?.[1]).toEqual({ command: "snapshot", extended: true });
+    await provider.snapshot(computer, { textOffset: 6000 }, context);
+    expect(liveDriver.mock.calls[1]?.[1]).toEqual({ command: "snapshot", textOffset: 6000 });
     expect(await provider.screenshot(computer, {}, context)).toEqual({
       data: "iVBORw0KGgo=",
       mimeType: "image/png",

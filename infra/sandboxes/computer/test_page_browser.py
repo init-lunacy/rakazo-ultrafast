@@ -99,7 +99,18 @@ class PageBrowserTest(unittest.TestCase):
             helper.snapshot(Mock(), "session", True)
         self.assertEqual(
             [call.args[2] for call in evaluate.call_args_list],
-            ["window.__rakazoPageBrowser.snapshot(false)", "window.__rakazoPageBrowser.snapshot(true)"],
+            ["window.__rakazoPageBrowser.snapshot(false, 0)", "window.__rakazoPageBrowser.snapshot(true, 0)"],
+        )
+
+    def test_snapshot_reads_on_from_a_whole_number_text_offset_only(self):
+        with patch.object(helper, "ensure_helpers"), \
+                patch.object(helper, "eval_json", return_value={"elements": []}) as evaluate:
+            helper.snapshot(Mock(), "session", False, 6000)
+            with self.assertRaises(ValueError):
+                helper.snapshot(Mock(), "session", False, "0); alert(1")
+        self.assertEqual(
+            [call.args[2] for call in evaluate.call_args_list],
+            ["window.__rakazoPageBrowser.snapshot(false, 6000)"],
         )
 
     def test_screenshot_reports_the_device_pixel_ratio(self):

@@ -208,13 +208,15 @@ sites served inside that computer. The four tasks cover the core browsing jobs:
 Build the computer image first (`pnpm sandbox:build`), then run:
 
 ```bash
-pnpm test:evals --live --suite browsing --provider anthropic --model claude-sonnet-5-5 \
+pnpm test:evals --live --suite browsing --strategy retrieval \
+  --provider anthropic --model claude-sonnet-5-5 \
   --api-key-env ANTHROPIC_API_KEY --max-output-tokens 8192 \
   --pricing packages/testkit/src/evals/fixtures/pricing-anthropic-sonnet-5-5-2026-10-22.json \
   --trials 3 --spend-cap-usd 5 --output test-report/evals/browsing.json
 ```
 
-The spend guard sets aside a call's full output limit before each call, so keep
+`--strategy retrieval` is the product's default context strategy; the eval CLI's own default
+is `current`. The spend guard sets aside a call's full output limit before each call, so keep
 `--max-output-tokens` modest; without it, the model's maximum soon exhausts the cap. A trial costs
 roughly $0.35 with Sonnet 5.5.
 
