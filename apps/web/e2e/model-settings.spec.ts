@@ -279,8 +279,13 @@ test("the bot's model picker marks models that cannot read images", async ({ pag
   await expect(picker).toBeVisible();
   await picker.click();
   await page.getByRole("combobox", { name: "Search models" }).fill("model");
-  const textOnly = page.getByRole("option", { name: "OpenRouter · Text-only model", exact: true });
-  const vision = page.getByRole("option", { name: "OpenRouter · Vision model 1", exact: true });
+  // The page decider's select lists the same models, so look inside the picker's list.
+  const models = page.getByRole("listbox");
+  const textOnly = models.getByRole("option", {
+    name: "OpenRouter · Text-only model",
+    exact: true,
+  });
+  const vision = models.getByRole("option", { name: "OpenRouter · Vision model 1", exact: true });
   await expect(textOnly).toBeVisible();
   await captureScreenshot(page, testInfo, "bot-model-picker-text-only-row");
   await page.evaluate(() => {
