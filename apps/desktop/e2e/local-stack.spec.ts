@@ -42,19 +42,6 @@ test.beforeAll(async () => {
       response.end(JSON.stringify({ ok: true, imageTag: IMAGE_TAG }));
       return;
     }
-    if (request.url === "/api/desktop-settings/rpc/integrationSetup/get") {
-      const expected = await readFile(path.join(userData, "stack", ".desktop-stack-token"), "utf8");
-      if (
-        request.headers["x-rakazo-local-settings-token"] !== expected.trim() ||
-        request.headers.cookie
-      ) {
-        response.writeHead(401).end();
-        return;
-      }
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ json: { canConfigure: true } }));
-      return;
-    }
     if (request.url === "/rpc/health" && request.method === "POST") {
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ json: { ok: true, version: "0.1.0" } }));
@@ -408,7 +395,7 @@ test("a saved local target is the exact origin authenticated before reuse", asyn
   }
 });
 
-test("an existing stack .env is never rewritten", async () => {
+test("an existing stack .env keeps its lines and gains only added secrets", async () => {
   const stackDir = path.join(userData, "stack");
   await mkdir(stackDir, { recursive: true });
   const sentinel = "POSTGRES_PASSWORD=keep-me\nSENTINEL=1\n";
@@ -422,7 +409,9 @@ test("an existing stack .env is never rewritten", async () => {
   const appWindow = await appWindowPromise;
   await expect(appWindow.getByText(APP_MARKER)).toBeVisible();
 
-  await expect(readFile(path.join(stackDir, ".env"), "utf8")).resolves.toBe(sentinel);
+  const env = await readFile(path.join(stackDir, ".env"), "utf8");
+  expect(env.startsWith(sentinel)).toBe(true);
+  expect(env.slice(sentinel.length)).toMatch(/^POSTGRES_APP_PASSWORD=[0-9a-f]{32}\n$/);
 });
 
 test("exhausted address pools explain recovery", async () => {
@@ -486,7 +475,7 @@ test("repeated port conflicts stop with a retry action", async () => {
   });
 });
 
-test("the native settings menu opens an isolated logged-out settings capability", async () => {
+test("the desktop never exposes server administration or account impersonation", async () => {
   app = await launch("ok");
   const setup = await app.firstWindow();
   await setup.getByRole("radio", { name: /This computer/ }).check();
@@ -494,39 +483,10 @@ test("the native settings menu opens an isolated logged-out settings capability"
   await setup.getByRole("button", { name: "Continue", exact: true }).click();
   const main = await nextWindow;
   await expect(main.getByText(APP_MARKER)).toBeVisible();
-  await expect.poll(savedSetup).toEqual({ mode: "new", serverUrl });
-  const denied = await main.evaluate(async () => {
-    try {
-      await window.rakazoDesktop?.localSettings?.request(
-        "/api/desktop-settings/rpc/integrationSetup/get",
-        "{}",
-      );
-      return false;
-    } catch {
-      return true;
-    }
-  });
-  expect(denied).toBe(true);
-  const settingsOpened = app.waitForEvent("window");
-  await app.evaluate(({ Menu }) => {
-    const item = Menu.getApplicationMenu()?.getMenuItemById("local-server-settings");
-    if (!item) throw new Error("Missing settings menu");
-    item.click();
-  });
-  const settings = await settingsOpened;
-  await expect(settings).toHaveURL(`${serverUrl}/desktop-settings`);
-  const result = await settings.evaluate(() =>
-    window.rakazoDesktop?.localSettings?.request(
-      "/api/desktop-settings/rpc/integrationSetup/get",
-      "{}",
+  expect(await main.evaluate(() => "localSettings" in window.rakazoDesktop!)).toBe(false);
+  expect(
+    await app.evaluate(({ Menu }) =>
+      Boolean(Menu.getApplicationMenu()?.getMenuItemById("local-server-settings")),
     ),
-  );
-  expect(result?.status).toBe(200);
-  expect(JSON.parse(result!.body)).toEqual({ json: { canConfigure: true } });
-  await app.evaluate(({ Menu }) =>
-    Menu.getApplicationMenu()?.getMenuItemById("local-server-settings")?.click(),
-  );
-  expect(app.windows()).toHaveLength(2);
-  await settings.close();
-  await expect(main.getByText(APP_MARKER)).toBeVisible();
+  ).toBe(false);
 });

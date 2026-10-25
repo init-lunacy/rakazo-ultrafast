@@ -44,6 +44,27 @@ describe("browser tools", () => {
     expect(() => parseBrowserActions([{ kind: "fill", ref: "e1" }])).toThrow(/text/i);
   });
 
+  it("types over the field's text instead of adding to it", async () => {
+    const browser = new FakeBrowserProvider({
+      pages: {
+        "https://example.test/name": {
+          title: "Name",
+          html: `<!doctype html><html><head><title>Name</title></head><body>
+            <input aria-label="Name" value="Ada" />
+          </body></html>`,
+        },
+      },
+    });
+    await browserNavigateFromTool(browser, computer, context, { url: "https://example.test/name" });
+    type Snap = { elements: Array<{ ref: string; name: string; value?: string }> };
+    const name = (result: unknown) => (result as Snap).elements.find((el) => el.name === "Name")!;
+    const before = await browserSnapshotFromTool(browser, computer, context, {});
+    const typed = await browserActFromTool(browser, computer, context, {
+      actions: [{ kind: "type", ref: name(before).ref, text: " Lovelace" }],
+    });
+    expect(name(typed).value).toBe(" Lovelace");
+  });
+
   it("rejects URL credentials before invoking the browser", async () => {
     const browser = new FakeBrowserProvider();
     browser.navigateError = new Error("must not invoke browser");
@@ -283,7 +304,7 @@ describe("browser tools", () => {
       expect(JSON.stringify(snap)).not.toContain("ada");
     });
 
-    it("keeps a login-filled field hidden after ordinary typing appends to it", async () => {
+    it("shows a login-filled field once typing has replaced the login", async () => {
       const browser = loginPage("https://login.example.test/signin");
       const { email } = await refs(browser, "https://login.example.test/signin");
       // Each result carries a fresh snapshot, whose refs replace the previous ones.
@@ -303,10 +324,11 @@ describe("browser tools", () => {
       });
       expect(typed).toMatchObject({ ok: true });
       expect(JSON.stringify(typed)).not.toContain("ada");
-      const replaced = await browserActFromTool(browser, computer, context, {
-        actions: [{ kind: "fill", ref: emailRef(typed), text: "visible-now" }],
-      });
-      expect(JSON.stringify(replaced)).toContain("visible-now");
+      expect(
+        (typed as { elements: Array<{ name: string; value?: string }> }).elements.find((el) =>
+          el.name.includes("Email"),
+        )?.value,
+      ).toBe("!");
     });
 
     it("refuses to type a saved login into editable page content", async () => {
@@ -529,6 +551,72 @@ describe("browser tools", () => {
       fallback: "computer_act",
       note: expect.stringMatching(/computer_act/i),
     });
+  });
+
+  it.each(["ftp://example.test", "https://example:fake-password@example.test"])(
+    "omits the desktop fallback for a rejected page-only URL: %s",
+    async (url) => {
+      const browser = new FakeBrowserProvider();
+      const navigate = vi.spyOn(browser, "navigate");
+      const result = await browserNavigateFromTool(
+        browser,
+        computer,
+        context,
+        { url },
+        { desktopTools: false },
+      );
+      expect(result).toMatchObject({ error: expect.stringContaining("HTTP(S)") });
+      expect(result).not.toHaveProperty("fallback");
+      expect(JSON.stringify(result)).not.toContain("computer_act");
+      expect(navigate).not.toHaveBeenCalled();
+    },
+  );
+
+  it("asks a run without desktop tools to look again instead of pointing at computer_act", async () => {
+    const browser = new FakeBrowserProvider();
+    browser.forceFallback = "CDP not ready on port 9222";
+    const pageOnly = { desktopTools: false };
+    const results = [
+      await browserNavigateFromTool(
+        browser,
+        computer,
+        context,
+        { url: "https://example.test" },
+        pageOnly,
+      ),
+      await browserSnapshotFromTool(browser, computer, context, {}, pageOnly),
+      await browserActFromTool(
+        browser,
+        computer,
+        context,
+        { actions: [{ kind: "click", ref: "e1" }] },
+        pageOnly,
+      ),
+    ];
+    vi.spyOn(browser, "snapshot").mockRejectedValueOnce(new Error("socket closed"));
+    results.push(await browserSnapshotFromTool(browser, computer, context, {}, pageOnly));
+    // A URL refused before the browser is asked gets the same treatment.
+    results.push(
+      await browserNavigateFromTool(
+        browser,
+        computer,
+        context,
+        { url: "ftp://example.test" },
+        pageOnly,
+      ),
+    );
+    for (const result of results) {
+      expect(result).toMatchObject({
+        error: expect.any(String),
+        note: expect.stringContaining("may still be starting, so call browser_snapshot again"),
+      });
+      expect(result).not.toHaveProperty("fallback");
+      expect(JSON.stringify(result)).not.toContain("computer_act");
+    }
+    // A run that has the desktop tools keeps its fallback.
+    expect(
+      await browserSnapshotFromTool(browser, computer, context, {}, { desktopTools: true }),
+    ).toMatchObject({ fallback: "computer_act", note: expect.stringContaining("computer_act") });
   });
 
   it("hides page browser tools when the computer is not graphical", () => {

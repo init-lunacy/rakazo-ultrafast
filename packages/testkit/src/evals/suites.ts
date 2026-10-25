@@ -30,7 +30,7 @@ const OFFLINE = {
   limitations: [
     "Does not evaluate browser perception, native recording perception, or real external services.",
     "Silence cases observe routine chat, transient progress, and provider notification requests; native push delivery and UI pixels are outside the fixture.",
-    "Deterministic fact checks are deliberately narrow; they do not grade overall writing quality.",
+    "Silence reply meaning uses a calibrated LLM judge; other suites retain their existing task-specific graders.",
     COST_LIMITATION,
     TRACE_LIMITATION,
   ],

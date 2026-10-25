@@ -17,9 +17,7 @@ export function createThreadHeaderStyles() {
       borderRadius: 999,
     },
     titleCapsuleFill: {
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: tokens.border,
-      backgroundColor: tokens.card,
+      backgroundColor: tokens.glassFill,
     },
     title: {
       color: tokens.foreground,
@@ -39,8 +37,15 @@ export function createThreadHeaderStyles() {
     },
     composerFill: {
       borderWidth: StyleSheet.hairlineWidth,
-      borderColor: tokens.border,
-      backgroundColor: tokens.card,
+      borderColor: tokens.glassStroke,
+      backgroundColor: tokens.glassFill,
+    },
+    statusBarFade: {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+      experimental_backgroundImage: `linear-gradient(to bottom, ${tokens.background} 0%, ${tokens.background} 60%, ${transparentBackground} 100%)`,
     },
     composerFade: {
       position: "absolute",

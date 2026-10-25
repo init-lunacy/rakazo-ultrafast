@@ -98,7 +98,7 @@ function fixture(script: (request: AgentRunRequest) => AsyncGenerator<unknown>) 
     spaceModelPreference: { findFirst: async () => null },
     userModelCredential: { findFirst: async () => null },
     deploymentSettings: {
-      findUnique: async () => ({ defaultModelProvider: "scripted", defaultModelId: "scripted" }),
+      findUnique: async () => ({ defaultModelProvider: "local", defaultModelId: "fixture-model" }),
     },
     taughtSkill: { findMany: async () => [] },
     chatGroup: { findMany: async () => [] },

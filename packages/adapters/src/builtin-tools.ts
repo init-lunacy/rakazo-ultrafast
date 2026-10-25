@@ -85,7 +85,7 @@ const scheduleCreateProperties = {
     description:
       "Concrete steps for when the schedule fires: name the connected plugin tools to call (e.g. GITHUB_LIST_RELEASES for owner/repo), what to extract, and how to report. Prefer plugin tools over computer browser or web search for app data.",
   },
-  timezone: { type: "string", description: "IANA timezone (default UTC)." },
+  timezone: { type: "string", description: "IANA timezone (default: the user's timezone)." },
 };
 
 const scheduleTimingNames = [
@@ -193,8 +193,8 @@ const browserTabProperty = {
 };
 
 const childRoutineTargetProperties = {
-  bot_id: { type: "string", description: "Id of a bot you created." },
-  bot_name: { type: "string", description: "Exact name of a bot you created." },
+  bot_id: { type: "string", description: "Id of a bot in this space." },
+  bot_name: { type: "string", description: "Exact name of a bot in this space." },
 };
 
 /** Same exactly-one-timing-method rule as schedule_create, plus the target bot. */
@@ -327,7 +327,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "browser_snapshot",
     description:
-      "Capture an accessibility-style snapshot of the current page with element refs (e1, e2, …). Use refs with browser_act. Prefer this over computer_observe for web pages. If fallback is computer_act, use the desktop tools instead.",
+      "Capture an accessibility-style snapshot of the current page with element refs (e1, e2, …). Use refs with browser_act. Prefer this over computer_observe for web pages. If loading is true, take another snapshot before deciding what the page shows. If fallback is computer_act, use the desktop tools instead.",
     inputSchema: {
       type: "object",
       properties: {
@@ -348,7 +348,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "browser_act",
     description:
-      'Click or fill page elements by ref from browser_snapshot (kinds: click, fill, type, upload, fill_secret). upload attaches your files to a "file upload" element; use it instead of clicking upload buttons. fill_secret types the username or password of a login saved with request_secret, only on the site it was saved for; you never see the value. Prefer this over computer_act for web pages. If the result includes fallback:"computer_act", use computer_act instead. Refs name the tab they came from, so this acts there. A click that opens a tab lists it in opened.',
+      'Click or fill page elements by ref from browser_snapshot (kinds: click, fill, type, upload, fill_secret). upload attaches your files to a "file upload" element; use it instead of clicking upload buttons. fill_secret types the username or password of a login saved with request_secret, only on the site it was saved for; you never see the value. type presses keys like a keyboard and replaces the field\'s text; use it for code boxes and fields that ignore fill. For a code split into one box per digit, type the whole code once into the first box, and to correct it type it again. Prefer this over computer_act for web pages. If the result includes fallback:"computer_act", use computer_act instead. Refs name the tab they came from, so this acts there. A click that opens a tab lists it in opened.',
     inputSchema: {
       type: "object",
       properties: {
@@ -362,7 +362,10 @@ export const builtinAgentTools: ConnectorTool[] = [
                 enum: ["click", "fill", "type", "upload", "fill_secret"],
               },
               ref: { type: "string", description: "Element ref from browser_snapshot." },
-              text: { type: "string", description: "Text for fill or type." },
+              text: {
+                type: "string",
+                description: "Text for fill or type (type replaces the field's text).",
+              },
               paths: {
                 type: "array",
                 items: { type: "string" },
@@ -480,6 +483,17 @@ export const builtinAgentTools: ConnectorTool[] = [
       type: "object",
       properties: { reason: { type: "string" } },
       required: ["reason"],
+    },
+  },
+  {
+    name: "connect_app",
+    description:
+      "Show an inline card to connect an app in this chat when you need an unconnected app or the user asks to connect one. Then wait for the user instead of directing them elsewhere.",
+    inputSchema: {
+      type: "object",
+      properties: { app: { type: "string", minLength: 1, maxLength: 100 } },
+      required: ["app"],
+      additionalProperties: false,
     },
   },
   {
@@ -827,7 +841,8 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   // Semantic-memory tools: exposed by selectMemoryTools() only when a
-  // A Space memory provider is configured (which hides `remember`).
+  // Space memory provider is configured (`remember` stays), and
+  // forget_memory only when that provider can forget.
   {
     name: "save_memory",
     description:
@@ -1220,7 +1235,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "create_space",
     description:
-      "Propose a new space in the current organization when the user asks for a separate data boundary. A space can contain many bots and groups, but its chats, files, memory, tools, and integrations stay isolated from other spaces. This always shows the user a confirmation card before creation. Creating the space is the whole action; do not create bots in it unless the user asks later.",
+      "Propose a new space in the current organization when the user asks for a separate data boundary. A space can contain many bots and groups, but its chats, files, memory, tools, and integrations stay isolated from other spaces. Creating the space is the whole action; do not create bots in it unless the user asks later.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1310,7 +1325,7 @@ export const builtinAgentTools: ConnectorTool[] = [
         },
         bot_id: {
           type: "string",
-          description: "A bot you created, to update its profile instead of yours.",
+          description: "A bot in this space, to update its profile instead of yours.",
         },
       },
     },
@@ -1318,14 +1333,14 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "list_fleet",
     description:
-      "List the bots and groups of this user with their ids, sections and pinned state, and which bots you created. Pass bot_id of a bot you created to read only its full instructions and instructionsVersion, which set_child_instructions needs as expected_version. Call this before changing the fleet.",
+      "List the bots and groups in this space with their ids, sections and pinned state, and which bots you created. Pass bot_id of a bot in this space to read only its full instructions and instructionsVersion, which set_child_instructions needs as expected_version. Call this before changing the bots you manage.",
     inputSchema: {
       type: "object",
       properties: {
         bot_id: {
           type: "string",
           description:
-            "A bot you created, to read its instructions and version instead of the roster.",
+            "A bot in this space, to read its instructions and version instead of the roster.",
         },
       },
       additionalProperties: false,
@@ -1380,7 +1395,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "set_child_instructions",
     description:
-      "Replace the instructions of a bot you created. Identify it by bot_id or bot_name (exact). Only bots you created. Pass expected_version from list_fleet with that bot_id. One instruction edit per bot per run. Needs the owner's approval.",
+      "Replace the instructions of a bot in this space. Identify it by bot_id or bot_name (exact). Pass expected_version from list_fleet with that bot_id. One instruction edit per bot per run. Needs the owner's approval.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1398,7 +1413,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "set_child_bot_model",
     description:
-      "Set the model of a bot you created, or reset it to the default with clear: true. Identify it by bot_id or bot_name (exact). Only bots you created. Needs the owner's approval.",
+      "Set the model of a bot in this space, or reset it to the default with clear: true. Identify it by bot_id or bot_name (exact). Needs the owner's approval.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1414,13 +1429,13 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "create_child_routine",
     description:
-      "Schedule a routine that wakes a bot you created in its own thread. Identify it by bot_id or bot_name (exact). Only bots you created. Repeats: cron or every/unit (min 1 minute). One-shot: runAt, delayMinutes, or delaySeconds. Needs the owner's approval.",
+      "Schedule a routine that wakes a bot in this space in its own thread. Identify it by bot_id or bot_name (exact). Repeats: cron or every/unit (min 1 minute). One-shot: runAt, delayMinutes, or delaySeconds. Needs the owner's approval.",
     inputSchema: createChildRoutineInputSchema,
   },
   {
     name: "archive_bot",
     description:
-      "Archive a bot this bot created. Archiving stops its work and routines, hides it from the active list, and preserves its conversation, memory, and files for the user to restore or delete later. confirm_name must exactly match its name. This cannot archive you, bots the user created, or bots another bot created.",
+      "Archive another bot in this space. Archiving stops its work and routines, hides it from the active list, and preserves its conversation, memory, and files for the user to restore or delete later. confirm_name must exactly match its name. This cannot archive you.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1428,7 +1443,7 @@ export const builtinAgentTools: ConnectorTool[] = [
         bot_id: {
           type: "string",
           description:
-            "Optional bot id. If omitted, the unique bot this bot created with confirm_name is archived.",
+            "Optional bot id. If omitted, the unique bot in this space with confirm_name is archived.",
         },
       },
       required: ["confirm_name"],

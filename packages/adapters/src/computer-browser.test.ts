@@ -142,6 +142,30 @@ describe("computer browser provider", () => {
     });
   });
 
+  it("passes on that the live page was still loading", async () => {
+    const tree = '- link "Sign in" [e1]';
+    const live = { ok: true, url: "https://example.test/", title: "Example", tree, elements: [] };
+    const provider = new ComputerBrowserProvider({
+      pages,
+      liveDriver: vi
+        .fn()
+        .mockResolvedValueOnce({ ...live, loading: true })
+        .mockResolvedValueOnce(live),
+    });
+    const computer: ComputerRef = { id: "c", botId: "b", kind: "docker", providerRef: "c" };
+    const context = { ...baseContext, botId: "bot-a" };
+    expect(await provider.snapshot(computer, {}, context)).toMatchObject({ tree, loading: true });
+    expect(await provider.snapshot(computer, {}, context)).not.toHaveProperty("loading");
+    // browser_act returns the page after its actions, which can still be loading too.
+    const acting = new ComputerBrowserProvider({
+      pages,
+      liveDriver: async () => ({ ...live, completed: 1, loading: true }),
+    });
+    expect(
+      await acting.act(computer, { actions: [{ kind: "click", ref: "e1" }] }, context),
+    ).toMatchObject({ ok: true, completed: 1, tree, loading: true });
+  });
+
   it("returns computer_act when the live driver reports failure", async () => {
     const provider = new ComputerBrowserProvider({
       pages,
@@ -359,6 +383,35 @@ describe("page browser safety", () => {
         baseContext,
       ),
     ).toMatchObject({ ok: false, uncertain: true, completed: 1 });
+  });
+
+  it("shows the page as a stopped step left it", async () => {
+    const elements = [{ ref: "e1", role: "textbox", name: "Digit 1", value: "4" }];
+    const provider = new ComputerBrowserProvider({
+      liveDriver: async () => ({
+        ok: false,
+        completed: 0,
+        uncertain: false,
+        url: "https://code.example.test/",
+        title: "Code",
+        elements,
+        error:
+          "Focus left the field while typing, after 1 of 6 characters, so the rest was not typed.",
+      }),
+    });
+    const result = await provider.act(
+      computer,
+      { actions: [{ kind: "type", ref: "e1", text: "482913" }] },
+      baseContext,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      uncertain: false,
+      completed: 0,
+      title: "Code",
+      elements,
+    });
+    expect(result.tree).toContain("Digit 1");
   });
 
   it("propagates cancellation instead of suggesting another action", async () => {

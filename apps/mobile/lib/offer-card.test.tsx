@@ -48,6 +48,7 @@ vi.mock("react-native", async () => {
   return {
     ActivityIndicator: () => null,
     Alert: { alert },
+    Platform: { OS: "ios", select: (options: { ios?: unknown }) => options.ios },
     Pressable: MockPressable,
     StyleSheet: { create: <T,>(styles: T) => styles },
     Text: MockText,

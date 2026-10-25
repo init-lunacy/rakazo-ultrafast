@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { readFileSync } from "node:fs";
+import { ACTIVE_RUN_STATUSES, isRunWorking } from "@rakazo/core";
 import type { ComponentType, ReactElement, ReactNode } from "react";
 import * as React from "react";
 import { act, memo, useCallback, useEffect, useMemo, useState } from "react";
@@ -18,6 +19,10 @@ vi.mock("./api", () => ({}));
 
 const testFileUrl = import.meta.url;
 const source = readFileSync(new URL("../app/index.tsx", testFileUrl), "utf8");
+const rowDimensions = source.slice(
+  source.indexOf("const INBOX_ROW ="),
+  source.indexOf("function ConversationRow("),
+);
 
 // Run the actual row and renderItem code with native presentation stubbed out.
 // React still performs real memo comparisons; this measures JS row executions only.
@@ -36,18 +41,17 @@ function measure(before: boolean) {
     memo: before ? (component: ComponentType) => component : memo,
     useCallback,
     useI18n: () => ({ t: (text: string) => text }),
-    previewSnippet: (text: string) => text,
+    previewSnippet: (text: string) => {
+      renders++;
+      return text;
+    },
     formatThreadTime: () => "",
     botTag: () => "",
-    ACTIVE_RUN_STATUSES: ["running"],
-    mobileBotAvatarPresentation: () => {
-      renders++;
-      return { kind: "color", color: "gray" };
-    },
+    isRunWorking,
     FALLBACK_COLOR: "gray",
     ConversationRow: () => null,
     BotAvatar: () => null,
-    WorkingIndicator: () => null,
+    AvatarRow: ({ children }: { children: ReactElement }) => children,
     // Rows in the current space carry the iOS swipe host; it must not defeat the memo.
     InboxSwipeRow: ({ children }: { children: ReactElement }) => children,
     inboxRowActionList,
@@ -60,9 +64,10 @@ function measure(before: boolean) {
         module: ts.ModuleKind.CommonJS,
       },
     }).outputText;
-  const BotRow = new Function(...Object.keys(scope), compile(`${rowSource}\nreturn BotRow;`))(
-    ...Object.values(scope),
-  );
+  const BotRow = new Function(
+    ...Object.keys(scope),
+    compile(`${rowDimensions}\n${rowSource}\nreturn BotRow;`),
+  )(...Object.values(scope));
   const action = vi.fn();
   const dependencies = {
     React,
@@ -111,10 +116,7 @@ function measure(before: boolean) {
           onLongPress={() => action(bot)}
         />
       ) : (
-        React.cloneElement(
-          renderItem({ item: { type: "bot", bot, depth: 0, hasChildren: false } }),
-          { key: bot.id },
-        )
+        React.cloneElement(renderItem({ item: { type: "bot", bot } }), { key: bot.id })
       ),
     );
   }
@@ -192,13 +194,12 @@ it.each(["midnight", "focus", "foreground"])(
       previewSnippet: (text: string) => text,
       formatThreadTime,
       botTag: () => "",
-      ACTIVE_RUN_STATUSES: ["running"],
-      mobileBotAvatarPresentation: () => ({ kind: "color", color: "gray" }),
+      isRunWorking,
       FALLBACK_COLOR: "gray",
       ConversationRow: ({ time }: { time: string }) => <span>{time}</span>,
       BotAvatar: () => null,
+      AvatarRow: ({ children }: { children: ReactElement }) => children,
       GroupAvatar: () => null,
-      WorkingIndicator: () => null,
       InboxSwipeRow: ({ children }: { children: ReactElement }) => children,
       inboxRowActionList,
       appearance: "light",
@@ -236,7 +237,7 @@ it.each(["midnight", "focus", "foreground"])(
       source.indexOf("  if (!ready) {"),
     );
     const compiled = ts.transpileModule(
-      `${rowSource}\nreturn function List({ items }) {\n${daySource}\n${listSource}
+      `${rowDimensions}\n${rowSource}\nreturn function List({ items }) {\n${daySource}\n${listSource}
         return items.map((item, index) => React.cloneElement(renderItem({ item }), { key: index }));
       };`,
       { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } },
@@ -306,8 +307,7 @@ it("renders saved bot rows without a title or notification setting", () => {
     previewSnippet: (text: string) => text,
     formatThreadTime,
     botTag,
-    ACTIVE_RUN_STATUSES: ["running"],
-    mobileBotAvatarPresentation: () => ({ kind: "color", color: "gray" }),
+    isRunWorking,
     FALLBACK_COLOR: "gray",
     ConversationRow: ({
       tag,
@@ -325,14 +325,18 @@ it("renders saved bot rows without a title or notification setting", () => {
         {avatar}
       </span>
     ),
-    BotAvatar: ({ muted }: { muted: boolean }) => (muted ? " muted" : null),
-    WorkingIndicator: () => null,
+    BotAvatar: ({ muted, motion }: { muted: boolean; motion?: string }) =>
+      `${muted ? " muted" : ""}${motion ? ` ${motion}` : ""}`,
+    // The row's avatar freezes while the row is scrolled out of view.
+    AvatarRow: ({ id, children }: { id: string; children: ReactElement }) => (
+      <i data-row={id}>{children}</i>
+    ),
   };
   const rowSource = source.slice(
     source.indexOf("const BotRow = memo("),
     source.indexOf("const GroupRow = memo("),
   );
-  const compiled = ts.transpileModule(`${rowSource}\nreturn BotRow;`, {
+  const compiled = ts.transpileModule(`${rowDimensions}\n${rowSource}\nreturn BotRow;`, {
     compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const BotRow = new Function(...Object.keys(scope), compiled)(...Object.values(scope));
@@ -351,10 +355,129 @@ it("renders saved bot rows without a title or notification setting", () => {
       ),
     );
     expect(Array.from(container.querySelectorAll("span"), (span) => span.textContent)).toEqual([
-      "Research|Research|Alpha, Research, Research",
-      "|No messages yet|Beta, No messages yet",
-      "|No messages yet|Gamma, notifications silenced, No messages yet muted",
+      "Research|Research|Alpha, Research, Research lazy",
+      "|No messages yet|Beta, No messages yet lazy",
+      "|No messages yet|Gamma, notifications silenced, No messages yet muted lazy",
     ]);
+    expect(Array.from(container.querySelectorAll("i"), (row) => row.dataset.row)).toEqual([
+      "bot-a",
+      "bot-b",
+      "bot-c",
+    ]);
+  } finally {
+    act(() => root.unmount());
+    vi.unstubAllGlobals();
+  }
+});
+
+it("says working only while the bot works, and shows nothing beside the time", () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const scope = {
+    React,
+    memo,
+    useI18n: () => ({ t: (text: string) => text }),
+    previewSnippet: (text: string) => text,
+    formatThreadTime,
+    botTag: () => "",
+    ACTIVE_RUN_STATUSES,
+    isRunWorking,
+    FALLBACK_COLOR: "gray",
+    // The avatar's motion and corner dot are the only working sign; the time stands alone.
+    ConversationRow: (props: { accessibilityLabel: string }) => (
+      <span data-indicator={"indicator" in props}>{props.accessibilityLabel}</span>
+    ),
+    BotAvatar: () => null,
+    AvatarRow: ({ children }: { children: ReactElement }) => children,
+  };
+  const rowSource = source.slice(
+    source.indexOf("const BotRow = memo("),
+    source.indexOf("const GroupRow = memo("),
+  );
+  const compiled = ts.transpileModule(`${rowDimensions}\n${rowSource}\nreturn BotRow;`, {
+    compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const BotRow = new Function(...Object.keys(scope), compiled)(...Object.values(scope));
+  const bots = ["running", "waiting_takeover", "waiting_input", "idle"].map((status) => ({
+    id: status,
+    name: "Helper",
+    preview: "Hi",
+    status,
+  }));
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    act(() =>
+      root.render(
+        bots.map((bot) => <BotRow key={bot.id} bot={bot} day={0} onPress={() => undefined} />),
+      ),
+    );
+    // A "Needs you" computer card or an ask card is the state; the row must not claim work.
+    expect(
+      Array.from(container.querySelectorAll("span"), (span) => span.dataset.indicator),
+    ).toEqual(["false", "false", "false", "false"]);
+    expect(Array.from(container.querySelectorAll("span"), (span) => span.textContent)).toEqual([
+      "Helper, Working…, Hi",
+      "Helper, Hi",
+      "Helper, Hi",
+      "Helper, Hi",
+    ]);
+  } finally {
+    act(() => root.unmount());
+    vi.unstubAllGlobals();
+  }
+});
+
+it("ties the pinned tiles' avatars to the pinned row, so they freeze when it scrolls away", () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const action = vi.fn();
+  const listSource = source.slice(
+    source.indexOf("  const renderItem = useCallback("),
+    source.indexOf("  if (!ready) {"),
+  );
+  // The list's own key for each item.
+  const keySource = source.slice(
+    source.indexOf("function inboxItemKey("),
+    source.indexOf("function inboxSignal("),
+  );
+  const scope = {
+    React,
+    useCallback,
+    AvatarRow: ({ id, children }: { id: string; children: ReactElement }) => (
+      <i data-row={id}>{children}</i>
+    ),
+    PinnedTiles: () => <b />,
+    appearance: "light",
+    botAction: action,
+    botSections: [],
+    chooseInboxSpace: action,
+    collapsed: new Set(),
+    confirmDeleteSpace: action,
+    deleteSection: action,
+    day: 0,
+    editSectionFromMenu: action,
+    groupAction: action,
+    me: { spaceId: "space-1" },
+    openBot: action,
+    openGroup: action,
+    organizeBot: action,
+    organizeFromMenu: action,
+    organizeGroup: action,
+    spaceBusy: false,
+    spaceRecoveryId: null,
+    styles: {},
+    t: action,
+    toggleCollapsed: action,
+  };
+  const compiled = ts.transpileModule(
+    `${keySource}\nreturn function List() {\n${listSource}\nreturn renderItem({ item: { type: "pinned", chats: [] } });\n};`,
+    { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const List = new Function(...Object.keys(scope), compiled)(...Object.values(scope));
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    act(() => root.render(<List />));
+    expect(container.querySelector('[data-row="pinned"] > b')).not.toBeNull();
   } finally {
     act(() => root.unmount());
     vi.unstubAllGlobals();
@@ -607,6 +730,92 @@ it("waits for a saved or live inbox before publishing a remounted session's sear
       root.render(<PublishRoster key="session-2" me={{ spaceId: "space-a" }} inboxSpaces={[]} />),
     );
     expect(publish).toHaveBeenLastCalledWith([]);
+  } finally {
+    act(() => root.unmount());
+    vi.unstubAllGlobals();
+  }
+});
+
+it("gives the long-press menu, and with it Delete, only to chats in the current space", () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const action = vi.fn();
+  const withMenu: string[] = [];
+  const scope = {
+    React,
+    memo,
+    useCallback,
+    useI18n: () => ({ t: (text: string) => text }),
+    previewSnippet: (text: string) => text,
+    formatThreadTime: () => "",
+    botTag: () => "",
+    ACTIVE_RUN_STATUSES,
+    isRunWorking,
+    FALLBACK_COLOR: "gray",
+    ConversationRow: () => null,
+    BotAvatar: () => null,
+    AvatarRow: ({ children }: { children: ReactElement }) => children,
+    GroupAvatar: () => null,
+    InboxSwipeRow: ({ rowKey }: { rowKey: string }) => {
+      withMenu.push(rowKey);
+      return null;
+    },
+    inboxRowActionList,
+    appearance: "light",
+    botAction: action,
+    groupAction: action,
+    botSections: [],
+    editSectionFromMenu: action,
+    organizeFromMenu: action,
+    SWIPE_ROWS: true,
+    day: 0,
+    chooseInboxSpace: action,
+    collapsed: new Set(),
+    confirmDeleteSpace: action,
+    deleteSection: action,
+    me: { spaceId: "space-current" },
+    openBot: action,
+    openGroup: action,
+    organizeBot: action,
+    organizeGroup: action,
+    spaceBusy: false,
+    spaceRecoveryId: null,
+    styles: {},
+    t: action,
+    toggleCollapsed: action,
+  };
+  const rowSource = source.slice(
+    source.indexOf("const BotRow = memo("),
+    source.indexOf("function createHomeStyles()"),
+  );
+  const listSource = source.slice(
+    source.indexOf("  const renderItem = useCallback("),
+    source.indexOf("  if (!ready) {"),
+  );
+  const compiled = ts.transpileModule(
+    `${rowDimensions}\n${rowSource}\nreturn function List({ items }) {\n${listSource}
+      return items.map((item, index) => React.cloneElement(renderItem({ item }), { key: index }));
+    };`,
+    { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const List = new Function(...Object.keys(scope), compiled)(...Object.values(scope));
+  const chat = (id: string, spaceId: string) => ({
+    id,
+    spaceId,
+    name: id,
+    preview: "",
+    members: [],
+  });
+  // Chats listed from another space have no row menu, as with Archive.
+  const items = [
+    { type: "bot", bot: chat("current-bot", "space-current") },
+    { type: "group", group: chat("current-group", "space-current") },
+    { type: "bot", bot: chat("other-bot", "space-other") },
+    { type: "group", group: chat("other-group", "space-other") },
+  ];
+  const root = createRoot(document.createElement("div"));
+  try {
+    act(() => root.render(<List items={items} />));
+    expect(withMenu).toEqual(["bot:current-bot", "group:current-group"]);
   } finally {
     act(() => root.unmount());
     vi.unstubAllGlobals();

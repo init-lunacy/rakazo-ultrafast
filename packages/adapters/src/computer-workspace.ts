@@ -22,15 +22,40 @@ export const PORTABLE_TRANSFER_BATCH_BYTES = 8 * 1024 * 1024;
 const skippedBrowserProfileDirectories = new Set([
   "Cache",
   "Code Cache",
+  "CacheStorage",
   "GPUCache",
   "GrShaderCache",
   "ShaderCache",
   "DawnGraphiteCache",
   "DawnWebGPUCache",
+  "GraphiteDawnCache",
   "Crashpad",
+  "startup_cache",
+  "cache2",
+  // Components and models the browser downloads again on its own; each copy is per bot.
+  "ActorSafetyLists",
+  "CertificateRevocation",
+  "component_crx_cache",
+  "Crowd Deny",
+  "DeferredBrowserMetrics",
+  "Dictionaries",
+  "extensions_crx_cache",
+  "hyphen-data",
+  "OnDeviceHeadSuggestModel",
+  "optimization_guide_model_store",
+  "OptimizationHints",
+  "PKIMetadata",
+  "Safe Browsing",
+  "SafetyTips",
+  "screen_ai",
+  "Subresource Filter",
+  "WasmTtsEngine",
+  "WidevineCdm",
+  "ZxcvbnData",
 ]);
 const skippedBrowserProfileFiles = new Set([
   "BrowserMetrics",
+  "BrowserMetrics-spare.pma",
   "DevToolsActivePort",
   "SingletonCookie",
   "SingletonLock",
@@ -349,6 +374,7 @@ export async function checkpointAndRecordComputerWorkspace(
   computer: ComputerRef,
   context: AdapterContext,
 ): Promise<string> {
+  const checkpointedAt = new Date();
   const revision = await checkpointComputerWorkspace(
     deps.home,
     deps.sandbox,
@@ -358,7 +384,7 @@ export async function checkpointAndRecordComputerWorkspace(
   );
   await deps.prisma.computer.updateMany({
     where: { id: computerRecord.id },
-    data: { homeRevision: revision },
+    data: { homeRevision: revision, homeRevisionAt: checkpointedAt },
   });
   return revision;
 }

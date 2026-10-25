@@ -6,6 +6,7 @@ import {
   selectedSpaceId,
   selectSpace,
 } from "./api";
+import { activateUiLocale } from "./i18n";
 import {
   canDeleteInboxSpace,
   type InboxSpace,
@@ -61,6 +62,45 @@ const bot: MobileBot = {
 };
 
 describe("spaceInboxItems", () => {
+  it("updates built-in headings with the locale without translating custom names", () => {
+    const input = space({
+      isDefault: true,
+      name: "Unassigned",
+      bots: [
+        { ...bot, pinned: true },
+        { ...bot, id: "loose" },
+      ],
+      botSections: [
+        {
+          id: "custom",
+          name: "Pinned",
+          position: 0,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+    try {
+      activateUiLocale("de");
+      expect(
+        spaceInboxItems([input])
+          .filter((item) => item.type === "heading")
+          .map((item) => [item.key, item.title]),
+      ).toEqual([
+        [`${input.id}:pinned`, "Angeheftet"],
+        [`${input.id}:section:custom`, "Pinned"],
+        [`${input.id}:unassigned`, "Nicht zugewiesen"],
+      ]);
+      activateUiLocale("en");
+      expect(
+        spaceInboxItems([input])
+          .filter((item) => item.type === "heading")
+          .map((item) => item.title),
+      ).toEqual(["Pinned", "Pinned", "Unassigned"]);
+    } finally {
+      activateUiLocale("en");
+    }
+  });
   it("keeps an empty space visible and selectable by its own id", () => {
     const empty = space();
     expect(spaceInboxItems([empty])).toEqual([
@@ -161,25 +201,22 @@ describe("spaceInboxItems", () => {
     };
     const items = spaceInboxItems([space({ isDefault: true, bots: [bot], groups: [group] })]);
     expect(items.map((item) => item.type)).toEqual(["bot", "group"]);
-    expect(items[0]).toMatchObject({ type: "bot", depth: 0, hasChildren: false });
+    expect(items[0]).toMatchObject({ type: "bot", bot });
   });
 
-  it("nests child bots under their parent and can collapse them", () => {
-    const parent = { ...bot, id: "parent", parentBotId: null };
-    const child = { ...bot, id: "child", parentBotId: "parent" };
-    const expanded = spaceInboxItems([space({ isDefault: true, bots: [parent, child] })]);
-    expect(expanded.map((item) => ("bot" in item ? [item.bot.id, item.depth] : item.type))).toEqual(
-      [
-        ["parent", 0],
-        ["child", 1],
-      ],
+  it("lists created bots as peers in roster order, ignoring saved parent collapse state", () => {
+    const chief = { ...bot, id: "chief", parentBotId: null };
+    const created = { ...bot, id: "created", parentBotId: "chief" };
+    const peer = { ...bot, id: "peer", parentBotId: null };
+    const items = spaceInboxItems(
+      [space({ isDefault: true, bots: [created, peer, chief] })],
+      new Set(["chief"]),
     );
-    expect(expanded[0]).toMatchObject({ hasChildren: true });
-    const collapsed = spaceInboxItems(
-      [space({ isDefault: true, bots: [parent, child] })],
-      new Set(["parent"]),
-    );
-    expect(collapsed.map((item) => ("bot" in item ? item.bot.id : item.type))).toEqual(["parent"]);
+    expect(items).toEqual([
+      { type: "bot", bot: created },
+      { type: "bot", bot: peer },
+      { type: "bot", bot: chief },
+    ]);
   });
 
   it("collapses one section heading and counts its chats", () => {
