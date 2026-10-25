@@ -6689,13 +6689,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (isSubagentToolExecution(executionId)) {
               return finish({ error: "Only the main agent offers cards; tell it what to offer." });
             }
-            const stepCount = await deps.prisma.event.count({
-              where: {
-                runId,
-                type: "agent.tool.called",
-                NOT: { payload: { path: ["name"], equals: "offer_actions" } },
-              },
+            // Event payloads are sealed at rest, so the tool name is read after the client opens them.
+            const toolEvents = await deps.prisma.event.findMany({
+              where: { runId, type: "agent.tool.called" },
+              select: { payload: true },
             });
+            const stepCount = toolEvents.filter(
+              (event) => (event.payload as { name?: unknown } | null)?.name !== "offer_actions",
+            ).length;
             return finish(
               await offerActionsFromTool(deps.prisma, {
                 args,

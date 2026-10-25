@@ -89,6 +89,11 @@ function fixture(script: (request: AgentRunRequest) => AsyncGenerator<unknown>) 
     },
     event: {
       count: async () => 4,
+      // Payloads are sealed at rest; the client hands them back decrypted.
+      findMany: async () =>
+        ["browser_navigate", "browser_snapshot", "offer_actions", "write_file"].map((name) => ({
+          payload: { name },
+        })),
       create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "event-1", ...data }),
     },
     task: {
@@ -202,6 +207,10 @@ describe("cards from a run that does not end with its own reply", () => {
       yield { type: "done" as const, text: "The second hotel is cheaper." };
     });
     await f.run();
+    // The steps toward a save-skill offer leave out offer_actions itself.
+    expect((offerActionsMock.mock.lastCall as unknown[] | undefined)?.[1]).toMatchObject({
+      stepCount: 3,
+    });
     expect(f.finalizeRun.mock.calls[0]![0]).toMatchObject({
       outcome: "completed",
       publishOffers: true,

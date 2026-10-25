@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
 import type { App, Bot } from "./app-helpers.js";
 import { botInput, rpc, setBotIntroHarness, signup } from "./app-helpers.js";
+import { asSystem } from "./system-db.js";
 
 type AppHandles = Awaited<ReturnType<typeof createApp>>;
 
@@ -52,7 +53,7 @@ describeWithDatabase("action cards (PostgreSQL)", () => {
 
   async function runUntilDone(runId: string) {
     for (let i = 0; i < 100; i++) {
-      const run = await handles.prisma.run.findUniqueOrThrow({ where: { id: runId } });
+      const run = await asSystem(handles.prisma).run.findUniqueOrThrow({ where: { id: runId } });
       if (["completed", "failed", "cancelled"].includes(run.status)) return run;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
@@ -85,7 +86,7 @@ describeWithDatabase("action cards (PostgreSQL)", () => {
       offerId: card!.id,
     });
     expect(taken.runId).toEqual(expect.any(String));
-    const run = await handles.prisma.run.findUniqueOrThrow({
+    const run = await asSystem(handles.prisma).run.findUniqueOrThrow({
       where: { id: taken.runId! },
       include: { task: true },
     });
@@ -105,7 +106,9 @@ describeWithDatabase("action cards (PostgreSQL)", () => {
       await rpc<Array<{ id: string; label: string; kind: string }>>(app, owner, "actionOffers/list")
     ).find((card) => card.kind === "save_skill");
     expect(skill?.label).toBe("Save as a skill");
-    const source = await handles.prisma.actionOffer.findUniqueOrThrow({ where: { id: skill!.id } });
+    const source = await asSystem(handles.prisma).actionOffer.findUniqueOrThrow({
+      where: { id: skill!.id },
+    });
     expect(source.skillSource).toEqual(
       expect.arrayContaining([expect.stringContaining("schedule_list")]),
     );

@@ -14,6 +14,7 @@ import { createDb } from "./client.js";
 import { claimSteering, finalizeRun, runTookOutsideSteering } from "./events.js";
 import { createThreadMessage } from "./messages.js";
 import { provisionMessagingIdentity } from "./messaging.js";
+import { asSystem } from "./row-security.js";
 import { previewFromBlocks } from "./thread-listing.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -30,7 +31,8 @@ describePostgres("action offers (PostgreSQL)", () => {
 
   beforeAll(async () => {
     const db = createDb(databaseUrl!);
-    prisma = db.prisma;
+    // Fixtures and assertions have no request around them; the runtime login enforces row security.
+    prisma = asSystem(db.prisma);
     close = async () => {
       try {
         await db.prisma.$disconnect();

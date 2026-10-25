@@ -784,7 +784,7 @@ export async function runTrial(
       try {
         const taskRunIds = runIds.filter((id) => !setupRunIds.has(id));
         timings.taskMs = taskMsFromRuns(
-          await handles.prisma.run.findMany({
+          await asSystem(handles.prisma).run.findMany({
             where: { id: { in: taskRunIds } },
             select: { startedAt: true, completedAt: true },
           }),

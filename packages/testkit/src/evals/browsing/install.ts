@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { AdapterContext, ComputerRef, SandboxProvider } from "@rakazo/adapter-kit";
 import { toComputerRef } from "@rakazo/adapters";
 import { executeChecked, startFixtureServer } from "../../computer-fixture-server.js";
+import { asSystem } from "../../system-db.js";
 import type { ComputerFixture, EvalApp } from "../runner.js";
 import type { SiteRequest } from "./sites.js";
 import { parseSiteRequests, SITE_PORT, SITE_SERVER_PATH, SITE_URL, SITES_PATH } from "./sites.js";
@@ -55,7 +56,7 @@ export async function readSiteRequests(
 /** Finds the trial bot's own computer, then installs or reads the sites there. */
 export function browsingComputerFixture(sandbox: SandboxProvider): ComputerFixture {
   const locate = async (trial: EvalApp, botId: string) => {
-    const bot = await trial.prisma.bot.findUniqueOrThrow({
+    const bot = await asSystem(trial.prisma).bot.findUniqueOrThrow({
       where: { id: botId },
       select: {
         spaceId: true,

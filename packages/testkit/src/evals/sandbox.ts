@@ -6,6 +6,7 @@ import type {
   SandboxProvider,
 } from "@rakazo/adapter-kit";
 import { FakeSandboxProvider, toComputerRef } from "@rakazo/adapters";
+import { asSystem } from "../system-db.js";
 import type { EvalApp } from "./runner.js";
 
 /** A model must not receive successful shell results for commands the fixture never ran. */
@@ -33,7 +34,8 @@ export async function destroyComputers(
   prisma: Pick<EvalApp["prisma"], "computer">,
   sandbox: SandboxProvider,
 ) {
-  const computers = await prisma.computer.findMany({
+  // Cleanup spans every trial's tenant, so it reads as the system.
+  const computers = await asSystem(prisma).computer.findMany({
     where: { providerRef: { not: null } },
     select: { homeKey: true, kind: true, providerRef: true, spaceId: true, userId: true },
   });

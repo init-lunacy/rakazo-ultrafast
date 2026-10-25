@@ -2,6 +2,7 @@ import type { SandboxProvider } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import {
+  asSystem,
   createDb,
   createThreadEvents,
   createThreadMessage,
@@ -31,7 +32,8 @@ describePostgres("taking an action card (PostgreSQL)", () => {
 
   beforeAll(async () => {
     const db = createDb(databaseUrl!);
-    prisma = db.prisma;
+    // Fixtures and assertions have no request around them; the runtime login enforces row security.
+    prisma = asSystem(db.prisma);
     close = async () => {
       try {
         await db.prisma.$disconnect();
