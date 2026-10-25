@@ -863,9 +863,9 @@ describeWithDatabase("API authorization and resource isolation", () => {
     expect(await rpc<unknown[]>(app, member, "actionOffers/list")).toEqual([]);
     await expectDenied(app, member, "actionOffers/take", { offerId: offer.id });
     await expectDenied(app, member, "actionOffers/dismiss", { offerId: offer.id });
-    expect(
-      (await db.actionOffer.findUniqueOrThrow({ where: { id: offer.id } })).status,
-    ).toBe("open");
+    expect((await db.actionOffer.findUniqueOrThrow({ where: { id: offer.id } })).status).toBe(
+      "open",
+    );
     expect(await rpc<Array<{ id: string }>>(app, owner, "actionOffers/list")).toEqual([
       expect.objectContaining({ id: offer.id, label: "Owner's", messageId: message.id }),
     ]);
