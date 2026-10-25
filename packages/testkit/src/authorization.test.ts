@@ -806,8 +806,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
     const ownerActor = await rpc<Actor>(app, owner, "me");
     const memberActor = await rpc<Actor>(app, member, "me");
 
-    await handles.prisma.member.deleteMany({ where: { userId: memberActor.userId } });
-    await handles.prisma.member.create({
+    await db.member.deleteMany({ where: { userId: memberActor.userId } });
+    await db.member.create({
       data: {
         id: `card-member-${stamp}`,
         organizationId: ownerActor.spaceId,
@@ -817,8 +817,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
       },
     });
     const bot = await rpc<Bot>(app, owner, "bots/create", botInput("Card Bot"));
-    const thread = await handles.prisma.thread.findFirstOrThrow({ where: { botId: bot.id } });
-    const task = await handles.prisma.task.create({
+    const thread = await db.thread.findFirstOrThrow({ where: { botId: bot.id } });
+    const task = await db.task.create({
       data: {
         spaceId: ownerActor.spaceId,
         userId: ownerActor.userId,
@@ -828,7 +828,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
         status: "completed",
       },
     });
-    const run = await handles.prisma.run.create({
+    const run = await db.run.create({
       data: {
         spaceId: ownerActor.spaceId,
         userId: ownerActor.userId,
@@ -839,13 +839,13 @@ describeWithDatabase("API authorization and resource isolation", () => {
         trigger: "user",
       },
     });
-    const message = await createThreadMessage(handles.prisma, {
+    const message = await createThreadMessage(db, {
       threadId: thread.id,
       role: "bot",
       botId: bot.id,
       blocks: [],
     });
-    const offer = await handles.prisma.actionOffer.create({
+    const offer = await db.actionOffer.create({
       data: {
         spaceId: ownerActor.spaceId,
         userId: ownerActor.userId,
@@ -864,7 +864,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
     await expectDenied(app, member, "actionOffers/take", { offerId: offer.id });
     await expectDenied(app, member, "actionOffers/dismiss", { offerId: offer.id });
     expect(
-      (await handles.prisma.actionOffer.findUniqueOrThrow({ where: { id: offer.id } })).status,
+      (await db.actionOffer.findUniqueOrThrow({ where: { id: offer.id } })).status,
     ).toBe("open");
     expect(await rpc<Array<{ id: string }>>(app, owner, "actionOffers/list")).toEqual([
       expect.objectContaining({ id: offer.id, label: "Owner's", messageId: message.id }),
