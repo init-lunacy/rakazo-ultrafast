@@ -30,8 +30,9 @@ import {
   removeDeletedBotWorkspaces,
   restoreComputerWorkspace,
 } from "./computer-workspace.js";
-import { isSandboxGoneError } from "./e2b-sandbox.js";
 import { resolveAgentHomePath } from "./home.js";
+import { ObjectAgentHomeStore } from "./home-object-store.js";
+import { isSandboxGoneError } from "./sandbox-errors.js";
 
 type ComputerUpdateProgress = (
   stage: Exclude<ComputerUpdate["stage"], "preparing">,
@@ -162,6 +163,8 @@ export async function provisionComputer(
   controlHolder: "bot" | "none" = "none",
   onProgress?: ComputerUpdateProgress,
 ): Promise<ComputerRef> {
+  const started = performance.now();
+  const log = getLogger().child({ "computer.id": computerId, "run.id": context.runId });
   let existing = await deps.prisma.computer.findUniqueOrThrow({ where: { id: computerId } });
   if (existing.maintenanceId && existing.maintenanceId !== context.operationId)
     throw new ComputerBusyError();
@@ -206,6 +209,11 @@ export async function provisionComputer(
         context.botId,
         context,
       );
+      log.info("computer.provisioned", {
+        provider: ref.kind,
+        operation: "reuse",
+        durationMs: Math.round(performance.now() - started),
+      });
       return ref;
     }
   }
@@ -320,15 +328,27 @@ export async function provisionComputer(
   if (claimed.count !== 1) throw new ComputerBusyError();
   let provisioned: ComputerRef | undefined;
   try {
+    // Docker mounts the cached directory, so it must hold the stored revision before boot.
+    if (!reconnecting && deps.home instanceof ObjectAgentHomeStore)
+      await deps.home.hydrate(existing.homeKey);
     await onProgress?.("recreating");
-    const ref = await deps.sandbox.provision(
-      {
-        botId: existing.homeKey,
-        homePath,
-        providerRef: existing.providerRef ?? undefined,
-        providerKind: existing.kind as ComputerRef["kind"],
-      },
-      context,
+    const ref = await getLogger().withContext(
+      { "computer.id": computerId, "run.id": context.runId, previousState: existing.state },
+      () =>
+        deps.sandbox.provision(
+          {
+            botId: existing.homeKey,
+            homePath,
+            providerRef: existing.providerRef ?? undefined,
+            providerKind: existing.kind as ComputerRef["kind"],
+            // A save from an older release has no time; the provider keeps its own state then.
+            savedAt:
+              existing.homeRevision === "empty"
+                ? undefined
+                : (existing.homeRevisionAt ?? undefined),
+          },
+          context,
+        ),
     );
     provisioned = ref;
     await deps.sandbox.prepare(ref, context);
@@ -393,8 +413,17 @@ export async function provisionComputer(
     if (activated.count !== 1) {
       throw new ComputerBusyError();
     }
+    log.info("computer.provisioned", {
+      provider: ref.kind,
+      operation: replacement ? "create" : ref.started ? "resume" : "reuse",
+      durationMs: Math.round(performance.now() - started),
+    });
     return ref;
   } catch (error) {
+    log.warn("computer.provision_failed", {
+      provider: existing.kind,
+      durationMs: Math.round(performance.now() - started),
+    });
     // A failed reconnect never owns an existing workspace, even if setup failed.
     const rollbackError =
       provisioned && (!reconnecting || provisioned.fresh === true)
@@ -935,6 +964,7 @@ export async function replaceComputer(
     if (oldRef && (mode === "update" || (existing.state === "running" && mode === "recover"))) {
       try {
         await onProgress?.("saving");
+        const checkpointedAt = new Date();
         const revision = await checkpointComputerWorkspace(
           deps.home,
           deps.sandbox,
@@ -944,7 +974,7 @@ export async function replaceComputer(
         );
         const recorded = await deps.prisma.computer.updateMany({
           where: { id: computerId, state: "suspending", updatedAt: claimStamp },
-          data: { homeRevision: revision, updatedAt: claimStamp },
+          data: { homeRevision: revision, homeRevisionAt: checkpointedAt, updatedAt: claimStamp },
         });
         if (recorded.count !== 1) throw new ComputerBusyError();
       } catch (error) {

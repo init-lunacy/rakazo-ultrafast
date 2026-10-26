@@ -26,6 +26,8 @@ export type SecretFillStep = {
   field: LoginField;
 };
 export type BrowserActInput = BrowserActStep | SecretFillStep;
+/** desktopTools: the run also has computer_act, so a page-tool failure can fall back to it. */
+export type PageToolOptions = { desktopTools?: boolean };
 export type ResolveSecretFill = (
   step: SecretFillStep,
 ) => Promise<{ text: string; origin: string } | { error: string }>;
@@ -55,16 +57,23 @@ export async function browserNavigateFromTool(
   computer: ComputerRef,
   context: AdapterContext,
   args: Record<string, unknown>,
-  options: { decider?: PageDecider; redactions?: () => string[]; tabs?: ToolTabs } = {},
+  options: PageToolOptions & {
+    decider?: PageDecider;
+    redactions?: () => string[];
+    tabs?: ToolTabs;
+  } = {},
 ) {
   const url = String(args.url ?? "").trim();
   try {
     const parsed = new URL(url);
     if (!/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password) {
-      return {
-        error: "An HTTP(S) URL without embedded credentials is required",
-        fallback: "computer_act" as const,
-      };
+      return formatBrowserResult(
+        {
+          error: "An HTTP(S) URL without embedded credentials is required",
+          fallback: "computer_act",
+        },
+        options,
+      );
     }
     const where = options.tabs ? await options.tabs.run.forNavigate(options.tabs.agent, args) : {};
     if ("error" in where) return { error: where.error };
@@ -96,14 +105,14 @@ export async function browserNavigateFromTool(
       chain?.opened && result.target && options.tabs
         ? await options.tabs.run.adoptOpened(result.target, chain.opened)
         : [];
-    const shaped = chain ? withChain(result, chain) : formatBrowserResult(result);
+    const shaped = chain ? withChain(result, options, chain) : formatBrowserResult(result, options);
     return placed(shaped, place && { ...place, opened: [...place.opened, ...chainOpened] });
   } catch (error) {
     context.signal.throwIfAborted();
-    return {
-      error: error instanceof Error ? error.message : String(error),
-      fallback: "computer_act" as const,
-    };
+    return formatBrowserResult(
+      { error: error instanceof Error ? error.message : String(error), fallback: "computer_act" },
+      options,
+    );
   }
 }
 
@@ -112,7 +121,7 @@ export async function browserSnapshotFromTool(
   computer: ComputerRef,
   context: AdapterContext,
   args: Record<string, unknown>,
-  options: { tabs?: ToolTabs } = {},
+  options: PageToolOptions & { tabs?: ToolTabs } = {},
 ) {
   const textOffset = args.textOffset;
   if (
@@ -141,13 +150,13 @@ export async function browserSnapshotFromTool(
       : undefined;
     if (place?.error) return { error: place.error };
     options.tabs?.run.remember(result.target ?? requested, result);
-    return placed(formatBrowserResult(result), place);
+    return placed(formatBrowserResult(result, options), place);
   } catch (error) {
     context.signal.throwIfAborted();
-    return {
-      error: error instanceof Error ? error.message : String(error),
-      fallback: "computer_act" as const,
-    };
+    return formatBrowserResult(
+      { error: error instanceof Error ? error.message : String(error), fallback: "computer_act" },
+      options,
+    );
   }
 }
 
@@ -156,7 +165,7 @@ export async function browserActFromTool(
   computer: ComputerRef,
   context: AdapterContext,
   args: Record<string, unknown>,
-  options: {
+  options: PageToolOptions & {
     resolveSecretFill?: ResolveSecretFill;
     redactions?: () => string[];
     decider?: PageDecider;
@@ -223,19 +232,22 @@ export async function browserActFromTool(
         : [];
     return redactConnectorPayload(
       placed(
-        chain ? withChain(result, chain, view) : formatBrowserResult(result),
+        chain ? withChain(result, options, chain, view) : formatBrowserResult(result, options),
         place && { ...place, opened: [...place.opened, ...chainOpened] },
       ),
       options.redactions?.() ?? [],
     );
   } catch (error) {
     context.signal.throwIfAborted();
-    return {
-      ok: false,
-      uncertain: true,
-      error: error instanceof Error ? error.message : String(error),
-      fallback: "computer_act" as const,
-    };
+    return formatBrowserResult(
+      {
+        ok: false,
+        uncertain: true,
+        error: error instanceof Error ? error.message : String(error),
+        fallback: "computer_act",
+      },
+      options,
+    );
   }
 }
 
@@ -289,27 +301,30 @@ function withChain<
     tree?: string;
     elements?: BrowserSnapshotNode[];
   },
->(base: T, chain: PageDecisionChainResult, view?: BrowserSnapshotResult) {
+>(base: T, options: PageToolOptions, chain: PageDecisionChainResult, view?: BrowserSnapshotResult) {
   const { tree: _tree, elements: _elements, ...rest } = base;
-  return formatBrowserResult({
-    ...rest,
-    url: chain.snapshot.url,
-    title: chain.snapshot.title,
-    ...(view ? { tree: view.tree, elements: view.elements } : {}),
-    ...(chain.acted.length > 0 ? { acted: chain.acted } : {}),
-    ...(chain.goalMetConfidence !== undefined
-      ? { goalMetConfidence: chain.goalMetConfidence }
-      : {}),
-    ...(chain.blockedConfidence !== undefined
-      ? { blockedConfidence: chain.blockedConfidence }
-      : {}),
-    ...(chain.uncertain
-      ? {
-          uncertain: true,
-          note: "The last click in acted may or may not have taken effect. Inspect the page before continuing; do not replay it.",
-        }
-      : {}),
-  });
+  return formatBrowserResult(
+    {
+      ...rest,
+      url: chain.snapshot.url,
+      title: chain.snapshot.title,
+      ...(view ? { tree: view.tree, elements: view.elements } : {}),
+      ...(chain.acted.length > 0 ? { acted: chain.acted } : {}),
+      ...(chain.goalMetConfidence !== undefined
+        ? { goalMetConfidence: chain.goalMetConfidence }
+        : {}),
+      ...(chain.blockedConfidence !== undefined
+        ? { blockedConfidence: chain.blockedConfidence }
+        : {}),
+      ...(chain.uncertain
+        ? {
+            uncertain: true,
+            note: "The last click in acted may or may not have taken effect. Inspect the page before continuing; do not replay it.",
+          }
+        : {}),
+    },
+    options,
+  );
 }
 export function parseBrowserActions(value: unknown): BrowserActInput[] {
   if (!Array.isArray(value) || value.length === 0) {
@@ -366,12 +381,22 @@ export function parseBrowserActions(value: unknown): BrowserActInput[] {
   });
 }
 
-function formatBrowserResult<T extends { fallback?: "computer_act"; error?: string }>(result: T) {
-  if (result.fallback === "computer_act") {
+function formatBrowserResult<T extends { fallback?: "computer_act"; error?: string }>(
+  result: T,
+  { desktopTools = true }: PageToolOptions,
+) {
+  if (result.fallback !== "computer_act") return result;
+  if (desktopTools) {
     return {
       ...result,
       note: "Page browser could not complete this step. Inspect the current state before continuing with computer_act if available, otherwise request_takeover. Do not replay completed or uncertain actions.",
     };
   }
-  return result;
+  // Without desktop tools, pointing at computer_act leaves only request_takeover. A browser
+  // that is still starting after the computer woke up usually answers a moment later.
+  const { fallback: _fallback, ...rest } = result;
+  return {
+    ...rest,
+    note: "Page browser could not complete this step. The computer or its browser may still be starting, so call browser_snapshot again to check the page. Use request_takeover only if it keeps failing. Do not replay completed or uncertain actions.",
+  };
 }

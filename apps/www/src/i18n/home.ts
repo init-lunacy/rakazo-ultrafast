@@ -33,12 +33,17 @@ export type HomeCopy = {
     copyFailed: string;
   };
   selfHost: {
-    eyebrow: string;
     heading: string;
     copy: string;
     worksWith: string;
     mock: { model: string; weekdays: string; approval: string; approve: string; deny: string };
     features: Array<{ title: string; body: string }>;
+  };
+  platforms: {
+    heading: string;
+    web: string;
+    desktop: string;
+    mobile: string;
   };
   roster: {
     eyebrow: string;
@@ -61,11 +66,8 @@ export type HomeCopy = {
     copy: string;
     starOnGithub: string;
     readTheDocs: string;
-    openClawAlternative: string;
     cloudTitle: string;
     cloudBadge: string;
-    cloudMeta: string;
-    tryCloud: string;
   };
   cta: {
     heading: string;
@@ -299,6 +301,57 @@ const ZH_ROSTER: RosterBot[] = [
   },
 ];
 
+const JA_ROSTER: RosterBot[] = [
+  {
+    name: "Sales Outbound",
+    color: "#F5A03C",
+    slug: "rakazo/sales-outbound",
+    desc: "見込み客を調べて、フォローアップを下書きします。",
+  },
+  {
+    name: "Inbox Manager",
+    color: "#6A6BF5",
+    slug: "rakazo/inbox-manager",
+    desc: "メールを仕分けて、返信を下書きします。",
+  },
+  {
+    name: "Talent Scout",
+    color: "#3B82F6",
+    slug: "rakazo/talent-scout",
+    desc: "応募書類を確認して、候補者を絞り込みます。",
+  },
+  {
+    name: "Expense Manager",
+    color: "#F2622A",
+    slug: "rakazo/expense-manager",
+    desc: "領収書と支払いを照合します。",
+  },
+  {
+    name: "Coding Agent",
+    color: "#5B6EE1",
+    slug: "rakazo/coding-agent",
+    desc: "あなたのコンピューターでコードを変更します。",
+  },
+  {
+    name: "Account Manager",
+    color: "#9B5CF6",
+    slug: "rakazo/account-manager",
+    desc: "返信を準備して、契約更新を管理します。",
+  },
+  {
+    name: "Paid Media",
+    color: "#3EC5A8",
+    slug: "rakazo/paid-media",
+    desc: "広告費を確認して、変化を報告します。",
+  },
+  {
+    name: "Chief of Staff",
+    color: "#8B93A8",
+    slug: "rakazo/chief-of-staff",
+    desc: "ブリーフィングを準備して、ボットたちを取りまとめます。",
+  },
+];
+
 const TESTIMONIALS: HomeCopy["testimonials"]["items"] = [
   {
     quote:
@@ -367,8 +420,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       copyFailed: "Copy failed. Try again.",
     },
     selfHost: {
-      eyebrow: "Self-hosted",
-      heading: "Run it on your computer",
+      heading: "Self-hosted",
       copy: "Your machine, your models, your control.",
       worksWith: "Works with",
       mock: { model: "Model", weekdays: "Weekdays at 9:00", approval: "Approval required", approve: "Approve", deny: "Deny" },
@@ -378,6 +430,12 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
         { title: "You set the limits", body: "Decide which actions need your approval." },
       ],
     },
+    platforms: {
+      heading: "Wherever you are",
+      web: "Web",
+      desktop: "Desktop",
+      mobile: "Mobile",
+    },
     roster: {
       eyebrow: "Your bot team",
       heading: "Give each bot a job",
@@ -385,7 +443,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       bots: EN_ROSTER,
     },
     testimonials: {
-      heading: "Testimonials",
+      heading: "People love it",
       pause: "Pause",
       play: "Play",
       items: TESTIMONIALS,
@@ -411,11 +469,8 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       copy: "Apache-2.0. Run it, change it, make it yours.",
       starOnGithub: "Star on GitHub",
       readTheDocs: "Read the docs",
-      openClawAlternative: "OpenClaw alternative",
       cloudTitle: "Cloud",
       cloudBadge: "Beta",
-      cloudMeta: "Bring your own keys, we run the computers",
-      tryCloud: "Try Rakazo Cloud",
     },
     cta: {
       heading: "Meet your first bot",
@@ -485,8 +540,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       copyFailed: "Kopieren fehlgeschlagen. Erneut versuchen.",
     },
     selfHost: {
-      eyebrow: "Self-hosted",
-      heading: "Läuft auf deinem Computer",
+      heading: "Self-hosted",
       copy: "Deine Maschine, deine Modelle, deine Kontrolle.",
       worksWith: "Funktioniert mit",
       mock: { model: "Modell", weekdays: "Mo–Fr um 9:00", approval: "Freigabe erforderlich", approve: "Genehmigen", deny: "Ablehnen" },
@@ -496,6 +550,12 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
         { title: "Du setzt die Grenzen", body: "Bestimme, welche Aktionen deine Freigabe brauchen." },
       ],
     },
+    platforms: {
+      heading: "Überall, wo du bist",
+      web: "Web",
+      desktop: "Desktop",
+      mobile: "Mobil",
+    },
     roster: {
       eyebrow: "Dein Bot-Team",
       heading: "Gib jedem Bot eine Aufgabe",
@@ -503,7 +563,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       bots: DE_ROSTER,
     },
     testimonials: {
-      heading: "Kundenstimmen",
+      heading: "Die Leute lieben es",
       pause: "Pause",
       play: "Weiter",
       items: TESTIMONIALS,
@@ -533,11 +593,8 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       copy: "Apache-2.0. Selbst betreiben, ändern und anpassen.",
       starOnGithub: "Auf GitHub mit Stern markieren",
       readTheDocs: "Docs lesen",
-      openClawAlternative: "OpenClaw-Alternative",
       cloudTitle: "Cloud",
       cloudBadge: "Beta",
-      cloudMeta: "Deine Keys, wir betreiben die Computer",
-      tryCloud: "Rakazo Cloud ausprobieren",
     },
     cta: {
       heading: "Triff deinen ersten Bot",
@@ -606,8 +663,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       copyFailed: "복사 실패. 다시 시도하세요.",
     },
     selfHost: {
-      eyebrow: "셀프 호스트",
-      heading: "내 컴퓨터에서 실행",
+      heading: "셀프 호스트",
       copy: "컴퓨터도, 모델도, 제어권도 내 손에.",
       worksWith: "지원 모델·서비스",
       mock: { model: "모델", weekdays: "평일 9:00", approval: "승인 필요", approve: "승인", deny: "거부" },
@@ -617,6 +673,12 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
         { title: "내가 정하는 권한", body: "승인이 필요한 작업을 정하세요." },
       ],
     },
+    platforms: {
+      heading: "어디서든",
+      web: "웹",
+      desktop: "데스크톱",
+      mobile: "모바일",
+    },
     roster: {
       eyebrow: "나만의 봇 팀",
       heading: "봇마다 역할을 주세요",
@@ -624,7 +686,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       bots: KO_ROSTER,
     },
     testimonials: {
-      heading: "후기",
+      heading: "다들 좋아해요",
       pause: "일시정지",
       play: "재생",
       items: TESTIMONIALS,
@@ -654,11 +716,8 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       copy: "Apache-2.0. 직접 실행하고 원하는 대로 수정하세요.",
       starOnGithub: "GitHub에서 Star",
       readTheDocs: "문서 읽기",
-      openClawAlternative: "OpenClaw 대안",
       cloudTitle: "Cloud",
       cloudBadge: "베타",
-      cloudMeta: "키는 당신 것, 컴퓨터는 우리가 운영",
-      tryCloud: "Rakazo Cloud 사용해 보기",
     },
     cta: {
       heading: "첫 봇을 만나보세요",
@@ -727,8 +786,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       copyFailed: "复制失败。请重试。",
     },
     selfHost: {
-      eyebrow: "自托管",
-      heading: "在你的电脑上运行",
+      heading: "自托管",
       copy: "电脑、模型、控制权，都归你。",
       worksWith: "支持",
       mock: { model: "模型", weekdays: "工作日 9:00", approval: "需要审批", approve: "批准", deny: "拒绝" },
@@ -738,6 +796,12 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
         { title: "由你设定权限", body: "决定哪些操作需要你批准。" },
       ],
     },
+    platforms: {
+      heading: "随时随地",
+      web: "网页版",
+      desktop: "桌面端",
+      mobile: "移动端",
+    },
     roster: {
       eyebrow: "你的 Bot 团队",
       heading: "给每个 Bot 分配工作",
@@ -745,7 +809,7 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       bots: ZH_ROSTER,
     },
     testimonials: {
-      heading: "用户评价",
+      heading: "大家都爱它",
       pause: "暂停",
       play: "播放",
       items: TESTIMONIALS,
@@ -775,11 +839,8 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
       copy: "Apache-2.0。自由运行、修改，按需定制。",
       starOnGithub: "在 GitHub 上点星",
       readTheDocs: "阅读文档",
-      openClawAlternative: "OpenClaw 替代方案",
       cloudTitle: "云端",
       cloudBadge: "测试版",
-      cloudMeta: "密钥归你，电脑由我们运行",
-      tryCloud: "试用 Rakazo Cloud",
     },
     cta: {
       heading: "认识你的第一个 Bot",
@@ -810,6 +871,130 @@ const HOME_COPY: Record<Locale, HomeCopy> = {
         blog: "博客",
         iosApp: "iPhone 应用",
         androidApp: "Android 应用",
+      },
+    },
+  },
+  ja: {
+    title: "Rakazo | オープンソースの Grok Bot 代替ツール",
+    description:
+      "Rakazo は、実際の仕事をこなす常駐型 AI チームメイトのための、オープンソースの Grok Bot 代替ツールです。キーもモデルもマシンも、すべてあなたのものです。",
+    ogImageAlt:
+      "Rakazo。本当に自分のものにできる AI チームメイト。キーもモデルもマシンも、すべてあなたのもの。",
+    availableLanguage: "Japanese",
+    skipToContent: "本文へスキップ",
+    starFallback: "Star",
+    nav: {
+      home: "Rakazo ホーム",
+      primary: "メインナビゲーション",
+      menu: "メニュー",
+      docs: "ドキュメント",
+      blog: "ブログ",
+      github: "GitHub",
+      getStarted: "はじめる",
+    },
+    hero: {
+      eyebrow: "オープンソース",
+      heading: "本当に自分のものにできる、オープンソースの Grok Bot 代替ツール",
+      lead: "ボットに仕事を任せて、どのデバイスからでも確認できます。",
+      getStarted: "はじめる",
+      download: {
+        mac: "macOS 版をダウンロード",
+        windows: "Windows 版をダウンロード",
+        linux: "Linux 版をダウンロード",
+        ios: "iOS 版をダウンロード",
+        android: "Android 版をダウンロード",
+      },
+      viewOnGithub: "GitHub で見る",
+      setupWithAgent: "エージェントでセットアップ",
+      copiedForAgent: "エージェント用にコピーしました",
+      copyFailed: "コピーできませんでした。もう一度お試しください。",
+    },
+    selfHost: {
+      heading: "セルフホスト",
+      copy: "マシンもモデルも、コントロールもあなたの手に。",
+      worksWith: "対応サービス",
+      mock: { model: "モデル", weekdays: "平日 9:00", approval: "承認が必要", approve: "承認", deny: "拒否" },
+      features: [
+        { title: "好きなモデルで", body: "ボットごとに別のモデルを選べます。" },
+        { title: "スケジュールどおりに実行", body: "コンピューターが起動している間、定期タスクを実行します。" },
+        { title: "制限はあなたが決める", body: "どの操作に承認が必要かを決められます。" },
+      ],
+    },
+    platforms: {
+      heading: "どこにいても",
+      web: "Web",
+      desktop: "デスクトップ",
+      mobile: "モバイル",
+    },
+    roster: {
+      eyebrow: "あなたのボットチーム",
+      heading: "ボットごとに仕事を任せましょう",
+      copy: "テンプレートから始めて、自分好みに。",
+      bots: JA_ROSTER,
+    },
+    testimonials: {
+      heading: "多くの人に愛用されています",
+      pause: "一時停止",
+      play: "再生",
+      items: TESTIMONIALS,
+    },
+    faq: {
+      heading: "よくある質問",
+      items: [
+        {
+          question: "Claude Pro/Max や ChatGPT Plus/Pro のサブスクリプションを使えますか？",
+          answer:
+            "はい。そのサブスクリプションでサインインするか、API キー、OpenRouter、ローカルの OpenAI 互換サーバー（Ollama、LM Studio など）を使えます。モデルの利用料を Rakazo が支払うことはありません。",
+        },
+        {
+          question: "Claude や ChatGPT にすでに課金している場合、API キーは必要ですか？",
+          answer:
+            "いいえ。Claude Pro/Max または ChatGPT Plus/Pro でサインインすれば、そのサブスクリプションでモデルを利用できます。もう一つの方法は API キーで、Anthropic、OpenAI、OpenRouter、Grok に対応しています。どちらの場合も、Rakazo が料金を支払うことはありません。",
+        },
+        {
+          question: "ローカルモデルを使えますか？",
+          answer:
+            "はい。Ollama や LM Studio などのローカルの OpenAI 互換サーバーにボットを接続できます。ボットごとに別のモデルを使えます。",
+        },
+      ],
+    },
+    openSource: {
+      heading: "オープンソース",
+      copy: "Apache-2.0。自由に実行し、変更して、自分のものに。",
+      starOnGithub: "GitHub で Star する",
+      readTheDocs: "ドキュメントを読む",
+      cloudTitle: "クラウド",
+      cloudBadge: "ベータ",
+    },
+    cta: {
+      heading: "最初のボットを迎えましょう",
+      copy: "次のタスクを任せてみましょう。",
+      openSourceValue: "オープンソース",
+      selfHostValue: "セルフホスト",
+      stats: [
+        { value: "stars", label: "GitHub スター" },
+        { value: "license", label: "ライセンス" },
+        { value: "openSource", label: "シート課金なし、機能制限なし" },
+        { value: "selfHost", label: "あなたのマシン" },
+      ],
+    },
+    footer: {
+      navLabel: "フッター",
+      languagesLabel: "言語",
+      links: {
+        docs: "ドキュメント",
+        product: "製品",
+        changelog: "変更履歴",
+        alternatives: "代替ツール",
+        all: "すべて",
+        about: "概要",
+        support: "サポート",
+        privacy: "プライバシー",
+        terms: "利用規約",
+        company: "会社情報",
+        blog: "ブログ",
+        iosApp: "iPhone アプリ",
+        androidApp: "Android アプリ",
       },
     },
   },

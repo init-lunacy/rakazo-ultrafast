@@ -1,13 +1,16 @@
-import type { RealtimeFanout } from "@rakazo/adapter-kit";
+import type { ProductAnalytics, RealtimeFanout } from "@rakazo/adapter-kit";
 import type { BotSecretDestination, MessageBlock, ProductEvent } from "@rakazo/contracts";
 import {
   ACTION_OFFER_STEERING_ORIGIN,
+  AnalyticsTrigger,
   BOT_INSTRUCTIONS_MAX_LENGTH,
+  BOT_SECRET_VALUE_MAX_LENGTH,
   encodeLoginSecret,
   LoginSecretValue,
   MessageBlock as MessageBlockSchema,
 } from "@rakazo/contracts";
 import {
+  ACTIVE_RUN_STATUSES,
   blocksToAgentHistoryText,
   callIdFromClientNonce,
   instructionUpdateDiff,
@@ -19,8 +22,10 @@ import {
   QUEUE_HOLDING_RUN_STATUSES,
   releasedTakeoverComputerBlocks,
   resolveAskChoice,
+  STEERING_CONTINUATION_PROMPT,
   sanitizeJsonValue,
 } from "@rakazo/core";
+import { urlSite } from "@rakazo/core/egress";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import { getLogger } from "@rakazo/logging";
 import { publishRunActionOffersInTransaction } from "./action-offers.js";
@@ -28,12 +33,28 @@ import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { Prisma, PrismaClient } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
 import {
+  CrossSpaceCommunicationBlockedError,
+  crossSpaceCommunicationAllowed,
+} from "./cross-space-communication.js";
+import {
   assertRunCanWriteHistory,
   assertRunIsCancelled,
   createThreadMessageInTransaction,
   RunHistoryWriteError,
 } from "./messages.js";
+import { deleteRunSecretsInTransaction } from "./run-secrets.js";
+import { isRunResponse, readRunTimingFields } from "./run-timing.js";
+import { RUN_TURN_CHECKPOINT_KIND } from "./run-turn-checkpoint.js";
+import { recordSecurityEvent } from "./security-events.js";
 import { withTransactionRetry } from "./transaction-retry.js";
+
+/** A one-time answer longer than a saved value may be. Nothing is stored or echoed. */
+export class AnswerTooLongError extends Error {
+  constructor() {
+    super("This answer is too long.");
+    this.name = "AnswerTooLongError";
+  }
+}
 
 const EVENT_BATCH_SIZE = 200;
 const PUSH_CATCH_UP_MS = 30_000;
@@ -59,7 +80,7 @@ export interface ThreadEvents {
     input: FinalizeComputerControlReleaseInput,
   ): Promise<FinalizeComputerControlReleaseResult | false>;
   finalizeRun(input: FinalizeRunInput): Promise<FinalizeRunResult | false>;
-  notify(threadId: string, seq: number): Promise<void>;
+  notify(threadId: string, seq: number, firstResponseRunId?: string): Promise<void>;
   pauseRunForInput(input: PauseRunForInput): Promise<FinalizeRunResult | false>;
   pauseRunForTakeover(input: PauseRunForTakeover): Promise<boolean>;
   sendUserMessage(input: SendUserMessageInput): Promise<SendUserMessageResult>;
@@ -223,7 +244,13 @@ export interface AnswerRunInput {
   clientNonce?: string;
   /** Only for a login card; `answer` carries its password. */
   username?: string;
+  /** Turns down a pending secret request; only the run's user can, and nothing is stored. */
+  dismiss?: boolean;
 }
+
+/** What request_secret returns to the bot once the user dismissed its card. */
+const DISMISSED_SECRET_RESULT = { ok: false, dismissed: true } as const;
+const DISMISSED_SECRET_PROMPT = "The user dismissed this request.";
 
 export interface SendUserMessageInput {
   spaceId: string;
@@ -235,6 +262,8 @@ export interface SendUserMessageInput {
   trigger: "user" | "follow_up" | "webhook" | "messaging";
   clientNonce?: string;
   linkMessageToRun?: boolean;
+  /** Internal bot sender: enforce both bots' cross-space policy in the write transaction. */
+  crossSpaceSenderBotId?: string;
   /** When false, persist the user message without starting a run (team-chat transcript). */
   createRun?: boolean;
   /** When true, start a new run even if the bot is already busy (team-chat delivery). */
@@ -274,20 +303,25 @@ export interface RunSecretWriter {
 export function createThreadEvents(
   prisma: PrismaClient,
   realtime?: RealtimeFanout,
-  options: { catchUpMs?: number; runSecretWriter?: RunSecretWriter } = {},
+  options: {
+    catchUpMs?: number;
+    runSecretWriter?: RunSecretWriter;
+    analytics?: ProductAnalytics;
+  } = {},
 ): ThreadEvents {
   return {
     answerRunInput: (input) => answerRunInput(prisma, input, realtime, options.runSecretWriter),
-    append: (input) => appendEvent(prisma, input, realtime),
+    append: (input) => appendEvent(prisma, input, realtime, options.analytics),
     claimSteering: (input) => claimSteering(prisma, input),
     clearThread: (input) => clearThread(prisma, input, realtime),
     finalizeComputerControlRelease: (input) =>
       finalizeComputerControlRelease(prisma, input, realtime),
-    finalizeRun: (input) => finalizeRun(prisma, input, realtime),
-    notify: (threadId, seq) => notifyRealtime(realtime, threadId, seq),
+    finalizeRun: (input) => finalizeRun(prisma, input, realtime, options.analytics),
+    notify: (threadId, seq, firstResponseRunId) =>
+      notifyCommittedEvent(prisma, realtime, threadId, seq, firstResponseRunId),
     pauseRunForInput: (input) => pauseRunForInput(prisma, input, realtime),
     pauseRunForTakeover: (input) => pauseRunForTakeover(prisma, input, realtime),
-    sendUserMessage: (input) => sendUserMessage(prisma, input, realtime),
+    sendUserMessage: (input) => sendUserMessage(prisma, input, realtime, options.analytics),
     follow: (threadId, cursor, signal) =>
       followThreadEvents(prisma, threadId, cursor, realtime, signal, options.catchUpMs),
   };
@@ -315,7 +349,7 @@ export async function clearThread(
         ...(input.groupId ? {} : { botId: input.botId }),
         status: { in: ["queued", "leased", "running", "waiting_input", "waiting_takeover"] },
       },
-      select: { id: true, taskId: true },
+      select: { id: true, taskId: true, userId: true, spaceId: true },
     });
     const now = new Date();
     const runIds = activeRuns.map((run) => run.id);
@@ -384,6 +418,7 @@ export async function sendUserMessage(
   prisma: PrismaClient,
   input: SendUserMessageInput,
   realtime?: RealtimeFanout,
+  analytics?: ProductAnalytics,
 ): Promise<SendUserMessageResult> {
   const replay = async (): Promise<SendUserMessageResult | null> => {
     if (!input.clientNonce) return null;
@@ -394,10 +429,12 @@ export async function sendUserMessage(
           clientNonce: input.clientNonce,
         },
       },
-      include: { sourceRuns: { orderBy: { createdAt: "asc" }, take: 1 } },
     });
     if (!message) return null;
-    const created = message.sourceRuns[0];
+    const created = await prisma.run.findFirst({
+      where: { sourceMessageId: message.id },
+      orderBy: { createdAt: "asc" },
+    });
     const run =
       created ??
       (message.runId ? await prisma.run.findUnique({ where: { id: message.runId } }) : null);
@@ -424,6 +461,12 @@ export async function sendUserMessage(
         blocks: input.blocks,
         clientNonce: input.clientNonce,
       });
+      if (
+        input.crossSpaceSenderBotId &&
+        !(await crossSpaceCommunicationAllowed(tx, input.crossSpaceSenderBotId, input.botId))
+      ) {
+        throw new CrossSpaceCommunicationBlockedError();
+      }
       const createRun = input.createRun !== false;
       // Include the creation intro. It has no tools, so it must not absorb the message, and a
       // second run would overlap it on a dedicated computer. Pending steering waits for the
@@ -527,6 +570,11 @@ export async function sendUserMessage(
     throw error;
   });
   if ("replay" in committed) return committed.replay;
+  analytics?.capture(
+    input.userId,
+    { name: "message_sent", trigger: input.trigger },
+    { id: committed.message.id, at: committed.message.createdAt },
+  );
   await notifyRealtime(realtime, input.threadId, committed.event.seq).catch((error) => {
     // The event is durable; subscribers recover it from their persisted cursor.
     getLogger().error("user message realtime notification", error);
@@ -652,7 +700,11 @@ async function commitAnswerRunInput(
   tx: Prisma.TransactionClient,
   input: AnswerRunInput,
   runSecretWriter?: RunSecretWriter,
-): Promise<{ threadId: string; seq: number } | null> {
+): Promise<{
+  threadId: string;
+  seq: number;
+  approval?: { decision: string; effectKind: string };
+} | null> {
   // Thread row first, then run rows — the same order as clearThread and finalizeRun, so a
   // concurrent clear cannot deadlock against this transaction.
   await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
@@ -690,16 +742,33 @@ async function commitAnswerRunInput(
   const secretAsk = isSecretAskBlock(pendingAsk);
   const choiceAsk = !approvalAsk && !secretAsk && Boolean(pendingAsk.actions?.length);
   const selectedChoice = choiceAsk ? resolveAskChoice(input.answer, pendingAsk.actions) : undefined;
-  if (secretAsk && !runSecretWriter) return null;
+  const dismissed = Boolean(input.dismiss);
+  // Only the run's user can turn down a secret request; every other card needs an answer.
+  if (dismissed && (!secretAsk || run.userId !== input.answeredByUserId || input.answer))
+    return null;
+  const secretRequest = {
+    runId: input.runId,
+    spaceId: input.spaceId,
+    kind: "request_secret",
+    status: "intended",
+  };
+  if (
+    dismissed &&
+    !(await tx.externalEffect.findFirst({ where: secretRequest, select: { id: true } }))
+  )
+    return null;
+  if (secretAsk && !dismissed && !runSecretWriter) return null;
   if (secretAsk && pendingAsk.credential && run.userId !== input.answeredByUserId) return null;
-  const loginAsk = secretAsk && pendingAsk.credential?.auth.type === "login";
+  const loginAsk = secretAsk && !dismissed && pendingAsk.credential?.auth.type === "login";
   // A username belongs only to a login card, which cannot be saved without one.
   if (loginAsk !== Boolean(input.username?.trim())) return null;
   const login = loginAsk
     ? LoginSecretValue.safeParse({ username: input.username!.trim(), password: input.answer })
     : undefined;
   if (login && !login.success) return null;
-  let approvalEffect: { id: string; kind: string } | null = null;
+  if (secretAsk && input.answer.length > BOT_SECRET_VALUE_MAX_LENGTH)
+    throw new AnswerTooLongError();
+  let approvalEffect: { id: string; kind: string; request: Prisma.JsonValue } | null = null;
   let editedInstructions: string | undefined;
   let approvalAnswer = input.answer;
   if (approvalAsk && pendingAsk.instructionUpdate && input.answer.startsWith("{")) {
@@ -745,6 +814,10 @@ async function commitAnswerRunInput(
     }
   }
 
+  // Answering the creation intro's question tells the bot what it is for, so it resumes as
+  // the user's turn: with the conversation and every tool, to get going on that answer.
+  const resumedTrigger =
+    run.trigger === "created" && !approvalAsk && !secretAsk ? "user" : run.trigger;
   const queued = await tx.run.updateMany({
     where: {
       id: input.runId,
@@ -754,6 +827,7 @@ async function commitAnswerRunInput(
     },
     data: {
       status: "queued",
+      ...(resumedTrigger !== run.trigger ? { trigger: resumedTrigger } : {}),
       ...(choiceAsk ? { checkpoint: null } : {}),
     },
   });
@@ -814,27 +888,34 @@ async function commitAnswerRunInput(
       where: { id: approvalEffect!.id },
       data: { status: allowed ? "approved" : "denied" },
     });
-    if (input.answer === "always") {
+    // "Always" on a fetch card allows that site, never every site the tool can reach.
+    const site = alwaysAllowedSite(approvalEffect!);
+    if (input.answer === "always" && (site || approvalEffect!.kind !== "web_fetch")) {
+      const rule = {
+        spaceId: input.spaceId,
+        createdByUserId: approvalUserId!,
+        effect: "always_allow",
+        matchKind: site ? "site" : "tool",
+        matchValue: site ?? approvalEffect!.kind,
+      };
       await tx.actionApprovalRule.upsert({
-        where: {
-          spaceId_createdByUserId_effect_matchKind_matchValue: {
-            spaceId: input.spaceId,
-            createdByUserId: approvalUserId!,
-            effect: "always_allow",
-            matchKind: "tool",
-            matchValue: approvalEffect!.kind,
-          },
-        },
-        create: {
-          spaceId: input.spaceId,
-          createdByUserId: approvalUserId!,
-          effect: "always_allow",
-          matchKind: "tool",
-          matchValue: approvalEffect!.kind,
-        },
+        where: { spaceId_createdByUserId_effect_matchKind_matchValue: rule },
+        create: rule,
         update: {},
       });
     }
+  } else if (dismissed) {
+    // Nothing is stored. The bot's request_secret call returns the dismissal, and the resumed
+    // run is told why.
+    await tx.externalEffect.updateMany({
+      where: secretRequest,
+      data: { status: "completed", result: DISMISSED_SECRET_RESULT },
+    });
+    const task = await tx.task.updateMany({
+      where: { runs: { some: { id: input.runId } } },
+      data: { prompt: resumePrompt(run, pendingAsk.text, DISMISSED_SECRET_PROMPT) },
+    });
+    if (task.count !== 1) throw new Error("Run task was not available to answer");
   } else if (secretAsk) {
     await runSecretWriter!.store({
       botId: run.botId,
@@ -865,7 +946,7 @@ async function commitAnswerRunInput(
       where: { runs: { some: { id: input.runId } } },
       data: {
         prompt: resumePrompt(
-          run,
+          { ...run, trigger: resumedTrigger },
           pendingAsk.text,
           selectedChoice ? `Selected choice ${selectedChoice.id}: ${resumeLabel}` : input.answer,
         ),
@@ -880,6 +961,7 @@ async function commitAnswerRunInput(
           ...block,
           status: "answered" as const,
           answer: recordedAnswer,
+          ...(dismissed ? { dismissed: true as const } : {}),
           ...(editedInstructions !== undefined && pendingAsk.instructionUpdate
             ? {
                 instructionUpdate: { ...pendingAsk.instructionUpdate, after: editedInstructions },
@@ -902,7 +984,13 @@ async function commitAnswerRunInput(
     runId: input.runId,
     payload: { messageId: message.id, role: "bot", blocks },
   });
-  return { threadId: updated.threadId, seq: updated.seq };
+  return {
+    threadId: updated.threadId,
+    seq: updated.seq,
+    ...(approvalEffect
+      ? { approval: { decision: approvalAnswer, effectKind: approvalEffect.kind } }
+      : {}),
+  };
 }
 
 export async function answerRunInput(
@@ -915,12 +1003,109 @@ export async function answerRunInput(
     prisma.$transaction(async (tx: Prisma.TransactionClient) =>
       commitAnswerRunInput(tx, input, writer),
     );
-  const committed = runSecretWriter?.withPrepared
-    ? await runSecretWriter.withPrepared(prisma, input, commit)
-    : await commit();
+  // A dismissal has no secret to prepare.
+  const committed =
+    runSecretWriter?.withPrepared && !input.dismiss
+      ? await runSecretWriter.withPrepared(prisma, input, commit)
+      : await commit();
 
   if (!committed) return false;
+  if (committed.approval) {
+    await recordSecurityEvent({
+      type: "approval.decided",
+      userId: input.answeredByUserId,
+      spaceId: input.spaceId,
+      metadata: {
+        decision: committed.approval.decision,
+        effectKind: committed.approval.effectKind,
+        runId: input.runId,
+      },
+    });
+  }
   await notifyRealtime(realtime, committed.threadId, committed.seq);
+  return true;
+}
+
+/** The caller holds the thread row lock acquired while accepting the new user message. */
+export async function retireWaitingQuestionInTransaction(
+  tx: Prisma.TransactionClient,
+  input: { spaceId: string; threadId: string; botId: string; runId: string; answer: string },
+): Promise<boolean> {
+  const answer = input.answer.trim();
+  if (!answer) return false;
+  const where = {
+    id: input.runId,
+    spaceId: input.spaceId,
+    threadId: input.threadId,
+    botId: input.botId,
+    status: "waiting_input",
+  };
+  const run = await tx.run.findFirst({ where, select: { taskId: true, userId: true } });
+  if (!run) return false;
+  const messages = await tx.message.findMany({
+    where: { threadId: input.threadId, runId: input.runId, role: "bot" },
+    select: { id: true, blocks: true },
+  });
+  const questions = [];
+  for (const message of messages) {
+    const parsed = MessageBlockSchema.array().safeParse(message.blocks);
+    if (!parsed.success) return false;
+    const pending = parsed.data.filter(
+      (block) => block.kind === "ask" && block.status !== "answered",
+    );
+    // Never implicitly dismiss credentials or authorize an external effect, even on a mixed card.
+    if (
+      pending.some(
+        (block) => block.kind === "ask" && (block.input === "secret" || block.approvalEffectId),
+      )
+    )
+      return false;
+    if (pending.length) {
+      questions.push({
+        id: message.id,
+        blocks: parsed.data.map((block) =>
+          pending.includes(block) ? { ...block, status: "answered" as const, answer } : block,
+        ),
+      });
+    }
+  }
+  if (!questions.length) return false;
+  const now = new Date();
+  const retired = await tx.run.updateMany({
+    where,
+    data: {
+      status: "cancelled",
+      completedAt: now,
+      checkpoint: null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    },
+  });
+  if (retired.count !== 1) return false;
+  await tx.externalEffect.deleteMany({
+    where: { runId: input.runId, kind: RUN_TURN_CHECKPOINT_KIND, status: RUN_TURN_CHECKPOINT_KIND },
+  });
+  await deleteRunSecretsInTransaction(tx, [
+    { id: input.runId, userId: run.userId, spaceId: input.spaceId },
+  ]);
+  await tx.attempt.updateMany({
+    where: { runId: input.runId, status: "waiting_input" },
+    data: { status: "cancelled", finishedAt: now },
+  });
+  await tx.task.updateMany({
+    where: { id: run.taskId, runs: { none: { status: { in: [...ACTIVE_RUN_STATUSES] } } } },
+    data: { status: "cancelled" },
+  });
+  for (const question of questions) {
+    await tx.message.update({ where: { id: question.id }, data: { blocks: question.blocks } });
+    await appendEventInTransaction(tx, {
+      ...input,
+      type: "thread.message.updated",
+      allowCancelledRun: true,
+      payload: { messageId: question.id, role: "bot", blocks: question.blocks },
+    });
+  }
+  await appendEventInTransaction(tx, { ...input, type: "run.cancelled", payload: {} });
   return true;
 }
 
@@ -1017,7 +1202,7 @@ export async function pauseRunForInput(
       botId: input.botId,
       runId: input.runId,
     });
-    await appendEventInTransaction(tx, {
+    const response = await appendEventInTransaction(tx, {
       spaceId: input.spaceId,
       threadId: input.threadId,
       botId: input.botId,
@@ -1035,11 +1220,22 @@ export async function pauseRunForInput(
     });
     await tx.event.deleteMany({ where: { runId: input.runId, type: "thread.progress" } });
     const continuationRunId = await createPendingSteeringRun(tx, input);
-    return { threadId: waitingEvent.threadId, seq: waitingEvent.seq, continuationRunId };
+    return {
+      threadId: waitingEvent.threadId,
+      seq: waitingEvent.seq,
+      continuationRunId,
+      firstResponseRunId: response.firstResponse ? input.runId : undefined,
+    };
   });
 
   if (!committed) return false;
-  await notifyRealtime(realtime, committed.threadId, committed.seq);
+  await notifyCommittedEvent(
+    prisma,
+    realtime,
+    committed.threadId,
+    committed.seq,
+    committed.firstResponseRunId,
+  );
   return { continuationRunId: committed.continuationRunId };
 }
 
@@ -1320,13 +1516,26 @@ export async function appendEvent(
   prisma: PrismaClient,
   input: AppendEventInput,
   realtime?: RealtimeFanout,
+  analytics?: ProductAnalytics,
 ): Promise<ProductEvent> {
   // Concurrent writers in one thread (group members, bot messages) can deadlock on the thread row.
   const event = await withTransactionRetry(() =>
     prisma.$transaction((tx: Prisma.TransactionClient) => appendEventInTransaction(tx, input)),
   );
+  if (
+    input.runId &&
+    (input.type === "run.started" || input.type === "run.completed" || input.type === "run.failed")
+  ) {
+    void captureRunAnalytics(prisma, analytics, input.runId, input.type);
+  }
   const productEvent = mapProductEvent(event);
-  await notifyRealtime(realtime, event.threadId, event.seq);
+  await notifyCommittedEvent(
+    prisma,
+    realtime,
+    event.threadId,
+    event.seq,
+    event.firstResponse ? input.runId : undefined,
+  );
   return productEvent;
 }
 
@@ -1334,10 +1543,24 @@ export async function finalizeRun(
   prisma: PrismaClient,
   input: FinalizeRunInput,
   realtime?: RealtimeFanout,
+  analytics?: ProductAnalytics,
 ): Promise<FinalizeRunResult | false> {
   const committed = await withTransactionRetry(() => finalizeRunOnce(prisma, input));
   if (!committed) return false;
   await notifyRealtime(realtime, committed.threadId, committed.seq);
+  const timing = await readRunTimingFields(prisma, input.runId);
+  if (committed.firstResponse) {
+    getLogger().info("run.first_response", { "run.id": input.runId, ...timing });
+  }
+  getLogger().info("run.finished", {
+    "run.id": input.runId,
+    "run.outcome": input.outcome,
+    ...timing,
+    "space.id": input.spaceId,
+    "thread.id": input.threadId,
+    "bot.id": input.botId,
+  });
+  void captureRunAnalytics(prisma, analytics, input.runId, `run.${input.outcome}`);
   return {
     continuationRunId: committed.continuationRunId,
     ...(committed.publishedOffers ? { publishedOffers: committed.publishedOffers } : {}),
@@ -1370,10 +1593,11 @@ async function finalizeRunOnce(
   seq: number;
   continuationRunId: string | null;
   publishedOffers?: FinalizeRunResult["publishedOffers"];
+  firstResponse: boolean;
 } | null> {
   return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
-    let writableRun: { startedAt: Date | null } | undefined;
+    let writableRun: { startedAt: Date | null; userId: string } | undefined;
     try {
       writableRun = await assertRunCanWriteHistory(tx, input.runId);
     } catch (error) {
@@ -1401,6 +1625,13 @@ async function finalizeRunOnce(
       },
     });
     if (terminal.count !== 1) return null;
+    await tx.externalEffect.deleteMany({
+      where: {
+        runId: input.runId,
+        kind: RUN_TURN_CHECKPOINT_KIND,
+        status: RUN_TURN_CHECKPOINT_KIND,
+      },
+    });
 
     const attempt = await tx.attempt.updateMany({
       where: {
@@ -1429,6 +1660,7 @@ async function finalizeRunOnce(
     if (task.count !== 1) throw new Error("Run task was not available to finalize");
 
     let publishedOffers: FinalizeRunResult["publishedOffers"];
+    let firstResponse = false;
     if (input.outcome === "completed") {
       const completedBlocks = completedRunBlocks(input.blocks, writableRun?.startedAt ?? null, now);
       const offers = input.publishOffers
@@ -1455,7 +1687,7 @@ async function finalizeRunOnce(
           // keep the caller's choice, whose absence means a bot reply marks the chat unread.
           markUnread: offers.opened.length > 0 ? true : input.markUnread,
         });
-        await appendEventInTransaction(tx, {
+        const response = await appendEventInTransaction(tx, {
           spaceId: input.spaceId,
           threadId: input.threadId,
           botId: input.botId,
@@ -1474,6 +1706,7 @@ async function finalizeRunOnce(
             messageId: message.id,
           }));
         }
+        firstResponse = response.firstResponse;
       }
     }
     const lastEvent = await appendEventInTransaction(tx, {
@@ -1485,6 +1718,11 @@ async function finalizeRunOnce(
       payload: input.outcome === "completed" ? {} : { error: input.error },
     });
     await tx.event.deleteMany({ where: { runId: input.runId, type: "thread.progress" } });
+    if (writableRun) {
+      await deleteRunSecretsInTransaction(tx, [
+        { id: input.runId, userId: writableRun.userId, spaceId: input.spaceId },
+      ]);
+    }
     if (input.outcome === "completed") {
       await tx.steeringMessage.deleteMany({
         where: { runId: input.runId, claimedAt: { not: null } },
@@ -1515,6 +1753,7 @@ async function finalizeRunOnce(
       threadId: lastEvent.threadId,
       seq: lastEvent.seq,
       continuationRunId,
+      firstResponse,
       ...(publishedOffers ? { publishedOffers } : {}),
     };
   });
@@ -1599,7 +1838,7 @@ export async function createPendingSteeringRun(
       prompt:
         origin === "webhook"
           ? blocksToAgentHistoryText(source.message.blocks as MessageBlock[])
-          : "Respond to the user's steering context.",
+          : STEERING_CONTINUATION_PROMPT,
       status: "queued",
     },
   });
@@ -1710,14 +1949,17 @@ export async function appendEventInTransaction(
   });
   // run.cancelled is appended after the run row already reads cancelled, so it
   // asserts the terminal status where every other event needs a writable run.
+  let firstResponseAt: Date | null | undefined;
   if (input.type === "run.cancelled") {
     await assertRunIsCancelled(tx, input.runId);
   } else {
-    await assertRunCanWriteHistory(tx, input.runId, { allowCancelled: input.allowCancelledRun });
+    firstResponseAt = (
+      await assertRunCanWriteHistory(tx, input.runId, { allowCancelled: input.allowCancelledRun })
+    )?.firstResponseAt;
   }
   // Unpaired UTF-16 surrogates (e.g. a split emoji high half) are invalid JSON for Postgres.
   const payload = sanitizeJsonValue(input.payload);
-  return tx.event.create({
+  const event = await tx.event.create({
     data: {
       spaceId: input.spaceId,
       threadId: input.threadId,
@@ -1727,6 +1969,34 @@ export async function appendEventInTransaction(
       payload: payload as Prisma.InputJsonValue,
       runId: input.runId,
     },
+  });
+  const firstResponse = Boolean(
+    input.runId &&
+      !firstResponseAt &&
+      isRunResponse(input.type, input.payload) &&
+      (
+        await tx.run.updateMany({
+          where: { id: input.runId, firstResponseAt: null },
+          data: { firstResponseAt: event.createdAt },
+        })
+      ).count === 1,
+  );
+  return { ...event, firstResponse };
+}
+
+/** Timing metadata is returned by the transaction that recorded first output. */
+async function notifyCommittedEvent(
+  prisma: PrismaClient,
+  realtime: RealtimeFanout | undefined,
+  threadId: string,
+  seq: number,
+  firstResponseRunId?: string,
+): Promise<void> {
+  await notifyRealtime(realtime, threadId, seq);
+  if (!firstResponseRunId) return;
+  getLogger().info("run.first_response", {
+    "run.id": firstResponseRunId,
+    ...(await readRunTimingFields(prisma, firstResponseRunId)),
   });
 }
 
@@ -1841,4 +2111,52 @@ class ChangeLatch {
       if (this.generation !== expected || signal?.aborted) finish();
     });
   }
+}
+
+async function captureRunAnalytics(
+  prisma: PrismaClient,
+  analytics: ProductAnalytics | undefined,
+  runId: string,
+  type: "run.started" | "run.completed" | "run.failed",
+): Promise<void> {
+  if (!analytics) return;
+  try {
+    const run = await prisma.run.findUnique({
+      where: { id: runId },
+      select: {
+        userId: true,
+        trigger: true,
+        startedAt: true,
+        completedAt: true,
+        createdAt: true,
+      },
+    });
+    if (!run) return;
+    const trigger = AnalyticsTrigger.safeParse(run.trigger);
+    if (!trigger.success) return;
+    const identity = {
+      id: runId,
+      at: (type === "run.started" ? run.startedAt : run.completedAt) ?? run.createdAt,
+    };
+    if (type === "run.failed")
+      analytics.capture(run.userId, { name: "run_failed", trigger: trigger.data }, identity);
+    else
+      analytics.capture(
+        run.userId,
+        { name: type === "run.started" ? "run_started" : "run_completed", trigger: trigger.data },
+        identity,
+      );
+  } catch {
+    // Measurement must never turn a committed run into a failed request or worker job.
+    getLogger().warn("Run analytics unavailable.");
+  }
+}
+
+function alwaysAllowedSite(effect: {
+  kind: string;
+  request: Prisma.JsonValue;
+}): string | undefined {
+  if (effect.kind !== "web_fetch") return undefined;
+  const request = effect.request as { url?: unknown } | null;
+  return typeof request?.url === "string" ? urlSite(request.url) : undefined;
 }

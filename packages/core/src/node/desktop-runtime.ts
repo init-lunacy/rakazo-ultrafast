@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
+import { isIPv4 } from "node:net";
 import path from "node:path";
 import { TERMINAL_SERVER_PROGRAM } from "./terminal-server.js";
 // Each live Chrome needs a private debugger port. This is the TCP address-space
 // boundary, not a product limit on bots or saved browser profiles.
 export const MAX_DESKTOP_DISPLAY = 65535 - 9221;
 export const BROWSER_APPLICATIONS = new Set([
+  "brave",
+  "brave-browser",
   "browser",
   "chrome",
   "chromium",
@@ -21,14 +24,25 @@ export interface DesktopEnvironment {
   displayStart: number;
   preservePrimaryDisplay?: boolean;
   portStart?: number;
+  bindHost?: string;
 }
 export const DEFAULT_DESKTOP_ENV: DesktopEnvironment = {
   homeDir: "/home/rakazo",
   workspaceDir: "/home/rakazo",
   browserProfilesDir: "/home/rakazo/.browser-profiles",
   displayStart: 1,
+  bindHost: "127.0.0.1",
   preservePrimaryDisplay: true,
 };
+function gatewayHost(host = "127.0.0.1") {
+  if (host !== "localhost" && !isIPv4(host)) throw new Error("invalid screen gateway bind host");
+  return host;
+}
+
+function gatewayProbeHost(host: string) {
+  return host === "0.0.0.0" ? "127.0.0.1" : host;
+}
+
 export function screenPorts(index: number, env = DEFAULT_DESKTOP_ENV) {
   if (!Number.isSafeInteger(index) || index < 0 || index + env.displayStart > MAX_DESKTOP_DISPLAY)
     throw new Error("invalid desktop index");
@@ -36,6 +50,7 @@ export function screenPorts(index: number, env = DEFAULT_DESKTOP_ENV) {
   return {
     display: `:${displayNumber}`,
     displayNumber,
+    bindHost: gatewayHost(env.bindHost),
     viewPort: String(env.portStart ?? 6080),
     controlPort: String(env.portStart ?? 6080),
     debugPort: 9221 + displayNumber,
@@ -49,12 +64,15 @@ function commandLayout(index: number | undefined, env: DesktopEnvironment) {
     display: ":${desktop_display}",
     // biome-ignore lint/suspicious/noTemplateCurlyInString: generated shell parameter expansion
     displayNumber: "${desktop_display}",
+    bindHost: gatewayHost(env.bindHost),
     viewPort: String(env.portStart ?? 6080),
     controlPort: String(env.portStart ?? 6080),
     // biome-ignore lint/suspicious/noTemplateCurlyInString: generated shell parameter expansion
     debugPort: "${desktop_debug}",
   };
 }
+
+type DesktopLayout = Omit<ReturnType<typeof commandLayout>, "bindHost"> & { bindHost?: string };
 
 function layoutVariables(index: number | undefined, env: DesktopEnvironment) {
   if (index !== undefined) return [];
@@ -95,9 +113,6 @@ function browserRunningFunction(profile: string, pidFile: string) {
   const flag = shellQuote(`--user-data-dir=${profile}`);
   const profileQuoted = shellQuote(profile);
   return [
-    "browser_running() {",
-    `  tracked=$(cat ${pidFile} 2>/dev/null || true)`,
-    `  lock=$(readlink ${profileQuoted}/SingletonLock 2>/dev/null || true)`,
     // Match the configured flag in either NUL-separated argv or Chromium's one-line
     // setproctitle. Searching for the whole flag keeps spaces and " --" inside the path.
     "  cmdline_text() {",
@@ -135,6 +150,9 @@ function browserRunningFunction(profile: string, pidFile: string) {
     `    printf %s "$1" >${pidFile} 2>/dev/null || true`,
     "    return 0",
     "  }",
+    "browser_running() {",
+    `  tracked=$(cat ${pidFile} 2>/dev/null || true)`,
+    `  lock=$(readlink ${profileQuoted}/SingletonLock 2>/dev/null || true)`,
     // Pid files and SingletonLock miss the browser after a supervisor restart or a wrapper
     // whose lock does not point at the process that still has --user-data-dir.
     // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion
@@ -281,10 +299,12 @@ export function stopBrowserProfileCommand(profile: string, pidFile: string) {
     ...browserRunningFunction(profile, pidFile),
     `if browser_running; then`,
     `  python3 -c ${shellQuote(CLOSE_BROWSER)} "$pid" ${shellQuote(profile)} >/dev/null 2>&1 || true`,
-    `  for i in $(seq 1 40); do browser_running || break; sleep 0.25; done`,
-    `  if browser_running; then kill "$pid" 2>/dev/null || true; for i in $(seq 1 40); do browser_running || break; sleep 0.25; done; fi`,
-    `  browser_running && kill -KILL "$pid" 2>/dev/null || true`,
+    `  for i in $(seq 1 40); do browser_matches "$pid" || break; sleep 0.25; done`,
+    `  if browser_matches "$pid"; then kill "$pid" 2>/dev/null || true; for i in $(seq 1 40); do browser_matches "$pid" || break; sleep 0.25; done; fi`,
+    `  browser_matches "$pid" && kill -KILL "$pid" 2>/dev/null || true`,
     `fi`,
+    // A supervisor may have replaced the selected PID while it was closing.
+    // Rediscover once before removing lock state rather than on every close poll.
     `if browser_running; then echo 'browser still running' >&2; exit 1; fi`,
     `rm -f ${pidFile}`,
     `rm -f ${shellQuote(profile)}/SingletonLock ${shellQuote(profile)}/SingletonCookie ${shellQuote(profile)}/SingletonSocket`,
@@ -381,7 +401,7 @@ function revokeTargetCommand(kind: "view" | "control" | "terminal", display: num
   return `mkdir -p ${TARGETS}; : >/tmp/rakazo/${kind}-target-next-${display}; mv /tmp/rakazo/${kind}-target-next-${display} ${TARGETS}/${kind}-${display}`;
 }
 
-function stopVncCommand(kind: "view" | "control", layout: ReturnType<typeof commandLayout>) {
+function stopVncCommand(kind: "view" | "control", layout: DesktopLayout) {
   const socketPrefix = `/tmp/rakazo/sockets/${kind}-${layout.displayNumber}-`;
   const pattern = quoteLayout(`^([^ ]*/)?x11vnc .* -unixsock ${socketPrefix}[^ ]+( |$)`);
   return [
@@ -400,7 +420,7 @@ function terminalServerPattern(socket: string) {
   return `^([^ ]*/)?python[0-9.]* ${TERMINAL_SERVER} ${socket}( |$)`;
 }
 
-function stopTerminalCommand(layout: ReturnType<typeof commandLayout>) {
+function stopTerminalCommand(layout: DesktopLayout) {
   const socketPrefix = `/tmp/rakazo/sockets/terminal-${layout.displayNumber}-`;
   const pattern = quoteLayout(terminalServerPattern(`${socketPrefix}[^ ]+`));
   return [
@@ -413,27 +433,30 @@ function stopTerminalCommand(layout: ReturnType<typeof commandLayout>) {
   ].join("\n");
 }
 
-function gatewayCommand(port: string) {
+function gatewayCommand(port: string, host = "127.0.0.1") {
+  host = gatewayHost(host);
+  const probeHost = gatewayProbeHost(host);
+  const hostPattern = host.replaceAll(".", "[.]");
   const processPattern = `^([^ ]*/)?python[0-9.]* +(-m +websockify|[^ ]*websockify[^ ]*) +.*`;
   const portPattern = shellQuote(`${processPattern}[ :]${port}( |$)`);
   const gatewayPattern = shellQuote(
-    `${processPattern}--token-source=${TARGETS} +0.0.0.0:${port}( |$)`,
+    `${processPattern}--token-source=${TARGETS} +${hostPattern}:${port}( |$)`,
   );
   return [
     proxyEnvironmentCommand(),
     `mkdir -p ${TARGETS}`,
     // This lock only covers gateway startup; desktop startup remains independent.
     `exec 10>/tmp/rakazo/gateway-${port}.lock; flock -w 120 10`,
-    `if ! pgrep -f ${gatewayPattern} >/dev/null || ! (echo >/dev/tcp/127.0.0.1/${port}) >/dev/null 2>&1; then`,
+    `if ! pgrep -f ${gatewayPattern} >/dev/null || ! (echo >/dev/tcp/${probeHost}/${port}) >/dev/null 2>&1; then`,
     // Older images boot a single-screen gateway on this port. Retire it under the startup lock.
     `  pkill -f ${portPattern} || true`,
-    `  for i in $(seq 1 20); do if ! (echo >/dev/tcp/127.0.0.1/${port}) >/dev/null 2>&1; then break; fi; sleep 0.1; done`,
-    `  if (echo >/dev/tcp/127.0.0.1/${port}) >/dev/null 2>&1; then echo 'screen gateway port is busy' >&2; exit 1; fi`,
-    `  nohup "$proxy" --heartbeat=30 --web="$web" --token-plugin=TokenFile --token-source=${TARGETS} 0.0.0.0:${port} 8>&- 9>&- 10>&- </dev/null >/tmp/rakazo/gateway-${port}.log 2>&1 &`,
+    `  for i in $(seq 1 20); do if ! (echo >/dev/tcp/${probeHost}/${port}) >/dev/null 2>&1; then break; fi; sleep 0.1; done`,
+    `  if (echo >/dev/tcp/${probeHost}/${port}) >/dev/null 2>&1; then echo 'screen gateway port is busy' >&2; exit 1; fi`,
+    `  nohup "$proxy" --heartbeat=30 --web="$web" --token-plugin=TokenFile --token-source=${TARGETS} ${host}:${port} 8>&- 9>&- 10>&- </dev/null >/tmp/rakazo/gateway-${port}.log 2>&1 &`,
     "fi",
-    `for i in $(seq 1 50); do (echo >/dev/tcp/127.0.0.1/${port}) >/dev/null 2>&1 && break; sleep 0.1; done`,
+    `for i in $(seq 1 50); do (echo >/dev/tcp/${probeHost}/${port}) >/dev/null 2>&1 && break; sleep 0.1; done`,
     `flock -u 10; exec 10>&-`,
-    `(echo >/dev/tcp/127.0.0.1/${port}) >/dev/null 2>&1`,
+    `(echo >/dev/tcp/${probeHost}/${port}) >/dev/null 2>&1`,
   ].join("\n");
 }
 
@@ -560,7 +583,7 @@ function renderEnsureScreenCommand(
     `  printf '%s\\n' "$desired" >/tmp/rakazo/view-target-next-${layout.displayNumber}`,
     `  mv /tmp/rakazo/view-target-next-${layout.displayNumber} ${targetFile}`,
     "fi",
-    gatewayCommand(layout.viewPort),
+    gatewayCommand(layout.viewPort, layout.bindHost),
   ];
   return [
     "set -eu",
@@ -588,7 +611,7 @@ function renderEnsureScreenCommand(
     "  exit 1",
     "fi",
     ...setupView,
-    `for i in $(seq 1 50); do (echo >/dev/tcp/127.0.0.1/${layout.viewPort}) >/dev/null 2>&1 && exit 0; sleep 0.1; done`,
+    `for i in $(seq 1 50); do (echo >/dev/tcp/${gatewayProbeHost(layout.bindHost)}/${layout.viewPort}) >/dev/null 2>&1 && exit 0; sleep 0.1; done`,
     "exit 1",
   ].join("\n");
 }
@@ -596,7 +619,7 @@ function renderEnsureScreenCommand(
 export function interactiveScreenCommand(
   interactive: boolean,
   controlToken?: string,
-  layout: ReturnType<typeof commandLayout> = screenPorts(0),
+  layout: DesktopLayout = screenPorts(0),
 ) {
   const tokenFile = `/tmp/rakazo/control-token-${layout.displayNumber}`;
   const targetFile = `${TARGETS}/control-${layout.displayNumber}`;
@@ -636,7 +659,7 @@ export function interactiveScreenCommand(
     `  printf '%s\\n' "$desired" >/tmp/rakazo/control-target-next-${layout.displayNumber}`,
     `  mv /tmp/rakazo/control-target-next-${layout.displayNumber} ${targetFile}`,
     "fi",
-    gatewayCommand(layout.controlPort),
+    gatewayCommand(layout.controlPort, layout.bindHost),
   ].join("\n");
 }
 
@@ -650,12 +673,12 @@ export function terminalCommand(
   terminalToken: string,
   cwd: string,
   env = DEFAULT_DESKTOP_ENV,
-  layout: ReturnType<typeof commandLayout> = screenPorts(0),
+  layout: DesktopLayout = screenPorts(0, env),
 ) {
   return [
     startTerminalCommand(controlToken, terminalToken, cwd, env, layout),
     proxyEnvironmentCommand(),
-    gatewayCommand(layout.controlPort),
+    gatewayCommand(layout.controlPort, layout.bindHost),
   ].join("\n");
 }
 
@@ -665,7 +688,7 @@ export function startTerminalCommand(
   terminalToken: string,
   cwd: string,
   env = DEFAULT_DESKTOP_ENV,
-  layout: ReturnType<typeof commandLayout> = screenPorts(0),
+  layout: DesktopLayout = screenPorts(0, env),
 ) {
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(terminalToken)) throw new Error("invalid terminal token");
   const display = layout.displayNumber;

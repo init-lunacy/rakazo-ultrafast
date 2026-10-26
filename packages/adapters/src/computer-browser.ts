@@ -25,8 +25,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { FakeBrowserProvider, type FakeBrowserProviderOptions } from "./fake-browser.js";
 
-const DETACHED_MESSAGE =
-  "Page browser is not attached to this computer's Chrome. Use computer_act on the desktop browser instead.";
+const DETACHED_MESSAGE = "Page browser is not attached to this computer's Chrome.";
 
 type LivePayload = Partial<PageBrowserResult>;
 
@@ -141,6 +140,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
       title: typeof live.title === "string" ? live.title : "",
       tree: typeof live.tree === "string" ? live.tree : formatTree(elements),
       elements,
+      ...(live.loading === true ? { loading: true } : {}),
       ...targetOf(live),
       ...pinnedOf(live),
     };
@@ -188,6 +188,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
       { command: "act", actions: request.actions, target: request.target },
       context,
     );
+    const elements = Array.isArray(live?.elements) ? live.elements : undefined;
     if (live?.ok !== true || live.fallback === "computer_act") {
       return {
         ok: false,
@@ -195,6 +196,10 @@ export class ComputerBrowserProvider implements BrowserProvider {
         uncertain: live?.uncertain ?? true,
         url: typeof live?.url === "string" ? live.url : "",
         title: typeof live?.title === "string" ? live.title : "",
+        // A step that stopped partway, such as typing, still shows the page as it was left.
+        ...(elements
+          ? { tree: typeof live?.tree === "string" ? live.tree : formatTree(elements), elements }
+          : {}),
         fallback: "computer_act",
         error: live?.error || DETACHED_MESSAGE,
         // A partial act can open a tab before a later step fails.
@@ -203,7 +208,6 @@ export class ComputerBrowserProvider implements BrowserProvider {
         ...pinnedOf(live ?? {}),
       };
     }
-    const elements = Array.isArray(live.elements) ? live.elements : undefined;
     return {
       ok: true,
       completed: typeof live.completed === "number" ? live.completed : request.actions.length,
@@ -214,6 +218,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
       ...targetOf(live),
       ...openedOf(live),
       ...pinnedOf(live),
+      ...(live.loading === true ? { loading: true } : {}),
     };
   }
 

@@ -7,7 +7,6 @@ type SidebarChat = {
   preview?: string | null;
   pinned: boolean;
   sectionId: string | null;
-  parentBotId?: string | null;
 };
 
 type SidebarSpace<TBot extends SidebarChat, TGroup extends SidebarChat> = {
@@ -42,6 +41,7 @@ export async function commitSpaceRename(input: {
 export function sidebarGroupsForSpaces<TBot extends SidebarChat, TGroup extends SidebarChat>(
   spaces: readonly SidebarSpace<TBot, TGroup>[],
   query: string,
+  labels?: { pinned: string; unassigned: string },
 ) {
   const needle = query.toLowerCase();
   const showSpaceNames = spaces.length > 1;
@@ -59,11 +59,11 @@ export function sidebarGroupsForSpaces<TBot extends SidebarChat, TGroup extends 
       ].map((item) => ({
         ...item,
         id: item.chat.id,
-        parentBotId: item.kind === "bot" ? (item.chat.parentBotId ?? null) : null,
         pinned: item.chat.pinned,
         sectionId: item.chat.sectionId,
       })),
       space.botSections,
+      { labels },
     );
     // Keep destinations visible after their last bot is dragged out. Search
     // still hides empty lists, and spaces without sections keep their old layout.
@@ -75,7 +75,7 @@ export function sidebarGroupsForSpaces<TBot extends SidebarChat, TGroup extends 
         }
       }
       if (!grouped.some((group) => group.key === "unassigned")) {
-        grouped.push({ key: "unassigned", title: "Unassigned", bots: [] });
+        grouped.push({ key: "unassigned", title: labels?.unassigned ?? "Unassigned", bots: [] });
       }
       const order = [
         "pinned",
@@ -140,4 +140,14 @@ export function sidebarGroupsForSpaces<TBot extends SidebarChat, TGroup extends 
       ...emptySections,
     ];
   });
+}
+
+/** Count the unread flags the roster renders. Pass unfiltered groups for the app badge. */
+export function countUnreadChats(
+  sections: readonly { bots: readonly { chat: { unread?: boolean } }[] }[],
+): number {
+  return sections.reduce(
+    (count, section) => count + section.bots.filter((item) => item.chat.unread).length,
+    0,
+  );
 }

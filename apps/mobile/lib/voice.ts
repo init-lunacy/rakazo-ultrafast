@@ -8,7 +8,7 @@ import { aiConsentCoalesceKey, captureApiRequestContext, rpc } from "./api";
 import { voiceForBot } from "./bot-voices";
 import { loadDeviceVoiceEnabled } from "./device-voice";
 import { t } from "./i18n";
-import { errorText } from "./user-error";
+import { errorText, voiceAccountErrorText } from "./user-error";
 
 /** Who is speaking, for the dock: it is mounted outside any one thread's bot list. */
 export type PlaybackSpeaker = { name?: string; color?: string };
@@ -83,6 +83,16 @@ export function stopVoicePlayback(): void {
 /** Cuts the reply off mid-sentence, for a caller who talked over it. */
 export function stopSpeaking(): void {
   stopVoicePlayback();
+}
+
+let playsInBackground = false;
+
+/**
+ * A call keeps its replies playing while the screen is off; the microphone
+ * foreground service is what keeps the app alive then.
+ */
+export function setVoiceBackgroundPlayback(enabled: boolean): void {
+  playsInBackground = enabled;
 }
 
 // --- Sequential playback across several messages: speaking a message plays
@@ -386,7 +396,9 @@ async function renderUtterance(
     });
     if (!res.ok) {
       const body = await readVoiceError(res, deadline.signal);
-      throw new Error(errorText(body.error ?? "", t("Could not speak that.")));
+      throw new Error(
+        voiceAccountErrorText(body) ?? errorText(body.error ?? "", t("Could not speak that.")),
+      );
     }
     return await readResponseBytes(res, MAX_VOICE_AUDIO_BYTES, deadline.signal);
   } finally {
@@ -511,7 +523,7 @@ async function playWithNativeAudio(bytes: Uint8Array, session?: HostedSession): 
   await setAudioModeAsync({
     playsInSilentMode: true,
     interruptionMode: "mixWithOthers",
-    shouldPlayInBackground: false,
+    shouldPlayInBackground: playsInBackground,
   });
   const file = new File(Paths.cache, `rakazo-voice-${Date.now()}.mp3`);
   file.create({ overwrite: true });
@@ -620,11 +632,13 @@ function requestDeadline(timeoutMs: number) {
 async function readVoiceError(
   response: Response,
   signal: AbortSignal,
-): Promise<{ error?: string }> {
+): Promise<{ error?: string; code?: string }> {
   const bytes = await readResponseBytes(response, MAX_VOICE_ERROR_BYTES, signal);
   try {
     const parsed = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-    return parsed && typeof parsed === "object" ? (parsed as { error?: string }) : {};
+    return parsed && typeof parsed === "object"
+      ? (parsed as { error?: string; code?: string })
+      : {};
   } catch {
     return {};
   }

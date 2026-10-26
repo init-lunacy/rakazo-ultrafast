@@ -115,7 +115,7 @@ describe("Playwright artifact publication boundary", () => {
   it("publishes the nightly report only where the gallery's storage is configured", () => {
     const e2e = readFileSync(path.join(repoRoot, ".github/workflows/playwright.yml"), "utf8");
     expect(e2e).toContain(
-      "name: Publish Playwright visual report\n        if: always() && inputs.publish_report && vars.S3_BUCKET != ''",
+      "name: Publish Playwright visual report\n        if: ${{ !cancelled() && inputs.publish_report && vars.S3_BUCKET != '' }}",
     );
   });
 

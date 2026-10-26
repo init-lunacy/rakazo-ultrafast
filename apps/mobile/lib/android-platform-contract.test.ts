@@ -53,6 +53,8 @@ describe("Android mobile platform contract", () => {
     expect(service).toContain("private fun stopIfCurrent(generation: Long)");
     expect(service).toContain("synchronized(sessionLock)");
     expect(service).toContain("working.filterNot(::isOpenThread)");
+    expect(service).toContain("createConfigurationContext");
+    expect(live).toContain("getActiveUiLocale");
     expect(service).toContain("!run.notificationsEnabled || isOpenThread(run)");
     expect(service).toMatch(
       /waiting_input[\s\S]*filter \{ it\.notificationsEnabled \}[\s\S]*alertedAttention\.add/,
@@ -63,6 +65,15 @@ describe("Android mobile platform contract", () => {
     expect(service).toContain("manager.notify(run.threadId.hashCode(), notification)");
     expect(service).toContain("THREAD_NOTIFICATION_IDS");
     expect(service).toContain("cancel(threadId.hashCode())");
+    for (const request of [
+      "        val avatarStyle = selectedAvatarStyle",
+      "        val active = runs(",
+      "        val recent = runs(",
+      "          val reply = runCatching {",
+    ]) {
+      expect(service).toContain(`if (generation != sessionGeneration.get()) return\n${request}`);
+    }
+    expect(service).toContain("runCatching { context.startService(intent) }");
     expect(module).toContain('AsyncFunction("setOpenThread")');
     expect(live).toContain("setOpenNotificationThread");
     expect(thread).toContain("if (!navigation.isFocused() || !notificationThreadId) return");
@@ -99,7 +110,7 @@ describe("Android mobile platform contract", () => {
       "val working = active.filter(::isWorking).filter { it.notificationsEnabled }",
     );
     expect(service).toMatch(
-      /if \(visibleWorking\.isEmpty\(\)\) clearLive\(\) else showLive\(visibleWorking/,
+      /if \(visibleWorking\.isEmpty\(\)\) clearLive\(\) else \{[\s\S]*showLive\(visibleWorking, avatarStyle, copyContext\)/,
     );
     expect(service).toMatch(
       /private fun showLive\(active: List<RunRecord>[\s\S]*val primary = active\.first\(\)/,
