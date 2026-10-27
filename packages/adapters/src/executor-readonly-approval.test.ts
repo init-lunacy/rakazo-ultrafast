@@ -1246,6 +1246,7 @@ describe("bot management tool gating", () => {
         otherBotsInSpace: false,
         skipApprovals: true,
       });
+    spawnBotMock.mockReset();
     const failed = lone();
     spawnBotMock.mockResolvedValueOnce({ error: "That name is taken." });
     failed.setCalls([{ args: { name: "Research" }, executionId: "call-1" }]);
@@ -1256,6 +1257,7 @@ describe("bot management tool gating", () => {
     spawnBotMock.mockResolvedValueOnce({ botId: "bot-2", name: "Research" });
     spawned.setCalls([{ args: { name: "Research" }, executionId: "call-1" }]);
     await spawned.run();
+    expect(spawnBotMock).toHaveBeenCalledTimes(2);
     expect(spawned.offeredTools()).not.toContain("list_fleet");
     const unlocked = spawned.unlockedTools();
     expect(unlocked?.tools.map((tool) => tool.name).sort()).toEqual([...FLEET_TOOL_NAMES].sort());
@@ -1264,6 +1266,7 @@ describe("bot management tool gating", () => {
   });
 
   it("unlocks only the bot management tools the owner left on, and none on runs they did not start", async () => {
+    spawnBotMock.mockReset();
     const trimmed = fixture({
       name: "spawn_bot",
       builtin: true,
@@ -1291,6 +1294,8 @@ describe("bot management tool gating", () => {
     routine.setCalls([{ args: { name: "Writer" }, executionId: "call-1" }]);
     await routine.run();
     expect(routine.unlockedTools()).toBeUndefined();
+    // Both creations ran, so only the run's trigger kept the routine's tools locked.
+    expect(spawnBotMock).toHaveBeenCalledTimes(2);
   });
 
   it.each(["bot_message", "messaging", "spawn", "tickets", "webhook", "routine"])(

@@ -4431,7 +4431,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
         const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
-        // A bot this run spawns unlocks the fleet tools from the next turn (see unlockedTools).
         const otherBotsInSpace =
           bot.fleetManagement && ownerStartedRun
             ? Boolean(
@@ -4485,12 +4484,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             : []),
         ];
         // A lone bot's first child makes the fleet tools useful within this same run.
-        const fleetToolsAfterSpawn =
-          bot.fleetManagement && ownerStartedRun && !otherBotsInSpace
-            ? selectBuiltinToolsForRun({ ...builtinToolOptions, otherBotsInSpace: true }).filter(
-                (tool) => FLEET_TOOL_NAMES_SET.has(tool.name),
-              )
-            : [];
+        const fleetToolsAfterSpawn = otherBotsInSpace
+          ? []
+          : selectBuiltinToolsForRun({ ...builtinToolOptions, otherBotsInSpace: true }).filter(
+              (tool) => FLEET_TOOL_NAMES_SET.has(tool.name),
+            );
+        const fleetRulesAfterSpawn = fleetClause(fleetToolsAfterSpawn.map((tool) => tool.name));
         let spawnedThisRun = false;
         const exposedConnectorTools = discovered.filter(
           (tool) => !builtinAgentTools.some((builtin) => builtin.name === tool.name),
@@ -8246,12 +8245,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 spawnedThisRun && fleetToolsAfterSpawn.length
                   ? {
                       tools: fleetToolsAfterSpawn,
-                      instructions: [
-                        "Bot management tools are now available. If the user also asked to group, schedule, re-model or instruct the bot you created, do that now; otherwise stop.",
-                        fleetClause(offeredFleetTools(fleetToolsAfterSpawn)),
-                      ]
-                        .filter(Boolean)
-                        .join(" "),
+                      // The base prompt says to stop after spawn_bot; finish what else was asked.
+                      instructions:
+                        fleetRulesAfterSpawn &&
+                        `If the user also asked to organize, schedule, re-model or instruct the bot you created, do that now; otherwise stop. ${fleetRulesAfterSpawn}`,
                     }
                   : undefined,
               claimSteering: async (seenIds) => {
