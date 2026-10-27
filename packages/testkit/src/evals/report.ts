@@ -4,6 +4,7 @@ import type { Judgment } from "./judge.js";
 import type { CacheDecisionMeasurement, Operation } from "./measurement.js";
 import { OPERATION_KINDS, summarizeCacheDecisions } from "./measurement.js";
 import type { measureWorkflowSteps } from "./step-accounting.js";
+import type { StepTimings } from "./step-timings.js";
 import type { DiagnosticWireObservation } from "./wire-observer.js";
 
 export type FailureCategory = "agent" | "product" | "provider" | "harness" | "incomplete";
@@ -51,7 +52,13 @@ export type TrialResult = {
   timings?: TrialTimings;
 };
 
-export type TrialTimings = { setupMs: number | null; bootMs: number | null; taskMs: number | null };
+export type TrialTimings = {
+  setupMs: number | null;
+  bootMs: number | null;
+  taskMs: number | null;
+  /** How the task time divides between model requests, computer requests and the product. */
+  steps?: StepTimings;
+};
 
 /** How long a task's runs spent running, from the product's own run records. */
 export function taskMsFromRuns(

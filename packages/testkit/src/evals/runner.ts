@@ -23,6 +23,7 @@ import type { RoutineEvidence } from "./silence.js";
 import { SilenceObserver } from "./silence-observer.js";
 import type { LedgerCall } from "./step-accounting.js";
 import { measureWorkflowSteps } from "./step-accounting.js";
+import { recordRequests, stepTimings } from "./step-timings.js";
 
 type App = { request: (input: string, init?: RequestInit) => Promise<Response> | Response };
 export type EvalApp = {
@@ -99,6 +100,7 @@ export async function runTrial(
   let seededThreadId: string | undefined;
   const runIds: string[] = [];
   const timings: TrialTimings = { setupMs: null, bootMs: null, taskMs: null };
+  const requests = recordRequests();
   const fixture = options.computerFixture;
   const asHarness = async <T>(label: string, work: () => Promise<T>) => {
     try {
@@ -730,6 +732,7 @@ export async function runTrial(
       secrets,
     );
   } finally {
+    requests.stop();
     if (handles) {
       try {
         if (handles.awaitIdle) await withinDeadline(handles.awaitIdle(), deadline);
@@ -783,12 +786,19 @@ export async function runTrial(
       });
       try {
         const taskRunIds = runIds.filter((id) => !setupRunIds.has(id));
-        timings.taskMs = taskMsFromRuns(
-          await asSystem(handles.prisma).run.findMany({
-            where: { id: { in: taskRunIds } },
-            select: { startedAt: true, completedAt: true },
-          }),
-        );
+        const taskRuns = await asSystem(handles.prisma).run.findMany({
+          where: { id: { in: taskRunIds } },
+          select: { startedAt: true, completedAt: true },
+        });
+        timings.taskMs = taskMsFromRuns(taskRuns);
+        if (timings.taskMs !== null)
+          timings.steps = stepTimings(
+            requests.spans,
+            taskRuns.map((run) => ({
+              startMs: run.startedAt!.getTime(),
+              endMs: run.completedAt!.getTime(),
+            })),
+          );
       } catch {
         // Task time stays null; the trial's outcome does not depend on it.
       }
