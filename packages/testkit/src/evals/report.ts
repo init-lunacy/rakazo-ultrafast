@@ -4,6 +4,7 @@ import type { Judgment } from "./judge.js";
 import type { CacheDecisionMeasurement, Operation } from "./measurement.js";
 import { OPERATION_KINDS, summarizeCacheDecisions } from "./measurement.js";
 import type { measureWorkflowSteps } from "./step-accounting.js";
+import type { StepTimings } from "./step-timings.js";
 import type { DiagnosticWireObservation } from "./wire-observer.js";
 
 export type FailureCategory = "agent" | "product" | "provider" | "harness" | "incomplete";
@@ -51,7 +52,13 @@ export type TrialResult = {
   timings?: TrialTimings;
 };
 
-export type TrialTimings = { setupMs: number | null; bootMs: number | null; taskMs: number | null };
+export type TrialTimings = {
+  setupMs: number | null;
+  bootMs: number | null;
+  taskMs: number | null;
+  /** How the task time divides between model requests, computer requests and the product. */
+  steps?: StepTimings;
+};
 
 /** How long a task's runs spent running, from the product's own run records. */
 export function taskMsFromRuns(
@@ -74,6 +81,9 @@ export function summarize(results: readonly TrialResult[]) {
     const passed = trials.filter((r) => r.status === "passed").length;
     const taskTimes = attempted.flatMap((r) =>
       r.timings?.taskMs == null ? [] : [r.timings.taskMs],
+    );
+    const engineTimes = attempted.flatMap((r) =>
+      r.timings?.steps ? [r.timings.steps.engineMs] : [],
     );
     return {
       caseId,
@@ -115,6 +125,9 @@ export function summarize(results: readonly TrialResult[]) {
       ),
       ...(taskTimes.length
         ? { taskMsP50: percentile(taskTimes, 0.5), taskMsP95: percentile(taskTimes, 0.95) }
+        : {}),
+      ...(engineTimes.length
+        ? { engineMsP50: percentile(engineTimes, 0.5), engineMsP95: percentile(engineTimes, 0.95) }
         : {}),
       operationCosts: Object.fromEntries(
         OPERATION_KINDS.map((kind) => {

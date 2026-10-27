@@ -620,5 +620,29 @@ describe("task timing", () => {
     expect(summarize([{ ...emptyTrial("plain", 1), status: "passed" }])[0]).not.toHaveProperty(
       "taskMsP50",
     );
+    expect(summarize([timed(1_000)])[0]).not.toHaveProperty("engineMsP50");
+  });
+
+  it("summarizes engine time when trials split their task time", () => {
+    const steps = (engineMs: number) => ({
+      ...emptyTrial("browse", 1),
+      status: "passed" as const,
+      timings: {
+        setupMs: 1,
+        bootMs: 2,
+        taskMs: engineMs * 2,
+        steps: {
+          model: { calls: 1, ms: engineMs, firstByteMs: 1 },
+          computer: { calls: 0, ms: 0, byRoute: {} },
+          otherMs: engineMs,
+          engineMs,
+          tools: {},
+        },
+      },
+    });
+    expect(summarize([steps(400), steps(200)])[0]).toMatchObject({
+      engineMsP50: 200,
+      engineMsP95: 400,
+    });
   });
 });
