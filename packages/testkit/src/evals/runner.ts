@@ -791,14 +791,26 @@ export async function runTrial(
           select: { startedAt: true, completedAt: true },
         });
         timings.taskMs = taskMsFromRuns(taskRuns);
-        if (timings.taskMs !== null)
+        if (timings.taskMs !== null) {
+          const completions = await asSystem(handles.prisma).event.findMany({
+            where: { runId: { in: taskRunIds }, type: "agent.tool.completed" },
+            select: { payload: true },
+          });
           timings.steps = stepTimings(
             requests.spans,
             taskRuns.map((run) => ({
               startMs: run.startedAt!.getTime(),
               endMs: run.completedAt!.getTime(),
             })),
+            completions.map(({ payload }) => {
+              const { name, durationMs } = payload as { name?: unknown; durationMs?: unknown };
+              return {
+                name: redact(String(name ?? "unknown"), secrets),
+                durationMs: typeof durationMs === "number" ? durationMs : 0,
+              };
+            }),
           );
+        }
       } catch {
         // Task time stays null; the trial's outcome does not depend on it.
       }

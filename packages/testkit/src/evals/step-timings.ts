@@ -14,7 +14,13 @@ export type StepTimings = {
   computer: { calls: number; ms: number; byRoute: Record<string, { calls: number; ms: number }> };
   /** Task time spent in neither a model nor a computer request: the product's own work. */
   otherMs: number;
+  /** Task time not spent waiting on the model, which the product cannot speed up. */
+  engineMs: number;
+  /** Each tool's calls and total run time, from the product's own completion records. */
+  tools: Record<string, { calls: number; ms: number }>;
 };
+
+export type ToolCompletion = { name: string; durationMs: number };
 
 type Window = { startMs: number; endMs: number };
 
@@ -91,7 +97,11 @@ function covered(intervals: readonly Window[], windows: readonly Window[]) {
 }
 
 /** Splits the task's run time into model requests, computer requests and everything else. */
-export function stepTimings(spans: readonly RequestSpan[], runs: readonly Window[]): StepTimings {
+export function stepTimings(
+  spans: readonly RequestSpan[],
+  runs: readonly Window[],
+  completions: readonly ToolCompletion[] = [],
+): StepTimings {
   type Ended = RequestSpan & { endMs: number };
   const inTask = spans.filter((span): span is Ended => {
     const { startMs, endMs } = span;
@@ -106,11 +116,19 @@ export function stepTimings(spans: readonly RequestSpan[], runs: readonly Window
     entry.ms += span.endMs - span.startMs;
     byRoute[span.route] = entry;
   }
+  const tools: StepTimings["tools"] = {};
+  for (const { name, durationMs } of completions) {
+    const entry = tools[name] ?? { calls: 0, ms: 0 };
+    entry.calls += 1;
+    entry.ms += durationMs;
+    tools[name] = entry;
+  }
   const taskMs = runs.reduce((total, run) => total + (run.endMs - run.startMs), 0);
+  const modelMs = covered(model, runs);
   return {
     model: {
       calls: model.length,
-      ms: covered(model, runs),
+      ms: modelMs,
       firstByteMs: model.reduce(
         (total, span) => total + ((span.firstByteMs ?? span.endMs) - span.startMs),
         0,
@@ -118,5 +136,7 @@ export function stepTimings(spans: readonly RequestSpan[], runs: readonly Window
     },
     computer: { calls: computer.length, ms: covered(computer, runs), byRoute },
     otherMs: taskMs - covered([...model, ...computer], runs),
+    engineMs: taskMs - modelMs,
+    tools,
   };
 }

@@ -82,6 +82,9 @@ export function summarize(results: readonly TrialResult[]) {
     const taskTimes = attempted.flatMap((r) =>
       r.timings?.taskMs == null ? [] : [r.timings.taskMs],
     );
+    const engineTimes = attempted.flatMap((r) =>
+      r.timings?.steps ? [r.timings.steps.engineMs] : [],
+    );
     return {
       caseId,
       ...(strategy ? { strategy } : {}),
@@ -122,6 +125,9 @@ export function summarize(results: readonly TrialResult[]) {
       ),
       ...(taskTimes.length
         ? { taskMsP50: percentile(taskTimes, 0.5), taskMsP95: percentile(taskTimes, 0.95) }
+        : {}),
+      ...(engineTimes.length
+        ? { engineMsP50: percentile(engineTimes, 0.5), engineMsP95: percentile(engineTimes, 0.95) }
         : {}),
       operationCosts: Object.fromEntries(
         OPERATION_KINDS.map((kind) => {

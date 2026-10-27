@@ -41,6 +41,11 @@ it("splits task time into model, computer and the rest, inside the runs only", (
       { ...span("model", "api.example.test", 205, 0), endMs: null },
     ],
     [{ startMs: 100, endMs: 300 }],
+    [
+      { name: "browser_snapshot", durationMs: 30 },
+      { name: "browser_act", durationMs: 12 },
+      { name: "browser_snapshot", durationMs: 10 },
+    ],
   );
   expect(timings.model).toEqual({ calls: 3, ms: 10 + 35, firstByteMs: 3 });
   expect(timings.computer).toEqual({
@@ -49,6 +54,11 @@ it("splits task time into model, computer and the rest, inside the runs only", (
     byRoute: { browser: { calls: 2, ms: 40 } },
   });
   expect(timings.otherMs).toBe(200 - 45 - 40);
+  expect(timings.engineMs).toBe(200 - 45);
+  expect(timings.tools).toEqual({
+    browser_snapshot: { calls: 2, ms: 40 },
+    browser_act: { calls: 1, ms: 12 },
+  });
 });
 
 it("records requests made through fetch", async () => {
