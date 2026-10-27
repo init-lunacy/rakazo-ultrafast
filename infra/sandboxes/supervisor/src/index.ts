@@ -81,6 +81,7 @@ import {
   nextScreenIndex,
   normalizeWorkspaceRelative,
   oldestIdleScreen,
+  pageBrowserNotReady,
   parseObservation,
   preferComputerControl,
   quiesceBrowserProfilesCommand,
@@ -89,6 +90,7 @@ import {
   type ScreenAssignment,
   sandboxCommandTimedOut,
   sandboxTimeoutCommand,
+  screenRecentlyEnsured,
   screenReleaseStopCommand,
   shouldReplayComputerActions,
   stopExtraScreenCommand,
@@ -555,17 +557,20 @@ app.post("/computers/:id/browser", async (c) => {
     .parse(await c.req.json());
   const carriesSavedLogin =
     body.command === "act" && body.actions.some((step) => "origin" in step && step.origin);
-  try {
-    const { container, layout } = await managedScreen(
+  const launchBrowser = c.req.header("x-rakazo-skip-browser-launch") !== "1";
+  const screen = (reuseRecent: boolean) =>
+    managedScreen(
       c.req.param("id"),
       c.req.header("x-rakazo-bot-id"),
       c.req.header("x-rakazo-space-id"),
       c.req.header("x-rakazo-screen-id"),
       c.req.header("x-rakazo-screen-lease-id"),
       true,
-      c.req.header("x-rakazo-skip-browser-launch") !== "1",
+      launchBrowser,
+      reuseRecent,
     );
-    const result = await runContainerCommand(
+  const runHelper = ({ container, layout }: Awaited<ReturnType<typeof screen>>) =>
+    runContainerCommand(
       container,
       // Arguments go over stdin: origin-bound fills carry saved logins, and argv is readable by
       // any process in the computer, including the bot's own shell. Other commands also keep the
@@ -592,6 +597,13 @@ app.post("/computers/:id/browser", async (c) => {
         stdin: `${JSON.stringify(body)}\n`,
       },
     );
+  try {
+    // Without a launch the browser must be checked, so only a launching request reuses setup.
+    const reusable = await screen(launchBrowser);
+    let result = await runHelper(reusable);
+    // A reused screen skipped setup, so a browser that has since exited gets it before one retry.
+    if (reusable.reused && pageBrowserNotReady(result))
+      result = await runHelper(await screen(false));
     // A nonzero exit or malformed output cannot establish which mutations ran.
     const maxBytes = body.command === "screenshot" ? PAGE_CAPTURE_MAX_BYTES : 512 * 1024;
     // An older helper answers a command it lacks with exit 2: say so, so callers stop asking.
@@ -1331,9 +1343,14 @@ async function managedScreen(
   screenLeaseId: string | undefined,
   restoreControl = true,
   launchBrowser = true,
+  reuseRecent = false,
 ) {
   const { container } = await managedContainer(id, botId, spaceId);
   return withComputerScreenLock(id, async () => {
+    if (reuseRecent) {
+      const recent = await recentManagedScreen(id, container, botId, screenId, screenLeaseId);
+      if (recent) return recent;
+    }
     // Under the lock, so a Stop releasing the screen cannot land between check and setup.
     if (!launchBrowser) {
       const running = await runContainerCommand(container, [
@@ -1343,8 +1360,45 @@ async function managedScreen(
       ]);
       if (running.code !== 0) throw new Error("The computer's browser is not running.");
     }
-    return ensureManagedScreen(id, container, botId, screenId, screenLeaseId, restoreControl);
+    const screen = await ensureManagedScreen(
+      id,
+      container,
+      botId,
+      screenId,
+      screenLeaseId,
+      restoreControl,
+    );
+    return { ...screen, reused: false };
   });
+}
+
+/** Skip the setup script for a screen set up moments ago on this boot; callers hold the screen lock. */
+async function recentManagedScreen(
+  id: string,
+  container: Docker.Container,
+  botId: string | undefined,
+  screenId: string | undefined,
+  screenLeaseId: string | undefined,
+) {
+  const info = await container.inspect();
+  const startedAt = info.State?.StartedAt;
+  const assigned = currentComputerScreens(computerScreens, computerScreenBoots, id, startedAt);
+  const screenKey = screenId || botId || id;
+  const slot = assigned?.get(screenKey);
+  if (!assigned || !startedAt || computerScreenBoots.get(id) !== startedAt) return undefined;
+  if (!slot?.viewToken || !screenRecentlyEnsured(slot, Date.now())) return undefined;
+  // Still fence the lease: an older execution must not drive this screen.
+  const index = nextScreenIndex(assigned, screenKey, screenLeaseId, teamScreenLimit);
+  return {
+    container,
+    info,
+    layout: screenPorts(index),
+    index,
+    screenKey,
+    browserProfile: browserProfilePathForScreen(screenKey),
+    viewToken: slot.viewToken,
+    reused: true,
+  };
 }
 
 async function ensureManagedScreen(
@@ -1369,6 +1423,8 @@ async function ensureManagedScreen(
     if (info.State?.StartedAt === screen.info.State?.StartedAt) {
       // Confirm the pending boot marker only after setup completes against the same boot.
       if (info.State?.StartedAt) computerScreenBoots.set(id, info.State.StartedAt);
+      const slot = computerScreens.get(id)?.get(screen.screenKey);
+      if (slot) slot.ensuredAt = Date.now();
       try {
         await rejoinComputerNetwork(info);
       } catch (error) {
