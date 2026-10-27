@@ -15,7 +15,7 @@ export interface UsageAttribution {
 
 /** Usage is financial history, independent from message clearing or bot deletion. */
 export async function recordUsage(
-  prisma: Pick<PrismaClient, "$transaction">,
+  prisma: Pick<PrismaClient, "$transaction" | "usageRecord" | "modelCreditEntry">,
   event: UsageEvent,
   attribution: UsageAttribution,
   reconcile = false,
@@ -51,11 +51,20 @@ export async function recordUsage(
     operationKind: attribution.operationKind ?? event.operationKind ?? "answer",
     agentId: event.agentId ?? null,
   };
+  // Credits are reserved before the call, so a call without a reservation has nothing to settle.
+  const reserved = event.callId
+    ? await prisma.modelCreditEntry.findUnique({
+        where: { callId: event.callId },
+        select: { id: true },
+      })
+    : null;
+  if (!reserved) {
+    await prisma.usageRecord.createMany({ data: [data], skipDuplicates: true });
+    return;
+  }
   return prisma.$transaction(async (tx) => {
     await tx.usageRecord.createMany({ data: [data], skipDuplicates: true });
-    const entry = event.callId
-      ? await tx.modelCreditEntry.findUnique({ where: { callId: event.callId } })
-      : null;
+    const entry = await tx.modelCreditEntry.findUnique({ where: { callId: event.callId! } });
     if (!entry) return;
     if (
       entry.userId !== attribution.userId ||

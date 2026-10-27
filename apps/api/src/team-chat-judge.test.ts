@@ -125,8 +125,8 @@ describe("team chat engagement judge", () => {
       user: { findUnique: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       spaceModelPreference: { findFirst: vi.fn(async () => null) },
-      $transaction: async (work: (tx: unknown) => Promise<unknown>) =>
-        work({ usageRecord: { createMany } }),
+      modelCreditEntry: { findUnique: vi.fn(async () => null) },
+      usageRecord: { createMany },
     };
     const runtime = {
       run: async function* () {

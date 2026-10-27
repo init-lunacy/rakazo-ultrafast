@@ -4067,6 +4067,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
           run.sourceMessageId,
         );
         const turnBlocks = currentTurnMessage?.blocks;
+        const earlierMessages = hasEarlierMessages(
+          historyMessages,
+          currentTurnMessage?.id,
+          runId,
+          thread.historyCompactedUpToSeq != null,
+        );
         const allowSilentPeerMessage = botMessageAllowsSilence(
           peerMessage?.intent,
           peerMessage?.repliesToRequest,
@@ -8099,7 +8105,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   ? redactSecrets(ticketContext, runSecrets)
                   : undefined,
                 hasHistoricalContext: historicalContext.length > 0,
-                historyRetrievalEnabled: contextStrategy !== "current",
+                historyRetrievalEnabled: contextStrategy !== "current" && earlierMessages,
                 computerInstruction,
                 pageBrowserAllowed,
                 taskCatalogInstruction,
@@ -9565,22 +9571,32 @@ export function persistentComputerInstruction(options: {
   return `You have a persistent sandbox${capabilities}. This backend does not provide model-visible graphical control.${toolSentence}`;
 }
 
+/** History retrieval searches earlier messages in this chat; a new chat has none to recall. */
+export function hasEarlierMessages(
+  messages: readonly { id: string; runId?: string | null }[],
+  currentMessageId: string | undefined,
+  runId: string,
+  compacted: boolean,
+): boolean {
+  return (
+    compacted ||
+    messages.some((message) => message.id !== currentMessageId && message.runId !== runId)
+  );
+}
+
 export function dockerComputerToolInstruction(
   computerKind: string,
   disabled?: ReadonlySet<string>,
 ): string | undefined {
-  if (computerKind !== "docker") return undefined;
+  // Every tip below runs in the shell.
+  if (computerKind !== "docker" || !builtinOffered(disabled, "shell")) return undefined;
   const navigate = builtinOffered(disabled, "browser_navigate");
   const act = builtinOffered(disabled, "browser_act");
   const takeover = builtinOffered(disabled, "request_takeover");
   const parts = [
     "For Python CLI tools, use `uv tool install <package>`; it installs without sudo and keeps tools under this computer's persistent home. GitHub's `gh` CLI is installed. `pdftotext`, `pandoc`, and `openpyxl` are available to extract text from PDFs, documents, and spreadsheets.",
+    "Python 3 is installed as `python3`. For ordinary file processing, use `python3 -c` with a quoted script; interpreter heredocs are blocked by the desktop guard. If `python` is not found, retry with `python3`. A command-syntax refusal is not a filesystem permission error; continue ordinary file work with supported tools.",
   ];
-  if (builtinOffered(disabled, "shell")) {
-    parts.push(
-      "Python 3 is installed as `python3`. For ordinary file processing, use `python3 -c` with a quoted script; interpreter heredocs are blocked by the desktop guard. If `python` is not found, retry with `python3`. A command-syntax refusal is not a filesystem permission error; continue ordinary file work with supported tools.",
-    );
-  }
   if (navigate && act) {
     parts.push(
       'To authenticate `gh`, run `LOG=$(mktemp /tmp/gh-login.XXXXXX); nohup script -qec \'gh auth login --hostname github.com --web --git-protocol https\' "$LOG" >/dev/null 2>&1 & echo "$LOG"` — keep that printed path, read the one-time code from it, browser_navigate to https://github.com/login/device, and browser_act the code. Completing that page authorizes the CLI OAuth app and stores the credential under the persistent home; it does not by itself create a Chromium github.com session.',
@@ -9639,8 +9655,11 @@ function secretGuidance(disabled?: ReadonlySet<string>): string[] {
     const fill = builtinOffered(disabled, "browser_act")
       ? "; fill it with browser_act fill_secret, which only works on the saved site"
       : "";
+    const command = builtinOffered(disabled, "shell")
+      ? " When your shell commands need a secret value, use request_secret with auth type command; it is exported as the environment variable that request_secret and list_secrets report."
+      : "";
     clauses.push(
-      `Use request_secret with a credential destination to save reusable API credentials, or with auth type login when the user wants a website login saved${fill}. When your shell commands need a secret value, use request_secret with auth type command; it is exported as the environment variable that request_secret and list_secrets report.`,
+      `Use request_secret with a credential destination to save reusable API credentials, or with auth type login when the user wants a website login saved${fill}.${command}`,
     );
   }
   const uses: string[] = [];
@@ -9741,7 +9760,6 @@ function toolUsageLine(parts: {
     builtinOffered(disabled, "request_takeover")
       ? "Use request_takeover when the user must provide protected input or human judgment."
       : undefined,
-    "Use destination_write only for connected destination records.",
   ].filter((clause): clause is string => Boolean(clause));
   return `${parts.computerInstruction} ${clauses.join(" ")}`;
 }
