@@ -258,6 +258,17 @@ running, taken from the product's own run records. It excludes app startup, acco
 task, over every attempted trial, passed or not, like the latency figures. Compare these,
 together with the success rate, tool calls and cost, before and after a browsing change.
 
+`timings.steps` splits the task time:
+
+- `model`: time in model API requests, with the wait for each first byte;
+- `computer`: time in computer requests, per route;
+- `otherMs`: the product's own work between requests;
+- `tools`: calls and time per tool.
+
+`engineMs` is the task time outside model requests, and summary rows give `engineMsP50` and
+`engineMsP95`. Model latency changes from minute to minute, so compare engine time when judging
+a product change.
+
 **Grading** uses the site's own request log and the files the bot wrote, never the model's
 claims:
 
