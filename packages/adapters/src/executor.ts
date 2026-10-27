@@ -251,7 +251,7 @@ import {
 } from "./browser-tools.js";
 import { agentConnectionTools, builtinAgentTools, sharedMemorySaveError } from "./builtin-tools.js";
 import { requestUserCall } from "./call-request.js";
-import { archiveSpawnedBot, spawnBot } from "./child-bots.js";
+import { archiveSpawnedBot, managedBotsWhere, spawnBot } from "./child-bots.js";
 import type { CloudAgentConnection } from "./cloud-agent-factory.js";
 import { cloudAgentsEnabled } from "./cloud-agent-factory.js";
 import { executeCloudAgentTool } from "./cloud-agent-service.js";
@@ -4425,6 +4425,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
         const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
+        // Decided at run start: a bot this run spawns is offered fleet tools from the next run.
+        const otherBotsInSpace =
+          bot.fleetManagement && ownerStartedRun
+            ? Boolean(
+                await deps.prisma.bot.findFirst({
+                  where: { ...managedBotsWhere(run), archivedAt: null, id: { not: run.botId } },
+                  select: { id: true },
+                }),
+              )
+            : false;
         let userPreferences: { timezone: string | null; actionOfferSettings: unknown } | null =
           null;
         try {
@@ -4455,6 +4465,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             voiceCall,
             disabledBuiltinTools: bot.disabledBuiltinTools,
             fleetManagement: bot.fleetManagement,
+            otherBotsInSpace,
             followUpFromUser: sourceMessage?.role === "user",
             actionOffersEnabled: actionOfferSettings.enabled,
           }),
@@ -9385,6 +9396,8 @@ export function selectBuiltinToolsForRun(options: {
   disabledBuiltinTools?: readonly string[];
   /** The bot's fleet management switch. */
   fleetManagement?: boolean;
+  /** The space has another active bot to manage; a lone bot gets no fleet tools. */
+  otherBotsInSpace?: boolean;
   /** A follow-up run whose source message the user wrote. */
   followUpFromUser?: boolean;
   /** The user has action cards switched on. */
@@ -9413,7 +9426,7 @@ export function selectBuiltinToolsForRun(options: {
       !disabled.has(tool.name) &&
       (options.trigger !== "created" || CREATED_RUN_TOOL_NAMES.has(tool.name)) &&
       (!FLEET_TOOL_NAMES_SET.has(tool.name) ||
-        (Boolean(options.fleetManagement) && fleetToolsAllowed)) &&
+        (Boolean(options.fleetManagement && options.otherBotsInSpace) && fleetToolsAllowed)) &&
       (tool.name !== "offer_actions" ||
         (Boolean(options.actionOffersEnabled) && actionOffersAllowedForRun(options))) &&
       (options.mediaImagesEnabled || tool.name !== "generate_image") &&

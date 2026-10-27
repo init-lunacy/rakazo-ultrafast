@@ -453,6 +453,7 @@ describe("run tool selection", () => {
       fleetManagement: boolean,
       followUpFromUser = false,
       disabledBuiltinTools?: string[],
+      otherBotsInSpace = true,
     ) =>
       selectBuiltinToolsForRun({
         graphicalToolsAllowed: false,
@@ -461,6 +462,7 @@ describe("run tool selection", () => {
         semanticMemoryEnabled: false,
         messagingChannelRun: false,
         fleetManagement,
+        otherBotsInSpace,
         followUpFromUser,
         disabledBuiltinTools,
       })
@@ -479,7 +481,9 @@ describe("run tool selection", () => {
     }
     expect(fleetTools("user", true, false, ["list_fleet", "create_group"])).toEqual(
       all.filter((name) => name !== "list_fleet" && name !== "create_group"),
-    );
+    ); // A bot alone in its space has no fleet to manage.
+    expect(fleetTools("user", true, false, undefined, false)).toEqual([]);
+    expect(fleetTools("follow_up", true, true, undefined, false)).toEqual([]);
   });
 
   it("offers end_call on a hang-up run so it can title the call", () => {
@@ -1458,6 +1462,7 @@ describe("userTurnInstructions", () => {
       fleetManagement: boolean,
       followUpFromUser = false,
       disabledBuiltinTools?: string[],
+      otherBotsInSpace = true,
     ) =>
       userTurnInstructions({
         ...base,
@@ -1479,6 +1484,7 @@ describe("userTurnInstructions", () => {
             semanticMemoryEnabled: false,
             messagingChannelRun: false,
             fleetManagement,
+            otherBotsInSpace,
             followUpFromUser,
             disabledBuiltinTools,
           }),
@@ -1506,6 +1512,7 @@ describe("userTurnInstructions", () => {
     expect(clauseFor("user", false)).toBeUndefined();
     expect(clauseFor("bot_message", true)).toBeUndefined();
     expect(clauseFor("follow_up", true, false)).toBeUndefined();
+    expect(clauseFor("user", true, false, undefined, false)).toBeUndefined();
   });
 
   it("stops telling the model to use a disabled web tool", () => {
@@ -1854,6 +1861,7 @@ describe("createRunExecutor", () => {
         cloudAgentEnabled: true,
         messagingChannelRun: false,
         fleetManagement: true,
+        otherBotsInSpace: true,
         disabledBuiltinTools,
       })
         .map((tool) => tool.name)

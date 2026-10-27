@@ -5,6 +5,7 @@ import type {
   ConnectorTool,
 } from "@rakazo/adapter-kit";
 import { MEMORY_REVISION_CONFLICT_ERROR } from "@rakazo/adapter-kit";
+import { FLEET_TOOL_NAMES } from "@rakazo/contracts";
 import type { ActionApprovalRule } from "@rakazo/core";
 import { inboundRoutineBlock } from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
@@ -84,6 +85,7 @@ function fixture({
   advanceRevisionAfterRead = false,
   fleetManagement = false,
   fleetBots = [] as { id: string; name: string }[],
+  otherBotsInSpace = true,
   secondResource = false,
   routines = [] as { name: string; prompt: string }[],
 }: {
@@ -95,6 +97,8 @@ function fixture({
   fleetManagement?: boolean;
   /** Other active bots of the same user, found by id or exact name. */
   fleetBots?: { id: string; name: string }[];
+  /** Another active bot shares the space, so there is a fleet to manage. */
+  otherBotsInSpace?: boolean;
   selfUpdateInstructions?: boolean;
   parallelCalls?: boolean;
   sourceRole?: string;
@@ -213,6 +217,7 @@ function fixture({
   const liveBot = { fleetManagement };
   let outsideSteering = false;
   let offeredTools: string[] = [];
+  let offeredInstructions = "";
   const prisma = {
     user: { findUnique: vi.fn(async () => null) },
     run: {
@@ -257,6 +262,7 @@ function fixture({
         );
       }),
       findUnique: vi.fn(async () => ({ ...liveBot })),
+      findFirst: vi.fn(async () => (otherBotsInSpace ? { id: "peer-1" } : null)),
     },
     attempt: {
       create: vi.fn(async () => ({ id: "attempt-1" })),
@@ -337,6 +343,7 @@ function fixture({
   };
   const runtimeRun = vi.fn(async function* (request: AgentRunRequest) {
     offeredTools = request.tools.map((tool) => tool.name);
+    offeredInstructions = request.instructions;
     const executeCall = async (call: (typeof calls)[number]) => {
       const result = call.name
         ? await request.executeTool!(call.name, call.args, call.executionId)
@@ -443,6 +450,8 @@ function fixture({
       outsideSteering = value;
     },
     offeredTools: () => offeredTools,
+    offeredInstructions: () => offeredInstructions,
+    findOtherBot: prisma.bot.findFirst,
     cancelAtInstructionCommit() {
       transactionalPrisma.$queryRaw.mockImplementation(async (...values: unknown[]) => {
         if (String(values[0]).includes("FROM threads")) run.status = "cancelled";
@@ -1194,6 +1203,27 @@ describe("bot management tool gating", () => {
     expect(f.offeredTools()).toContain("list_fleet");
     expect(f.results).toEqual([switchRejection]);
     expect(f.effects).toEqual([]);
+  });
+
+  it("offers no bot management tools or rules to a bot alone in its space", async () => {
+    const alone = fixture({ name: "list_fleet", builtin: true, fleetManagement: true });
+    await alone.run();
+    expect(alone.offeredTools()).toContain("list_fleet");
+    expect(alone.offeredInstructions()).toContain("Bot management tools:");
+
+    const lone = fixture({
+      name: "list_fleet",
+      builtin: true,
+      fleetManagement: true,
+      otherBotsInSpace: false,
+    });
+    await lone.run();
+    expect(lone.findOtherBot).toHaveBeenCalledWith({
+      where: { userId: "user-1", spaceId: "space-1", archivedAt: null, id: { not: "bot-1" } },
+      select: { id: true },
+    });
+    for (const name of FLEET_TOOL_NAMES) expect(lone.offeredTools()).not.toContain(name);
+    expect(lone.offeredInstructions()).not.toContain("Bot management tools:");
   });
 
   it.each(["bot_message", "messaging", "spawn", "tickets", "webhook", "routine"])(
