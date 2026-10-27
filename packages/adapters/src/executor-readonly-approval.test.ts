@@ -14,6 +14,7 @@ import { createPendingSteeringRun, sendUserMessage } from "@rakazo/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isApprovalPausedResult } from "./approval-effect.js";
 import { MAX_SHARED_MEMORY_CHARS } from "./builtin-tools.js";
+import type * as ChildBotsModule from "./child-bots.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
 import { FakeWebProvider } from "./fake-web.js";
@@ -35,6 +36,13 @@ const createFleetGroupMock = vi.hoisted(() => vi.fn());
 vi.mock("./fleet-tools.js", async (importOriginal) => ({
   ...(await importOriginal<typeof FleetToolsModule>()),
   createFleetGroup: createFleetGroupMock,
+}));
+
+// Creating a bot needs tables this fixture does not mock; only what the run offers next is under test.
+const spawnBotMock = vi.hoisted(() => vi.fn());
+vi.mock("./child-bots.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof ChildBotsModule>()),
+  spawnBot: spawnBotMock,
 }));
 
 const reviewMock = vi.fn();
@@ -341,7 +349,9 @@ function fixture({
     fetchedUrls.push(request.url);
     return fakeFetch(request, context);
   };
+  let lastRequest: AgentRunRequest | undefined;
   const runtimeRun = vi.fn(async function* (request: AgentRunRequest) {
+    lastRequest = request;
     offeredTools = request.tools.map((tool) => tool.name);
     offeredInstructions = request.instructions;
     const executeCall = async (call: (typeof calls)[number]) => {
@@ -451,6 +461,7 @@ function fixture({
     },
     offeredTools: () => offeredTools,
     offeredInstructions: () => offeredInstructions,
+    unlockedTools: () => lastRequest?.unlockedTools?.(),
     findOtherBot: prisma.bot.findFirst,
     cancelAtInstructionCommit() {
       transactionalPrisma.$queryRaw.mockImplementation(async (...values: unknown[]) => {
@@ -1224,6 +1235,67 @@ describe("bot management tool gating", () => {
     });
     for (const name of FLEET_TOOL_NAMES) expect(lone.offeredTools()).not.toContain(name);
     expect(lone.offeredInstructions()).not.toContain("Bot management tools:");
+  });
+
+  it("offers a lone bot the bot management tools once it creates its first bot in the run", async () => {
+    const lone = () =>
+      fixture({
+        name: "spawn_bot",
+        builtin: true,
+        fleetManagement: true,
+        otherBotsInSpace: false,
+        skipApprovals: true,
+      });
+    spawnBotMock.mockReset();
+    const failed = lone();
+    spawnBotMock.mockResolvedValueOnce({ error: "That name is taken." });
+    failed.setCalls([{ args: { name: "Research" }, executionId: "call-1" }]);
+    await failed.run();
+    expect(failed.unlockedTools()).toBeUndefined();
+
+    const spawned = lone();
+    spawnBotMock.mockResolvedValueOnce({ botId: "bot-2", name: "Research" });
+    spawned.setCalls([{ args: { name: "Research" }, executionId: "call-1" }]);
+    await spawned.run();
+    expect(spawnBotMock).toHaveBeenCalledTimes(2);
+    expect(spawned.offeredTools()).not.toContain("list_fleet");
+    const unlocked = spawned.unlockedTools();
+    expect(unlocked?.tools.map((tool) => tool.name).sort()).toEqual([...FLEET_TOOL_NAMES].sort());
+    expect(unlocked?.instructions).toContain("Bot management tools:");
+    expect(unlocked?.instructions).toContain("do that now; otherwise stop.");
+  });
+
+  it("unlocks only the bot management tools the owner left on, and none on runs they did not start", async () => {
+    spawnBotMock.mockReset();
+    const trimmed = fixture({
+      name: "spawn_bot",
+      builtin: true,
+      fleetManagement: true,
+      otherBotsInSpace: false,
+      skipApprovals: true,
+      disabledBuiltinTools: ["create_group"],
+    });
+    spawnBotMock.mockResolvedValueOnce({ botId: "bot-2", name: "Research" });
+    trimmed.setCalls([{ args: { name: "Research" }, executionId: "call-1" }]);
+    await trimmed.run();
+    const names = trimmed.unlockedTools()?.tools.map((tool) => tool.name);
+    expect(names).toContain("list_fleet");
+    expect(names).not.toContain("create_group");
+
+    const routine = fixture({
+      name: "spawn_bot",
+      builtin: true,
+      fleetManagement: true,
+      otherBotsInSpace: false,
+      skipApprovals: true,
+      trigger: "routine",
+    });
+    spawnBotMock.mockResolvedValueOnce({ botId: "bot-3", name: "Writer" });
+    routine.setCalls([{ args: { name: "Writer" }, executionId: "call-1" }]);
+    await routine.run();
+    expect(routine.unlockedTools()).toBeUndefined();
+    // Both creations ran, so only the run's trigger kept the routine's tools locked.
+    expect(spawnBotMock).toHaveBeenCalledTimes(2);
   });
 
   it.each(["bot_message", "messaging", "spawn", "tickets", "webhook", "routine"])(

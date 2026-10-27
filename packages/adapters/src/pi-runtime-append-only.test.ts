@@ -117,7 +117,7 @@ function stream(message: AssistantMessage) {
  * does: it signs every block with the request's prefix and rejects a request that replays a
  * block after anything before it changed.
  */
-function bindingProvider(toolCalls: number) {
+function bindingProvider(toolCalls: number, toolNames: string[] = []) {
   const contexts: Context[] = [];
   const rejected: number[] = [];
   providerState.stream.mockImplementation((_model: unknown, context: Context) => {
@@ -143,7 +143,12 @@ function bindingProvider(toolCalls: number) {
         step < toolCalls
           ? [
               thinking,
-              { type: "toolCall", id: `call-${step}`, name: "fetch_logs", arguments: { step } },
+              {
+                type: "toolCall",
+                id: `call-${step}`,
+                name: toolNames[step] ?? "fetch_logs",
+                arguments: { step },
+              },
             ]
           : [thinking, { type: "text", text: "Done." }],
       ),
@@ -248,5 +253,30 @@ describe("Pi runtime transcript sent to a provider that binds thinking to its co
       ),
     ).toHaveLength(toolCalls);
     expect(JSON.stringify(last)).not.toContain("truncated");
+  });
+
+  it("adds tools a call unlocked from the next turn without changing the earlier transcript", async () => {
+    const { contexts, rejected } = bindingProvider(2, ["fetch_logs", "fetch_traces"]);
+    const input = request();
+    const traces = { ...input.tools[0]!, name: "fetch_traces", description: "Fetch traces." };
+    input.unlockedTools = () =>
+      vi.mocked(input.executeTool!).mock.calls.length
+        ? { tools: [...input.tools, traces], instructions: "Trace rules." }
+        : undefined;
+
+    await run(input);
+
+    expect(rejected).toEqual([]);
+    const declared = (context: Context) =>
+      context.messages.flatMap((message) =>
+        message.role === "system" ? (message.toolsAdded ?? []).map((tool) => tool.name) : [],
+      );
+    expect(declared(contexts[0]!)).toEqual(["fetch_logs"]);
+    expect(declared(contexts[1]!)).toEqual(["fetch_logs", "fetch_traces"]);
+    expect(JSON.stringify(contexts[2]!.messages).split("Trace rules.")).toHaveLength(2);
+    expect(vi.mocked(input.executeTool!).mock.calls.map(([name]) => name)).toEqual([
+      "fetch_logs",
+      "fetch_traces",
+    ]);
   });
 });

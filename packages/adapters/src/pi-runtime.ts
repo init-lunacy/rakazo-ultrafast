@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
+import type {
+  AgentContext,
+  AgentLoopTurnUpdate,
+  AgentTool,
+  AgentToolResult,
+} from "@earendil-works/pi-agent-core";
 import { Agent } from "@earendil-works/pi-agent-core";
 import type {
   Api,
@@ -502,10 +507,11 @@ export class PiAgentRuntime implements AgentRuntime {
               turnSignal,
             );
           },
-          prepareNextTurnWithContext: async () => {
-            if (!request.claimSteering) return undefined;
+          prepareNextTurnWithContext: async (turn) => {
+            const update = unlockedToolsUpdate(request, turn.context, host, tools);
+            if (!request.claimSteering) return update;
             const steering = await request.claimSteering([...seenSteeringIds]);
-            if (steering.length === 0) return undefined;
+            if (steering.length === 0) return update;
             seenSteeringIds.push(...steering.map((item) => item.id));
             for (const item of steering) representedHistoryIds.add(item.messageId);
             for (const item of steering) {
@@ -516,7 +522,7 @@ export class PiAgentRuntime implements AgentRuntime {
                 timestamp: Date.now(),
               });
             }
-            return undefined;
+            return update;
           },
           initialState: {
             systemPrompt,
@@ -1079,6 +1085,31 @@ export function modelsForRequest(
     });
   }
   return catalogModels();
+}
+
+/** Offer tools a call unlocked this run from the next turn; `offered` tracks every run tool. */
+function unlockedToolsUpdate(
+  request: AgentRunRequest,
+  context: AgentContext,
+  host: ToolHost,
+  offered: AgentTool[],
+): AgentLoopTurnUpdate | undefined {
+  const unlocked = request.unlockedTools?.();
+  if (!unlocked) return undefined;
+  const names = new Set(offered.map((tool) => tool.name));
+  const added = toAgentTools(
+    unlocked.tools.filter((tool) => !names.has(tool.name)),
+    host,
+  );
+  if (added.length === 0) return undefined;
+  offered.push(...added);
+  return {
+    // The loop declares the new tools to the model in a system message before the next request.
+    context: { ...context, tools: [...(context.tools ?? []), ...added] },
+    messages: unlocked.instructions
+      ? [{ role: "system", content: unlocked.instructions, timestamp: Date.now() }]
+      : [],
+  };
 }
 
 function toAgentTools(toolDefs: readonly ConnectorTool[], host: ToolHost): AgentTool[] {

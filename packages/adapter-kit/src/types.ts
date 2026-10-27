@@ -524,6 +524,11 @@ export interface AgentRunRequest {
   onToolCompleted?: (completion: AgentToolCompletion) => Promise<void> | void;
   /** Atomically claim durable user steering at the runtime's next safe turn boundary. */
   claimSteering?: (seenIds: string[]) => Promise<AgentSteeringMessage[]>;
+  /**
+   * Tools a tool call unlocked mid-run, offered from the next turn with their guidance.
+   * Checked between turns; names already offered are ignored.
+   */
+  unlockedTools?: () => { tools: ConnectorTool[]; instructions?: string } | undefined;
 }
 
 export interface ScriptedTurn {
