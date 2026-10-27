@@ -118,14 +118,22 @@ describe("usage ledger", () => {
     const transaction = vi.fn();
     const prisma = client(createMany, transaction);
     const usage = { type: "usage" as const, provider: "fixture", model: "test" };
-    await recordUsage(prisma, { ...usage, callId: "byok-call", inputTokens: 1, outputTokens: 1 }, {
-      spaceId: "space-fixture",
-      userId: "user-fixture",
-    });
-    await recordUsage(prisma, { ...usage, inputTokens: 1, outputTokens: 1 }, {
-      spaceId: "space-fixture",
-      userId: "user-fixture",
-    });
+    await recordUsage(
+      prisma,
+      { ...usage, callId: "byok-call", inputTokens: 1, outputTokens: 1 },
+      {
+        spaceId: "space-fixture",
+        userId: "user-fixture",
+      },
+    );
+    await recordUsage(
+      prisma,
+      { ...usage, inputTokens: 1, outputTokens: 1 },
+      {
+        spaceId: "space-fixture",
+        userId: "user-fixture",
+      },
+    );
     expect(createMany).toHaveBeenCalledTimes(2);
     expect(transaction).not.toHaveBeenCalled();
   });

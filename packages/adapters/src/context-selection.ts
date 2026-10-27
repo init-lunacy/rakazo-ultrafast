@@ -96,8 +96,7 @@ interface TextMeasure {
   units: number;
   bytes: number;
 }
-const tokens = (measure: TextMeasure) =>
-  Math.min(Math.ceil(measure.units / 20), measure.bytes);
+const tokens = (measure: TextMeasure) => Math.min(Math.ceil(measure.units / 20), measure.bytes);
 function measureText(text: string): TextMeasure {
   let units = 0;
   let previous = 0;
