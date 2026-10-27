@@ -89,7 +89,17 @@ function imageBlocks(value: unknown): object[] {
  * tokenizers never exceed one token per UTF-8 byte, so that bounds the estimate.
  */
 export function estimateTextTokens(text: string): number {
-  let total = 0;
+  return tokens(measureText(text));
+}
+/** Twentieths of a token, so the measures of adjacent JSON pieces add up exactly. */
+interface TextMeasure {
+  units: number;
+  bytes: number;
+}
+const tokens = (measure: TextMeasure) =>
+  Math.min(Math.ceil(measure.units / 20), measure.bytes);
+function measureText(text: string): TextMeasure {
+  let units = 0;
   let previous = 0;
   for (let index = 0; index < text.length; index++) {
     const code = text.charCodeAt(index);
@@ -102,19 +112,85 @@ export function estimateTextTokens(text: string): number {
           : code >= 48 && code <= 57
             ? 3
             : 0;
-    if (code >= 128) total += code < 0x0590 ? 0.6 : 1.25;
-    else if (kind === 3) total += 1;
-    else if (kind === 0 && code > 32 && code < 127) total += 0.4;
-    else total += 0.3;
+    if (code >= 128) units += code < 0x0590 ? 12 : 25;
+    else if (kind === 3) units += 20;
+    else if (kind === 0 && code > 32 && code < 127) units += 8;
+    else units += 6;
     if (
       (previous === 1 && kind === 2) ||
       (previous === 3 && (kind === 1 || kind === 2)) ||
       ((previous === 1 || previous === 2) && kind === 3)
     )
-      total += 1;
+      units += 20;
     previous = kind;
   }
-  return Math.min(Math.ceil(total), Buffer.byteLength(text, "utf8"));
+  return { units, bytes: Buffer.byteLength(text, "utf8") };
+}
+// Every model call re-estimates the whole transcript, so long strings keep their measure.
+const measuredStrings = new Map<string, TextMeasure>();
+let measuredLength = 0;
+function measureString(value: string): TextMeasure {
+  if (value.length < 128) return measureText(JSON.stringify(value));
+  let measure = measuredStrings.get(value);
+  if (measure) {
+    measuredStrings.delete(value);
+  } else {
+    measure = measureText(JSON.stringify(value));
+    measuredLength += value.length;
+    for (const [key] of measuredStrings) {
+      if (measuredLength <= 16_000_000) break;
+      measuredStrings.delete(key);
+      measuredLength -= key.length;
+    }
+  }
+  measuredStrings.set(value, measure);
+  return measure;
+}
+const IMAGE_PLACEHOLDER = measureText(JSON.stringify({ type: "image" }));
+/**
+ * The measure of `JSON.stringify(value)` with `images` written as placeholders, built from its
+ * pieces. Each piece meets its neighbor at JSON punctuation, which never adds a word boundary.
+ */
+function measureJson(
+  value: unknown,
+  images: Set<object>,
+  open: Set<object>,
+): TextMeasure | undefined {
+  if (typeof value === "string") return measureString(value);
+  if (!value || typeof value !== "object") {
+    const serialized = JSON.stringify(value);
+    return serialized === undefined ? undefined : measureText(serialized);
+  }
+  if (images.has(value)) return IMAGE_PLACEHOLDER;
+  if (typeof (value as { toJSON?: unknown }).toJSON === "function") {
+    const serialized = JSON.stringify(value, (_key, item: unknown) =>
+      item && typeof item === "object" && images.has(item) ? { type: "image" } : item,
+    );
+    return serialized === undefined ? undefined : measureText(serialized);
+  }
+  if (open.has(value)) throw new TypeError("Converting circular structure to JSON");
+  open.add(value);
+  // Brackets plus a separator per item; each punctuation mark is 8 units and 1 byte.
+  let units = 16;
+  let bytes = 2;
+  let items = 0;
+  const add = (measure: TextMeasure) => {
+    units += measure.units + (items > 0 ? 8 : 0);
+    bytes += measure.bytes + (items > 0 ? 1 : 0);
+    items++;
+  };
+  if (Array.isArray(value)) {
+    for (const item of value) add(measureJson(item, images, open) ?? measureText("null"));
+  } else {
+    for (const key of Object.keys(value)) {
+      const item = measureJson((value as Record<string, unknown>)[key], images, open);
+      if (!item) continue;
+      const name = measureString(key);
+      add({ units: name.units + 8 + item.units, bytes: name.bytes + 1 + item.bytes });
+    }
+  }
+  open.delete(value);
+  return { units, bytes };
 }
 /** Text estimate plus framing. Actual user/tool image blocks receive an adapter estimate;
  * images without one keep a serialized byte count, and image-shaped tool arguments remain text.
@@ -138,11 +214,8 @@ export function estimateContextTokens(
         ? estimate
         : Buffer.byteLength(JSON.stringify(image), "utf8");
   }
-  const serialized =
-    JSON.stringify(value, (_key, item: unknown) =>
-      item && typeof item === "object" && images.has(item) ? { type: "image" } : item,
-    ) ?? "";
-  return estimateTextTokens(serialized) + imageTotal + 16;
+  const text = measureJson(value, images, new Set()) ?? { units: 0, bytes: 0 };
+  return tokens(text) + imageTotal + 16;
 }
 function fixedTokens(budget: ContextBudget): number {
   for (const value of [

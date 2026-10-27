@@ -778,3 +778,29 @@ describe("text token estimate", () => {
     expect(estimateTextTokens("🙂🙂")).toBe(5);
   });
 });
+describe("context token estimate", () => {
+  it("equals the text estimate of the serialized value, repeated or not", () => {
+    const long = `Product 42 – Widget Pro [ref=e7] /products/42?sku=AB42X9\n`.repeat(40);
+    const values: unknown[] = [
+      "",
+      long,
+      [long, long, 7, null, undefined, () => 1, true],
+      { a1: "b2", skipped: undefined, fn: () => 1, nested: { list: [1.5, -2e21, "x"] } },
+      { role: "toolResult", toolName: "browser_snapshot", content: [{ type: "text", text: long }] },
+      { at: new Date(0), unicode: "naïve 東京 🙂", camelCase: "fooBar9z" },
+      [[], {}, [[{}]]],
+    ];
+    for (const value of values) {
+      for (let pass = 0; pass < 2; pass++) {
+        expect(estimateContextTokens(value)).toBe(
+          estimateTextTokens(JSON.stringify(value) ?? "") + 16,
+        );
+      }
+    }
+  });
+  it("rejects circular values like JSON does", () => {
+    const value: Record<string, unknown> = {};
+    value.self = value;
+    expect(() => estimateContextTokens(value)).toThrow(TypeError);
+  });
+});
