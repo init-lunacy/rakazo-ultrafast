@@ -2,7 +2,7 @@ import { subscribe, unsubscribe } from "node:diagnostics_channel";
 
 /** One outgoing HTTP request, in epoch milliseconds. */
 export type RequestSpan = {
-  kind: "model" | "computer" | "local";
+  kind: "model" | "computer" | "other";
   route: string;
   startMs: number;
   firstByteMs: number | null;
@@ -26,23 +26,32 @@ type Window = { startMs: number; endMs: number };
 
 const LOOPBACK = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/;
 
-export function classifyRequest(origin: string, path: string): Pick<RequestSpan, "kind" | "route"> {
-  if (!LOOPBACK.test(origin)) return { kind: "model", route: new URL(origin).host };
-  // The computer supervisor's routes are /computers/<id>/<action>.
+/**
+ * The computer supervisor's routes are /computers/<id>/<action>, wherever it runs. With the
+ * model's origin known, only that origin is the model; without it (a provider's default
+ * endpoint), any non-loopback host is.
+ */
+export function classifyRequest(
+  origin: string,
+  path: string,
+  modelOrigin?: string,
+): Pick<RequestSpan, "kind" | "route"> {
   const computer = /^\/computers\/[^/]+\/([^/?]+)/.exec(path);
   if (computer) return { kind: "computer", route: computer[1]! };
-  return { kind: "local", route: path.split("?")[0]! };
+  const host = origin.replace(/^[a-z]+:\/\//, "");
+  const model = modelOrigin ? origin === modelOrigin : !LOOPBACK.test(origin);
+  return model ? { kind: "model", route: host } : { kind: "other", route: host };
 }
 
 /** Records every request made through fetch until stopped. Trials run one at a time. */
-export function recordRequests() {
+export function recordRequests(modelOrigin?: string) {
   const spans: RequestSpan[] = [];
   const open = new Map<object, RequestSpan>();
   type Message = { request: { origin?: unknown; path?: unknown } };
   const onCreate = (message: unknown) => {
     const { request } = message as Message;
     const span: RequestSpan = {
-      ...classifyRequest(String(request.origin ?? ""), String(request.path ?? "")),
+      ...classifyRequest(String(request.origin ?? ""), String(request.path ?? ""), modelOrigin),
       startMs: Date.now(),
       firstByteMs: null,
       endMs: null,
@@ -123,7 +132,8 @@ export function stepTimings(
     entry.ms += durationMs;
     tools[name] = entry;
   }
-  const taskMs = runs.reduce((total, run) => total + (run.endMs - run.startMs), 0);
+  // Runs that overlap count their shared time once, like the requests inside them.
+  const taskMs = covered(runs, runs);
   const modelMs = covered(model, runs);
   return {
     model: {

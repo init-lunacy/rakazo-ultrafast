@@ -100,7 +100,6 @@ export async function runTrial(
   let seededThreadId: string | undefined;
   const runIds: string[] = [];
   const timings: TrialTimings = { setupMs: null, bootMs: null, taskMs: null };
-  const requests = recordRequests();
   const fixture = options.computerFixture;
   const asHarness = async <T>(label: string, work: () => Promise<T>) => {
     try {
@@ -163,6 +162,10 @@ export async function runTrial(
             : row.operationKind,
       });
   };
+  const { baseUrl } = options.connection;
+  const requests = recordRequests(
+    baseUrl && URL.canParse(baseUrl) ? new URL(baseUrl).origin : undefined,
+  );
   try {
     handles = await options.createApp(services, messaging, { notifications, realtime });
     const prisma = asSystem(handles.prisma);

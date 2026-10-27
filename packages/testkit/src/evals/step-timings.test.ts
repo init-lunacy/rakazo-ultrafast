@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 import type { RequestSpan } from "./step-timings.js";
 import { classifyRequest, recordRequests, stepTimings } from "./step-timings.js";
 
-it("tells model, computer and other local requests apart", () => {
+it("tells model, computer and other requests apart", () => {
   expect(classifyRequest("https://api.example.test", "/v1/messages")).toEqual({
     kind: "model",
     route: "api.example.test",
@@ -13,10 +13,36 @@ it("tells model, computer and other local requests apart", () => {
     kind: "computer",
     route: "browser",
   });
-  expect(classifyRequest("http://localhost:3100", "/health?x=1")).toEqual({
-    kind: "local",
-    route: "/health",
+  expect(classifyRequest("https://supervisor.example.test", "/computers/c1/exec")).toEqual({
+    kind: "computer",
+    route: "exec",
   });
+  expect(classifyRequest("http://localhost:3100", "/health?x=1")).toEqual({
+    kind: "other",
+    route: "localhost:3100",
+  });
+  expect(classifyRequest("", "/")).toEqual({ kind: "model", route: "" });
+});
+
+it("counts only the model's own origin as model time when it is known", () => {
+  const model = "http://127.0.0.1:11434";
+  expect(classifyRequest(model, "/v1/chat/completions", model).kind).toBe("model");
+  expect(classifyRequest("https://search.example.test", "/q", model)).toEqual({
+    kind: "other",
+    route: "search.example.test",
+  });
+});
+
+it("counts time shared by overlapping runs once", () => {
+  const timings = stepTimings(
+    [],
+    [
+      { startMs: 0, endMs: 100 },
+      { startMs: 50, endMs: 150 },
+    ],
+  );
+  expect(timings.otherMs).toBe(150);
+  expect(timings.engineMs).toBe(150);
 });
 
 it("splits task time into model, computer and the rest, inside the runs only", () => {
