@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Prisma, PrismaClient } from "./generated/prisma/client.js";
+import type { Prisma } from "./generated/prisma/client.js";
 import { recordUsage } from "./usage.js";
 
-function client(createMany: ReturnType<typeof vi.fn>) {
+function client(createMany: ReturnType<typeof vi.fn>, transaction = vi.fn()) {
   const tx = { usageRecord: { createMany }, modelCreditEntry: { findUnique: async () => null } };
   return {
-    $transaction: async (work: (tx: unknown) => Promise<unknown>) => work(tx),
-  } as unknown as Pick<PrismaClient, "$transaction">;
+    ...tx,
+    $transaction: async (work: (tx: unknown) => Promise<unknown>) => {
+      transaction();
+      return work(tx);
+    },
+  } as unknown as Parameters<typeof recordUsage>[0];
 }
 
 describe("usage ledger", () => {
@@ -108,5 +112,21 @@ describe("usage ledger", () => {
       costUsd: null,
     });
     expect(data?.runId).toBeUndefined();
+  });
+  it("records usage without a transaction when the call reserved no credits", async () => {
+    const createMany = vi.fn(async () => ({ count: 1 }));
+    const transaction = vi.fn();
+    const prisma = client(createMany, transaction);
+    const usage = { type: "usage" as const, provider: "fixture", model: "test" };
+    await recordUsage(prisma, { ...usage, callId: "byok-call", inputTokens: 1, outputTokens: 1 }, {
+      spaceId: "space-fixture",
+      userId: "user-fixture",
+    });
+    await recordUsage(prisma, { ...usage, inputTokens: 1, outputTokens: 1 }, {
+      spaceId: "space-fixture",
+      userId: "user-fixture",
+    });
+    expect(createMany).toHaveBeenCalledTimes(2);
+    expect(transaction).not.toHaveBeenCalled();
   });
 });
