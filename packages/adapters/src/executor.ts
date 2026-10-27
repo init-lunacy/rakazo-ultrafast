@@ -8246,7 +8246,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 spawnedThisRun && fleetToolsAfterSpawn.length
                   ? {
                       tools: fleetToolsAfterSpawn,
-                      instructions: fleetClause(offeredFleetTools(fleetToolsAfterSpawn)),
+                      instructions: [
+                        "Bot management tools are now available. If the user also asked to group, schedule, re-model or instruct the bot you created, do that now; otherwise stop.",
+                        fleetClause(offeredFleetTools(fleetToolsAfterSpawn)),
+                      ]
+                        .filter(Boolean)
+                        .join(" "),
                     }
                   : undefined,
               claimSteering: async (seenIds) => {

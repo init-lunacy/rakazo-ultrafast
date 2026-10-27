@@ -1254,13 +1254,43 @@ describe("bot management tool gating", () => {
 
     const spawned = lone();
     spawnBotMock.mockResolvedValueOnce({ botId: "bot-2", name: "Research" });
-    expect(spawned.unlockedTools()).toBeUndefined();
     spawned.setCalls([{ args: { name: "Research" }, executionId: "call-1" }]);
     await spawned.run();
     expect(spawned.offeredTools()).not.toContain("list_fleet");
     const unlocked = spawned.unlockedTools();
     expect(unlocked?.tools.map((tool) => tool.name).sort()).toEqual([...FLEET_TOOL_NAMES].sort());
     expect(unlocked?.instructions).toContain("Bot management tools:");
+    expect(unlocked?.instructions).toContain("do that now; otherwise stop.");
+  });
+
+  it("unlocks only the bot management tools the owner left on, and none on runs they did not start", async () => {
+    const trimmed = fixture({
+      name: "spawn_bot",
+      builtin: true,
+      fleetManagement: true,
+      otherBotsInSpace: false,
+      skipApprovals: true,
+      disabledBuiltinTools: ["create_group"],
+    });
+    spawnBotMock.mockResolvedValueOnce({ botId: "bot-2", name: "Research" });
+    trimmed.setCalls([{ args: { name: "Research" }, executionId: "call-1" }]);
+    await trimmed.run();
+    const names = trimmed.unlockedTools()?.tools.map((tool) => tool.name);
+    expect(names).toContain("list_fleet");
+    expect(names).not.toContain("create_group");
+
+    const routine = fixture({
+      name: "spawn_bot",
+      builtin: true,
+      fleetManagement: true,
+      otherBotsInSpace: false,
+      skipApprovals: true,
+      trigger: "routine",
+    });
+    spawnBotMock.mockResolvedValueOnce({ botId: "bot-3", name: "Writer" });
+    routine.setCalls([{ args: { name: "Writer" }, executionId: "call-1" }]);
+    await routine.run();
+    expect(routine.unlockedTools()).toBeUndefined();
   });
 
   it.each(["bot_message", "messaging", "spawn", "tickets", "webhook", "routine"])(
