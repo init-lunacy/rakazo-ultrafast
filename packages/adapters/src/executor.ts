@@ -4431,7 +4431,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
         const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
-        // Decided at run start: a bot this run spawns is offered fleet tools from the next run.
+        // A bot this run spawns unlocks the fleet tools from the next turn (see unlockedTools).
         const otherBotsInSpace =
           bot.fleetManagement && ownerStartedRun
             ? Boolean(
@@ -4453,28 +4453,29 @@ export function createRunExecutor(deps: ExecutorDeps) {
         }
         const actionOfferSettings = parseActionOfferSettings(userPreferences?.actionOfferSettings);
 
+        const builtinToolOptions = {
+          ticketBoardEnabled: deps.ticketBoardEnabled,
+          phoneCallsEnabled: deps.phoneCallsEnabled,
+          historyRetrievalEnabled: contextStrategy !== "current",
+          graphicalToolsAllowed,
+          pageBrowserAllowed,
+          groupId: thread.groupId,
+          trigger: run.trigger,
+          semanticMemoryEnabled,
+          semanticMemoryForgets: Boolean(semanticMemory?.forget),
+          mediaImagesEnabled: Boolean(deps.artifacts && mediaGeneration?.capabilities.images),
+          mediaVideoEnabled: Boolean(deps.artifacts && mediaGeneration?.capabilities.video),
+          cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
+          messagingChannelRun,
+          voiceCall,
+          disabledBuiltinTools: bot.disabledBuiltinTools,
+          fleetManagement: bot.fleetManagement,
+          otherBotsInSpace,
+          followUpFromUser: sourceMessage?.role === "user",
+          actionOffersEnabled: actionOfferSettings.enabled,
+        };
         const builtins = [
-          ...selectBuiltinToolsForRun({
-            ticketBoardEnabled: deps.ticketBoardEnabled,
-            phoneCallsEnabled: deps.phoneCallsEnabled,
-            historyRetrievalEnabled: contextStrategy !== "current",
-            graphicalToolsAllowed,
-            pageBrowserAllowed,
-            groupId: thread.groupId,
-            trigger: run.trigger,
-            semanticMemoryEnabled,
-            semanticMemoryForgets: Boolean(semanticMemory?.forget),
-            mediaImagesEnabled: Boolean(deps.artifacts && mediaGeneration?.capabilities.images),
-            mediaVideoEnabled: Boolean(deps.artifacts && mediaGeneration?.capabilities.video),
-            cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
-            messagingChannelRun,
-            voiceCall,
-            disabledBuiltinTools: bot.disabledBuiltinTools,
-            fleetManagement: bot.fleetManagement,
-            otherBotsInSpace,
-            followUpFromUser: sourceMessage?.role === "user",
-            actionOffersEnabled: actionOfferSettings.enabled,
-          }),
+          ...selectBuiltinToolsForRun(builtinToolOptions),
           // Cross-owner agent connections only exist for chat-linked bots.
           ...(hasMessagingIdentity &&
           bot.crossSpaceCommunication === true &&
@@ -4483,6 +4484,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ? agentConnectionTools.filter((tool) => !disabledBuiltinTools.has(tool.name))
             : []),
         ];
+        // A lone bot's first child makes the fleet tools useful within this same run.
+        const fleetToolsAfterSpawn =
+          bot.fleetManagement && ownerStartedRun && !otherBotsInSpace
+            ? selectBuiltinToolsForRun({ ...builtinToolOptions, otherBotsInSpace: true }).filter(
+                (tool) => FLEET_TOOL_NAMES_SET.has(tool.name),
+              )
+            : [];
+        let spawnedThisRun = false;
         const exposedConnectorTools = discovered.filter(
           (tool) => !builtinAgentTools.some((builtin) => builtin.name === tool.name),
         );
@@ -7492,6 +7501,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
             if ("error" in spawned) return finish(spawned);
             if (!(await persistEffectResult(spawned))) return uncertainEffectResult(name);
+            spawnedThisRun = true;
             try {
               await publishMessage(deps, run, "bot", [
                 {
@@ -8232,6 +8242,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   runSecrets,
                 );
               },
+              unlockedTools: () =>
+                spawnedThisRun && fleetToolsAfterSpawn.length
+                  ? {
+                      tools: fleetToolsAfterSpawn,
+                      instructions: fleetClause(offeredFleetTools(fleetToolsAfterSpawn)),
+                    }
+                  : undefined,
               claimSteering: async (seenIds) => {
                 const steering = await deps.events.claimSteering({
                   threadId: thread.id,
