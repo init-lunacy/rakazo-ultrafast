@@ -21,7 +21,6 @@ const UNPROTECTED_SPACE_MODELS = new Set([
   "MessagingLinkCode",
   "ModelCreditEntry",
   "NotificationPreference",
-  "SpaceBackupModel",
   "SpaceKey",
   "SpaceMember",
   "SpaceMemoryConfig",

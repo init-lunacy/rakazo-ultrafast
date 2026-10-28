@@ -31,7 +31,7 @@ export function assertComputerImage(image: string) {
 /** Serves the supervisor in this process. It reads process.env on import, so set that first. */
 export async function serveSupervisor() {
   // Deferred: importing the supervisor reads its environment and connects to Docker.
-  const { supervisorApp } = await import("../../../../infra/sandboxes/supervisor/src/index.js");
+  const { supervisorApp } = await import("@rakazo/sandbox-supervisor");
   const server = serve({ fetch: supervisorApp.fetch, hostname: "127.0.0.1", port: 0 });
   if (!server.listening) await once(server, "listening");
   const { port } = server.address() as AddressInfo;

@@ -110,6 +110,64 @@ test("live page helper preserves identity, masks passwords, and reports partial 
     await page.goto("http://insecure.test/");
     expect(await page.evaluate(() => window.isSecureContext)).toBe(false);
     expect(await command("snapshot")).toMatchObject({ ok: true, title: "Insecure fixture" });
+
+    // Saved passwords go only into password fields. A site can still reveal them normally.
+    await page.route("https://login.example.test/", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: `<title>Sign in</title><input aria-label="Email">
+          <input id="password" aria-label="Password" type="password">
+          <button onclick="const field = document.getElementById('password'); field.type = 'text';
+            requestAnimationFrame(() => { window.drawn = field.value; })">Show</button>`,
+      }),
+    );
+    await page.goto("https://login.example.test/");
+    const login = {
+      text: "fake-test-password",
+      origin: "https://login.example.test",
+      field: "password",
+    };
+    const signIn = await command("snapshot");
+    const refused = await command("act", {
+      actions: [{ kind: "fill", ref: ref(signIn, "Email"), ...login }],
+    });
+    expect(refused).toEqual({
+      ok: false,
+      completed: 0,
+      uncertain: false,
+      error: "A saved password can only be typed into a password field.",
+    });
+    await expect(page.getByLabel("Email")).toHaveValue("");
+    const filled = await command("act", {
+      actions: [
+        {
+          kind: "fill",
+          ref: ref(await command("snapshot"), "Password"),
+          ...login,
+        },
+      ],
+    });
+    expect(filled).toMatchObject({ ok: true, completed: 1 });
+    await expect(page.locator("#password")).toHaveValue(login.text);
+    const shown = await command("act", {
+      actions: [{ kind: "click", ref: ref(filled, "Show") }],
+    });
+    expect(shown).toMatchObject({ ok: true, completed: 1 });
+    await expect
+      .poll(() => page.evaluate(() => (window as { drawn?: string }).drawn))
+      .toBe(login.text);
+    await expect(page.locator("#password")).toHaveAttribute("type", "text");
+    await expect(page.locator("#password")).toHaveValue(login.text);
+    expect(JSON.stringify([refused, filled, shown])).not.toContain(login.text);
+    await page.goto(`http://127.0.0.1:${address.port}`);
+    const elsewhere = await command("act", {
+      actions: [{ kind: "fill", ref: ref(await command("snapshot"), "Name"), ...login }],
+    });
+    expect(elsewhere).toMatchObject({ ok: false, completed: 0, uncertain: false });
+    expect(elsewhere.error).toMatch(
+      /^Website logins can only be filled on HTTPS\. Open the saved site/,
+    );
+    expect(elsewhere).not.toHaveProperty("fallback");
     await page.goto(`http://127.0.0.1:${address.port}`);
     const other = await context.newPage();
     await other.setContent("<title>Other tab</title><button>Other action</button>");
@@ -363,6 +421,28 @@ const CODE_FIELDS = `<!doctype html><title>Code</title>
     });
   </script>`;
 
+// An email code and a text-message code side by side in one element, both built from the same
+// "Digit 1" to "Digit 6" boxes that move on by themselves.
+const TWO_CODES = `<!doctype html><title>Two codes</title><style>input { width: 2em }</style>
+  <div id="codes"></div>
+  <script>
+    const boxes = [];
+    for (const label of ["Email", "Text message"]) {
+      document.getElementById("codes").append(label + " ");
+      for (let i = 0; i < 6; i++) {
+        const box = document.createElement("input");
+        box.maxLength = 1;
+        box.setAttribute("aria-label", "Digit " + (i + 1));
+        boxes.push(box);
+        box.addEventListener("input", () => {
+          if (box.value && i < 5) boxes[boxes.indexOf(box) + 1].focus();
+        });
+        document.getElementById("codes").append(box);
+      }
+    }
+    for (const box of boxes.slice(0, 6)) box.value = "1";
+  </script>`;
+
 test("live page helper types codes as real key presses into one-box-per-digit fields", async () => {
   test.setTimeout(240_000);
   const profile = await mkdtemp(path.join(os.tmpdir(), "page-browser-test-"));
@@ -402,9 +482,11 @@ test("live page helper types codes as real key presses into one-box-per-digit fi
         contentType: "text/html",
         body: route.request().url().endsWith("/done")
           ? "<title>Signed in</title>"
-          : route.request().url().endsWith("/next")
-            ? '<title>Next</title><input aria-label="Next" autofocus>'
-            : CODE_FIELDS,
+          : route.request().url().endsWith("/two")
+            ? TWO_CODES
+            : route.request().url().endsWith("/next")
+              ? '<title>Next</title><input aria-label="Next" autofocus>'
+              : CODE_FIELDS,
       }),
     );
     const open = async () => {
@@ -583,6 +665,20 @@ test("live page helper types codes as real key presses into one-box-per-digit fi
     expect(await type("Digit 1", "482913")).toMatchObject({ ok: false, completed: 0 });
     expect(await code("right")).toBe("777777");
 
+    // Typing into the second of two codes in one element leaves the first one as it was.
+    await page.goto("https://code.example.test/two");
+    await refresh();
+    const second = elements.filter((element) => element.name === "Digit 1")[1]?.ref;
+    expect(second).toBeTruthy();
+    const typed = await command("act", {
+      actions: [{ kind: "type", ref: second, text: "482913" }],
+    });
+    expect(typed).toMatchObject({ ok: true, completed: 1 });
+    const digits = await page
+      .locator("#codes input")
+      .evaluateAll((boxes) => boxes.map((box) => (box as HTMLInputElement).value).join(""));
+    expect(digits).toBe("111111482913");
+
     // A widget that submits on its last digit: the step is done and the result is the next page.
     await open();
     expect(await type("submit 1", "482913")).toMatchObject({
@@ -590,6 +686,124 @@ test("live page helper types codes as real key presses into one-box-per-digit fi
       completed: 1,
       title: "Signed in",
     });
+  } finally {
+    await context?.close();
+    await rm(profile, { recursive: true, force: true });
+  }
+});
+
+test("live page helper types a purchase's card into a payment provider's frame only", async () => {
+  const profile = await mkdtemp(path.join(os.tmpdir(), "page-browser-card-"));
+  const merchant = "https://shop.example.test";
+  const cardForm = `<!doctype html><title>Card</title>
+    <input id="number" aria-label="Card number" autocomplete="cc-number" inputmode="numeric">
+    <input id="expiry" aria-label="Expiry" autocomplete="cc-exp">
+    <input id="cvc" aria-label="CVC" autocomplete="cc-csc">
+    <input id="postal" aria-label="ZIP" autocomplete="billing postal-code" maxlength="3">
+    <script>
+      for (const field of document.querySelectorAll("input")) field.addEventListener("input", (event) => {
+        if (!event.isTrusted) document.body.dataset.untrusted = "1";
+      });
+      const number = document.getElementById("number");
+      number.addEventListener("input", () => {
+        number.value = number.value.replace(/\\D/g, "").replace(/(\\d{4})(?=\\d)/g, "$1 ");
+      });
+      const expiry = document.getElementById("expiry");
+      expiry.addEventListener("input", () => {
+        const digits = expiry.value.replace(/\\D/g, "").slice(0, 4);
+        expiry.value = digits.length > 2 ? digits.slice(0, 2) + " / " + digits.slice(2) : digits;
+      });
+    </script>`;
+  const checkout = (frame: string) =>
+    `<!doctype html><title>Checkout</title><h1>Pay</h1>
+      <iframe src="${frame}" style="width:420px;height:220px;border:0"></iframe>`;
+  let context: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
+  try {
+    context = await chromium.launchPersistentContext(profile, {
+      headless: true,
+      // Payment frames run in their own renderer, as on any real checkout.
+      args: ["--remote-debugging-port=0", "--site-per-process"],
+    });
+    let port = "";
+    await expect(async () => {
+      port = (await readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0];
+      expect(port).toMatch(/^\d+$/);
+    }).toPass({ timeout: 5_000 });
+    async function command(name: string, args: Record<string, unknown> = {}) {
+      const { stdout } = await execute("python3", [helper, name, JSON.stringify(args)], {
+        env: { ...process.env, RAKAZO_CDP_PORT: port },
+        timeout: 30_000,
+      });
+      return JSON.parse(stdout);
+    }
+    // Fulfilled here: nothing reaches the real payment provider.
+    await context.route(/^https:\/\/(js\.stripe\.com|[a-z]+\.example\.test)\//, (route) => {
+      const url = new URL(route.request().url());
+      route.fulfill({
+        contentType: "text/html",
+        body: url.pathname.startsWith("/card")
+          ? cardForm
+          : checkout(
+              url.pathname === "/ads"
+                ? "https://ads.example.test/card"
+                : "https://js.stripe.com/card",
+            ),
+      });
+    });
+    const fill = (cardField: string, text: string) =>
+      command("act", {
+        actions: [{ kind: "fill", text, origin: merchant, field: "card", cardField }],
+      });
+    const page = context.pages()[0]!;
+    await page.goto(`${merchant}/checkout`);
+    const card = page.frameLocator("iframe").locator("body");
+    await expect(card.locator("#number")).toBeVisible();
+    const snapshot = await command("snapshot");
+    expect(snapshot.tree).toContain(
+      "Card fields are in a payment frame: use fill_card without ref.",
+    );
+    expect(snapshot.tree).not.toContain("Embedded frames require desktop tools.");
+
+    const number = "4242424242424242";
+    const filled = [
+      await fill("number", number),
+      await fill("expiry", "12/34"),
+      await fill("cvc", "123"),
+    ];
+    for (const result of filled) expect(result).toMatchObject({ ok: true, completed: 1 });
+    expect(JSON.stringify(filled)).not.toContain(number);
+    await expect(card.locator("#number")).toHaveValue("4242 4242 4242 4242");
+    await expect(card.locator("#expiry")).toHaveValue("12 / 34");
+    await expect(card.locator("#cvc")).toHaveValue("123");
+    await expect(card.locator("#number")).toHaveCSS("-webkit-text-security", "disc");
+    await expect(card).not.toHaveAttribute("data-untrusted", "1");
+
+    expect(await fill("postal_code", "94110")).toEqual({
+      ok: false,
+      completed: 0,
+      uncertain: false,
+      error: "This field didn't accept the card, so it was cleared.",
+    });
+    await expect(card.locator("#postal")).toHaveValue("");
+
+    await page.goto("https://elsewhere.example.test/checkout");
+    await expect(card.locator("#number")).toBeVisible();
+    expect(await fill("number", number)).toMatchObject({
+      ok: false,
+      completed: 0,
+      uncertain: false,
+      error: expect.stringMatching(/^The page is not on the merchant's site/),
+    });
+    await expect(card.locator("#number")).toHaveValue("");
+    await page.goto(`${merchant}/ads`);
+    await expect(card.locator("#number")).toBeVisible();
+    expect((await command("snapshot")).tree).toContain("Embedded frames require desktop tools.");
+    expect(await fill("number", number)).toMatchObject({
+      ok: false,
+      completed: 0,
+      error: expect.stringMatching(/^No field for this card detail/),
+    });
+    await expect(card.locator("#number")).toHaveValue("");
   } finally {
     await context?.close();
     await rm(profile, { recursive: true, force: true });

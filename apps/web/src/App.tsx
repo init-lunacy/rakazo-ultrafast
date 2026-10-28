@@ -2,7 +2,7 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import type { LinkFavicons } from "@rakazo/chat-ui/web";
 import { LinkFaviconsContext, RemoteImagesContext } from "@rakazo/chat-ui/web";
 import { analyticsScreen } from "@rakazo/core";
-import { Button, Skeleton } from "@rakazo/ui-web";
+import { Button } from "@rakazo/ui-web";
 import {
   Suspense,
   useEffect,
@@ -14,13 +14,16 @@ import {
 import { Navigate, Outlet, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
 import { LoadingState } from "./components/ai/primitives";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { PageLoading } from "./components/PageLoading";
 import { SubscriptionGate } from "./components/SubscriptionGate";
 import { authClient } from "./lib/auth";
 import { getTicketBoardEnabled, subscribeTicketBoardEnabled } from "./lib/bootstrap";
 import { desktopBridge } from "./lib/desktop";
+import { syncWebLogoAvatarIdentity } from "./lib/logo-avatar-activity";
 import { identifyMonitoringUser } from "./lib/monitoring";
 import { markAfterPaint, markOnce } from "./lib/performance";
 import { lazyComponent } from "./lib/preload-recovery";
+import { QueryUserProvider, setQueryUser } from "./lib/query";
 import { getRemoteImagesEnabled, subscribeRemoteImages } from "./lib/remote-images-preference";
 import { rpc } from "./lib/rpc";
 import {
@@ -53,6 +56,9 @@ const ArtifactsPage = lazyComponent(() =>
   import("./pages/Artifacts").then((module) => module.ArtifactsPage),
 );
 const BoardPage = lazyComponent(() => import("./pages/Board").then((module) => module.BoardPage));
+const NavLinkPage = lazyComponent(() =>
+  import("./pages/NavLinkPage").then((module) => module.NavLinkPage),
+);
 
 function SsoCallbackPage() {
   useEffect(() => {
@@ -89,17 +95,23 @@ export function App() {
   );
 }
 
+const MCP_OAUTH_CALLBACK_PATH = "/mcp/oauth/callback";
+
 function SessionApp() {
   const [searchParams] = useSearchParams();
+  const next = searchParams.get("next") ?? "";
+  // A connector sign-in started on another device lands here signed out; finish it after sign-in.
   const signInDestination =
-    searchParams.get("next") === "/integrations/setup" ? "/integrations/setup" : "/app";
+    next === "/integrations/setup" || next.startsWith(`${MCP_OAUTH_CALLBACK_PATH}?`)
+      ? next
+      : "/app";
   const ticketBoardEnabled = useSyncExternalStore(
     subscribeTicketBoardEnabled,
     getTicketBoardEnabled,
     () => false,
   );
   const session = authClient.useSession();
-  const pathname = useLocation().pathname;
+  const { pathname, search } = useLocation();
   const screen = analyticsScreen(pathname);
   const analyticsUserId = session.data?.user.id;
   const lastScreen = useRef<string | undefined>(undefined);
@@ -122,6 +134,13 @@ function SessionApp() {
       .catch(() => undefined);
   }, [analyticsUserId, screen]);
   const gate = sessionGate(session);
+  useLayoutEffect(() => {
+    if (gate === "authenticated" || gate === "anonymous")
+      syncWebLogoAvatarIdentity(analyticsUserId ?? null);
+  }, [gate, analyticsUserId]);
+  useEffect(() => {
+    if (gate === "authenticated" || gate === "anonymous") setQueryUser(analyticsUserId ?? null);
+  }, [gate, analyticsUserId]);
   const [holdingUnreachable, setHoldingUnreachable] = useState(false);
   const nextHolding = holdUnreachableGate(gate, holdingUnreachable);
   if (nextHolding !== holdingUnreachable) setHoldingUnreachable(nextHolding);
@@ -139,73 +158,80 @@ function SessionApp() {
     return <SessionUnavailable refetch={session.refetch} />;
   }
   if (gate === "loading" && !nextHoldingAnonymous) {
-    return window.location.pathname.startsWith("/app") ? (
-      <ShellSkeleton />
-    ) : (
-      <div className="h-full bg-background" data-rakazo-app-state="session-pending" />
-    );
+    return <PageLoading data-rakazo-app-state="session-pending" />;
   }
 
   const user = session.data?.user;
   return (
-    <div className="h-full" data-rakazo-app-state="ready">
-      <Suspense fallback={<div className="h-full bg-background" />}>
-        <Routes>
-          <Route path="/" element={user ? <Navigate to="/app" replace /> : <WelcomePage />} />
-          <Route
-            path="/sign-in"
-            element={
-              user ? <Navigate to={signInDestination} replace /> : <AuthPage key="in" mode="in" />
-            }
-          />
-          <Route
-            path="/sign-up"
-            element={user ? <Navigate to="/onboarding" replace /> : <AuthPage key="up" mode="up" />}
-          />
-          <Route
-            path="/forgot-password"
-            element={
-              user ? <Navigate to="/app" replace /> : <AuthPage key="forgot" mode="forgot" />
-            }
-          />
-          <Route path="/reset-password" element={<PasswordResetPage />} />
-          <Route
-            path="/mcp/oauth/callback"
-            element={user ? <McpOAuthCallbackPage /> : <Navigate to="/sign-in" replace />}
-          />
-          <Route
-            path="/integrations/setup"
-            element={
-              user ? (
-                <IntegrationSetupPage />
-              ) : (
-                <Navigate to="/sign-in?next=/integrations/setup" replace />
-              )
-            }
-          />
-          <Route
-            element={
-              user ? (
-                <SubscriptionGate fallback={<GateFallback />}>
-                  <Outlet />
-                </SubscriptionGate>
-              ) : (
-                <Navigate to="/sign-in" replace />
-              )
-            }
-          >
-            <Route path="/onboarding/:step?" element={<OnboardingPage />} />
-            <Route path="/app" element={<ShellPage />} />
-            <Route path="/app/g/:groupId" element={<ShellPage />} />
-            <Route path="/app/actions" element={<ActionsPage />} />
-            <Route path="/app/artifacts" element={<ArtifactsPage />} />
-            <Route path="/app/artifacts/:artifactId" element={<ArtifactsPage />} />
-            {ticketBoardEnabled ? <Route path="/app/board" element={<BoardPage />} /> : null}
-            <Route path="/app/:botId" element={<ShellPage />} />
-          </Route>
-        </Routes>
-      </Suspense>
-    </div>
+    <QueryUserProvider value={user?.id ?? null}>
+      <div className="h-full" data-rakazo-app-state="ready">
+        <Suspense fallback={<PageLoading />}>
+          <Routes>
+            <Route path="/" element={user ? <Navigate to="/app" replace /> : <WelcomePage />} />
+            <Route
+              path="/sign-in"
+              element={
+                user ? <Navigate to={signInDestination} replace /> : <AuthPage key="in" mode="in" />
+              }
+            />
+            <Route
+              path="/sign-up"
+              element={
+                user ? <Navigate to="/onboarding" replace /> : <AuthPage key="up" mode="up" />
+              }
+            />
+            <Route
+              path="/forgot-password"
+              element={
+                user ? <Navigate to="/app" replace /> : <AuthPage key="forgot" mode="forgot" />
+              }
+            />
+            <Route path="/reset-password" element={<PasswordResetPage />} />
+            <Route
+              path={MCP_OAUTH_CALLBACK_PATH}
+              element={
+                user ? (
+                  <McpOAuthCallbackPage />
+                ) : (
+                  <Navigate to={`/sign-in?next=${encodeURIComponent(pathname + search)}`} replace />
+                )
+              }
+            />
+            <Route
+              path="/integrations/setup"
+              element={
+                user ? (
+                  <IntegrationSetupPage />
+                ) : (
+                  <Navigate to="/sign-in?next=/integrations/setup" replace />
+                )
+              }
+            />
+            <Route
+              element={
+                user ? (
+                  <SubscriptionGate fallback={<PageLoading />}>
+                    <Outlet />
+                  </SubscriptionGate>
+                ) : (
+                  <Navigate to="/sign-in" replace />
+                )
+              }
+            >
+              <Route path="/onboarding/:step?" element={<OnboardingPage />} />
+              <Route path="/app" element={<ShellPage />} />
+              <Route path="/app/g/:groupId" element={<ShellPage />} />
+              <Route path="/app/actions" element={<ActionsPage />} />
+              <Route path="/app/artifacts" element={<ArtifactsPage />} />
+              <Route path="/app/artifacts/:artifactId" element={<ArtifactsPage />} />
+              {ticketBoardEnabled ? <Route path="/app/board" element={<BoardPage />} /> : null}
+              <Route path="/app/x/:linkId" element={<NavLinkPage />} />
+              <Route path="/app/:botId" element={<ShellPage />} />
+            </Route>
+          </Routes>
+        </Suspense>
+      </div>
+    </QueryUserProvider>
   );
 }
 
@@ -247,7 +273,6 @@ function SessionUnavailable({ refetch }: { refetch: () => Promise<void> }) {
         <div className="mt-4">
           <Button
             variant="secondary"
-            className="rounded-full"
             onClick={() => {
               retryImmediately.current = true;
               setAttempt(0);
@@ -274,54 +299,11 @@ function AppFailed() {
           <Trans>Something went wrong. Try again.</Trans>
         </p>
         <div className="mt-4">
-          <Button
-            variant="secondary"
-            className="rounded-full"
-            onClick={() => window.location.reload()}
-          >
+          <Button variant="secondary" onClick={() => window.location.reload()}>
             <Trans>Refresh</Trans>
           </Button>
         </div>
       </div>
-    </div>
-  );
-}
-
-function GateFallback() {
-  return window.location.pathname.startsWith("/app") ? (
-    <ShellSkeleton />
-  ) : (
-    <div className="h-full bg-background" />
-  );
-}
-
-function ShellSkeleton() {
-  return (
-    <div
-      className="flex h-full overflow-hidden bg-background"
-      data-rakazo-app-state="session-pending"
-    >
-      <aside className="hidden w-[316px] shrink-0 border-e border-sidebar-border bg-sidebar px-3.5 pt-16 md:block">
-        <Skeleton className="h-10 rounded-xl" />
-        <div className="mt-5 space-y-2 px-1">
-          {[0, 1, 2, 3].map((row) => (
-            <div key={row} className="flex items-center gap-3 rounded-xl px-2 py-2.5">
-              <Skeleton className="size-9 rounded-full" />
-              <div className="flex-1 space-y-2">
-                <Skeleton className="h-3 w-2/5" />
-                <Skeleton className="h-2.5 w-4/5" />
-              </div>
-            </div>
-          ))}
-        </div>
-      </aside>
-      <main className="flex flex-1 flex-col">
-        <div className="h-[74px] border-b border-sidebar-border" />
-        <div className="flex flex-1 items-center justify-center text-[14px] text-muted-foreground">
-          <Trans>Opening your Space…</Trans>
-        </div>
-        <div className="mx-6 mb-6 h-[54px] rounded-full border border-border bg-background" />
-      </main>
     </div>
   );
 }

@@ -1,9 +1,11 @@
 import { I18nProvider } from "@lingui/react";
 import type { MessageBlock, ThreadMessage } from "@rakazo/contracts";
 import { DEFAULT_ACTION_OFFER_SETTINGS } from "@rakazo/contracts";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { bootstrapI18n, i18n } from "../../src/lib/i18n";
+import { queryClient } from "../../src/lib/query";
 import {
   getToolActivityEnabled,
   subscribeToolActivity,
@@ -29,9 +31,16 @@ const STEP_LABELS = [
   "Check conflicts",
 ];
 
+const NOTE_TEXT = "Anna is free all Tuesday afternoon.";
+
 const stepsBlock: MessageBlock = {
   kind: "steps",
-  steps: STEP_LABELS.map((label) => ({ label, count: 1 })),
+  steps: STEP_LABELS.map((label) => ({
+    label,
+    count: 1,
+    // A finished reply keeps what the bot wrote before a step on that step.
+    ...(!live && label === "Check conflicts" ? { note: NOTE_TEXT } : {}),
+  })),
   ...(live ? {} : { durationMs: 12_400 }),
 };
 
@@ -86,8 +95,10 @@ function SettingsFixture() {
 
 void bootstrapI18n("en").then(() => {
   createRoot(document.getElementById("root")!).render(
-    <I18nProvider i18n={i18n}>
-      {view === "settings" ? <SettingsFixture /> : <ThreadFixture />}
-    </I18nProvider>,
+    <QueryClientProvider client={queryClient}>
+      <I18nProvider i18n={i18n}>
+        {view === "settings" ? <SettingsFixture /> : <ThreadFixture />}
+      </I18nProvider>
+    </QueryClientProvider>,
   );
 });

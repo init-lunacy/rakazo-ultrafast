@@ -3,16 +3,21 @@ import type {
   AuthCapabilities,
   Bot,
   BotSection,
-  ComputerMode,
+  ComputerStatus,
   Group,
   Me,
   MessageBlock,
   ModelCatalogEntry,
   ModelCredential,
-  ReplyPreview,
+  RpcInput,
+  RpcOutput,
+  RpcPath,
+  Run,
   RunStatus,
   Space,
   SpaceNavigation,
+  ThreadMessage,
+  ThreadSnapshot,
 } from "@rakazo/contracts";
 import {
   accountSecuritySchema,
@@ -50,6 +55,7 @@ import {
   takeLiveMessage,
   updateCloudAgentMessages,
   upsertMessageById,
+  withAbort,
 } from "@rakazo/core";
 import { clientCorrelationHeaders, responseCorrelation } from "@rakazo/logging/monitoring";
 import * as SecureStore from "expo-secure-store";
@@ -59,7 +65,15 @@ import { defaultApiBase, normalizeApiBase } from "./endpoint";
 import { t } from "./i18n";
 import { identityLabels } from "./identity-display";
 import { resumeLiveNotifications } from "./live-notifications";
+import {
+  beginMobileAvatarFeed,
+  mobileLogoAvatarActivity,
+  newMobileAvatarSnapshotRequest,
+  rememberMobileAvatarSnapshot,
+  syncMobileAvatarSession,
+} from "./logo-avatar-activity";
 import { reportMobileError } from "./monitoring";
+import { API_BASE_STORAGE_KEY as ENDPOINT_KEY } from "./server-config";
 import {
   clearSessionToken,
   currentSessionGeneration,
@@ -74,7 +88,6 @@ import {
 import { clearUnsentSends } from "./thread-feedback";
 import { authResponseErrorText, errorText, sessionSaveErrorText } from "./user-error";
 
-const ENDPOINT_KEY = "rakazo.api_base";
 const SPACE_KEY = "rakazo.space_id";
 const SPACE_ROLLBACK_KEY = "rakazo.space_rollback";
 const RPC_TIMEOUT_MS = 8_000;
@@ -208,14 +221,28 @@ export async function selectSpace(id: string) {
     if (cachedSpaceId === id && spaceSelectionGeneration === claimGeneration) {
       cachedSpaceId = previousSpaceId;
       bumpSpaceSelectionGeneration();
+      const rollbackGeneration = spaceSelectionGeneration;
       if (previousSpaceId) await writeStoredValue(SPACE_KEY, previousSpaceId);
+      if (previousSpaceId)
+        await resumeSelectedSpaceNotifications(previousSpaceId, rollbackGeneration);
     }
     return false;
   }
-  await resumeLiveNotifications(currentApiBase(), await loadSessionToken(), id).catch(
-    () => undefined,
-  );
+  await resumeSelectedSpaceNotifications(id, claimGeneration);
   return true;
+}
+
+async function resumeSelectedSpaceNotifications(id: string, generation: number): Promise<void> {
+  const apiBase = currentApiBase();
+  const sessionGeneration = currentSessionGeneration();
+  const token = await loadSessionToken();
+  if (
+    generation !== spaceSelectionGeneration ||
+    sessionGeneration !== currentSessionGeneration() ||
+    apiBase !== currentApiBase()
+  )
+    return;
+  await resumeLiveNotifications(apiBase, token, id).catch(() => undefined);
 }
 
 export function selectedSpaceId(): string | null {
@@ -485,10 +512,13 @@ export function aiConsentCoalesceKey(requestContext: ApiRequestContext): string 
   return [requestContext.apiBase, requestContext.headers["x-rakazo-space-id"] ?? ""].join("\u0000");
 }
 
-export async function captureApiRequestContext(): Promise<ApiRequestContext> {
+/** Pins a request to the current server and session, and to a Space (the selected one by default). */
+export async function captureApiRequestContext(
+  spaceId: string | null = selectedSpaceId(),
+): Promise<ApiRequestContext> {
   const generation = currentSessionGeneration();
   const apiBase = currentApiBase();
-  const headers = await authHeaders(selectedSpaceId());
+  const headers = await authHeaders(spaceId);
   if (apiBase !== currentApiBase()) {
     throw new Error(t("The server changed while starting the request"));
   }
@@ -679,6 +709,7 @@ export async function fetchMobileJson<T>(
     const response = await withAbort(
       fetch(input, { ...init, signal: controller.signal }),
       controller.signal,
+      "Request timed out",
     ).catch((error: unknown) => {
       throw requestError(error, controller.signal);
     });
@@ -714,6 +745,7 @@ export async function signOut() {
         signal: controller.signal,
       }),
       controller.signal,
+      "Request timed out",
     ).catch(() => undefined);
   } finally {
     clearTimeout(timer);
@@ -721,24 +753,6 @@ export async function signOut() {
   const sessionCleared = await clearSessionToken();
   const spaceCleared = await clearSpace();
   if (!sessionCleared || !spaceCleared) throw new Error(t("Could not clear the local session"));
-}
-
-function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Request timed out"));
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason ?? new Error("Request timed out"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
 }
 
 export async function deleteAccount(password?: string, token?: string) {
@@ -780,32 +794,54 @@ async function rejectSession() {
   for (const listener of sessionRejectedListeners) listener();
 }
 
-export async function rpc<T>(
-  proc: string,
+export type RpcOptions = {
+  signal?: AbortSignal;
+  timeoutMs?: number | null;
+  requestContext?: ApiRequestContext;
+  skipSpaceAuthRecovery?: boolean;
+};
+
+/** The body may be left out when the procedure takes none or every field is optional. */
+export type RpcArgs<P extends RpcPath> =
+  undefined extends RpcInput<P>
+    ? [body?: RpcInput<P>, options?: RpcOptions]
+    : // biome-ignore lint/complexity/noBannedTypes: an input whose fields are all optional
+      {} extends RpcInput<P>
+      ? [body?: RpcInput<P>, options?: RpcOptions]
+      : [body: RpcInput<P>, options?: RpcOptions];
+
+/** Calls a procedure from the shared contract; its path picks the body and result types. */
+export function rpc<P extends RpcPath>(proc: P, ...[body, options]: RpcArgs<P>) {
+  return request(proc, body, options) as Promise<RpcOutput<P>>;
+}
+
+async function request(
+  proc: RpcPath,
   body: unknown = {},
-  options: {
-    signal?: AbortSignal;
-    timeoutMs?: number | null;
-    requestContext?: ApiRequestContext;
-    skipSpaceAuthRecovery?: boolean;
-  } = {},
-): Promise<T> {
+  options: RpcOptions = {},
+): Promise<unknown> {
+  syncMobileAvatarSession(currentApiBase(), currentSessionGeneration());
+  const avatarSnapshotOrder = proc === "threads/get" ? newMobileAvatarSnapshotRequest() : 0;
   const requestSpaceGeneration = spaceSelectionGeneration;
   const requestSessionGeneration = currentSessionGeneration();
   const requestApiBase = options.requestContext?.apiBase ?? currentApiBase();
   const uses = aiDataUsesForProcedure(proc, body);
+  const consentTarget = aiConsentTarget(body);
   const consentContext =
     options.requestContext ?? (uses.length ? await captureApiRequestContext() : undefined);
   await ensureAiDataConsent({
     uses,
     status: () =>
+      rpc("aiConsent/status", { uses, ...consentTarget }, { requestContext: consentContext }),
+    prompt: promptAiConsent,
+    allow: (input) =>
       rpc(
-        "aiConsent/status",
-        { uses, ...aiConsentTarget(body) },
+        "aiConsent/allow",
+        consentTarget.settingsScope
+          ? { ...input, settingsScope: consentTarget.settingsScope }
+          : input,
         { requestContext: consentContext },
       ),
-    prompt: promptAiConsent,
-    allow: (input) => rpc("aiConsent/allow", input, { requestContext: consentContext }),
     coalesceKey: consentContext ? aiConsentCoalesceKey(consentContext) : undefined,
   });
   // Abort with an explicit reason so every consumer of the signal (the fetch, the bounded body
@@ -868,7 +904,7 @@ export async function rpc<T>(
       cancelResponseBody(res);
       throw new Error(t("Update your server to use AI data sharing in this mobile version."));
     }
-    const parsed: { json?: T } = await readBoundedJsonResponse<{ json?: T }>(
+    const parsed: { json?: unknown } = await readBoundedJsonResponse<{ json?: unknown }>(
       res,
       MAX_MOBILE_RPC_RESPONSE_BYTES,
       controller.signal,
@@ -880,7 +916,9 @@ export async function rpc<T>(
     if (!res.ok) {
       // oRPC sends a failure as `{ json: { code, status, message } }`; the message is the
       // server's user-facing copy.
-      const error = parsed.json as { message?: unknown; code?: unknown } | undefined;
+      const error = parsed.json as
+        | { message?: unknown; code?: unknown; data?: unknown }
+        | undefined;
       const message = errorText(typeof error?.message === "string" ? error.message : "");
       const unauthorized = res.status === 401;
       // Without a Space header a 401 means the server no longer accepts the
@@ -938,12 +976,7 @@ export async function rpc<T>(
         const retrySameProc = SPACE_AUTH_RECOVERY_SAFE_PROCS.has(proc);
         // Share the original deadline/cancellation with recovery calls instead
         // of starting a second full timeout behind the first request.
-        const recoveryOptions: {
-          signal?: AbortSignal;
-          timeoutMs?: number | null;
-          requestContext?: ApiRequestContext;
-          skipSpaceAuthRecovery?: boolean;
-        } = {
+        const recoveryOptions: RpcOptions = {
           ...options,
           timeoutMs: null,
           signal: controller.signal,
@@ -951,13 +984,13 @@ export async function rpc<T>(
         };
         try {
           if (retrySameProc) {
-            const result = await rpc<T>(proc, body, recoveryOptions);
+            const result = await request(proc, body, recoveryOptions);
             // A Space selected while the retry was in flight already owns both
             // the in-memory and durable selection; leave it alone.
             if (!selectedSpaceId()) await clearStaleSpaceSelection();
             return result;
           }
-          await rpc("spaces/list", {}, recoveryOptions);
+          await request("spaces/list", {}, recoveryOptions);
         } catch (retryError) {
           if (!selectedSpaceId()) {
             cachedSpaceId = previousSpaceId;
@@ -968,7 +1001,10 @@ export async function rpc<T>(
         if (!selectedSpaceId()) await clearStaleSpaceSelection();
         throw new Error(message);
       }
-      throw httpError(message, res, typeof error?.code === "string" ? error.code : undefined);
+      throw Object.assign(
+        httpError(message, res, typeof error?.code === "string" ? error.code : undefined),
+        { data: error?.data },
+      );
     }
     const verifiedUser = parsed.json as { userId?: unknown; spaceId?: unknown } | null;
     if (
@@ -983,7 +1019,16 @@ export async function rpc<T>(
         selectionId: requestSpaceId ?? null,
       });
     }
-    return displayIdentityResult(proc.split("/"), parsed.json, identityLabels()) as T;
+    if (
+      proc === "threads/get" &&
+      requestSessionGeneration === currentSessionGeneration() &&
+      requestApiBase === currentApiBase()
+    ) {
+      const snapshot = parsed.json as ThreadSnapshot;
+      if (typeof snapshot?.threadId === "string" && typeof snapshot.cursor === "number")
+        rememberMobileAvatarSnapshot(snapshot, avatarSnapshotOrder);
+    }
+    return displayIdentityResult(proc.split("/"), parsed.json, identityLabels());
   } catch (error) {
     if (
       requestSessionGeneration === currentSessionGeneration() &&
@@ -1005,6 +1050,7 @@ export type MobileBot = Pick<
   | "preview"
   | "title"
   | "color"
+  | "avatarSet"
   | "instructionHistory"
   | "selfUpdateInstructions"
   | "notifyOnFinish"
@@ -1041,28 +1087,18 @@ export type MobileMe = Pick<
   | "isDeploymentOwner"
   | "actionOfferSettings"
   | "needsSignupSurvey"
-> & { billingEnabled?: boolean };
+  | "billingEnabled"
+  | "paymentWalletProvider"
+>;
 
 export type MobileModel = ModelCatalogEntry;
 
 /** Shared DTO includes headerNames only; header values remain in the server secret. */
 export type MobileModelCredential = ModelCredential;
 
-export type MobileMessage = {
-  id: string;
-  threadId?: string;
-  seq?: number;
-  runId?: string;
-  role: "user" | "bot" | "system";
-  /** Set when the message was sent from a live voice call; groups one call's transcript. */
-  callId?: string;
-  botId?: string;
-  replyToMessageId?: string;
-  replyQuote?: string;
-  replyPreview?: ReplyPreview | null;
-  createdAt?: string;
-  blocks: MessageBlock[];
-};
+/** Live progress and streaming rows are shown before they have a seq, thread, or time. */
+export type MobileMessage = Omit<ThreadMessage, "threadId" | "seq" | "createdAt"> &
+  Partial<Pick<ThreadMessage, "threadId" | "seq" | "createdAt">>;
 
 export type MobileGroup = Pick<
   Group,
@@ -1081,24 +1117,25 @@ export type MobileGroup = Pick<
 export type MobileSpace = Space;
 export type MobileSpaceNavigation = SpaceNavigation;
 
-export type MobileSnapshot = {
-  botId?: string;
-  groupId?: string;
-  groupName?: string;
-  threadId: string;
-  cursor?: number;
+/** A run as live events report it, before a refresh brings the full record. */
+type MobileRun = Pick<Run, "id"> & Partial<Pick<Run, "botId" | "userId">> & { status: string };
+
+/**
+ * A thread as the screen holds it: live events patch it between refreshes, and a saved chat
+ * reopens without its cursor, runs, or computer.
+ */
+export type MobileSnapshot = Omit<
+  ThreadSnapshot,
+  "cursor" | "messages" | "run" | "activeRuns" | "computer"
+> & {
+  cursor?: ThreadSnapshot["cursor"];
   messages: MobileMessage[];
-  olderCursor: number | null;
-  run: { id: string; botId?: string; status: string; error?: string | null } | null;
-  activeRuns?: Array<{ id: string; botId?: string; status: string }>;
-  members?: MobileGroup["members"];
-  computer?: {
-    state: string;
-    controlHolder: string;
-    screenAvailable: boolean;
-    mode: ComputerMode;
-    busyBotName: string | null;
-  };
+  run: (MobileRun & Partial<Pick<Run, "error">>) | null;
+  activeRuns?: MobileRun[];
+  computer?: Pick<
+    ComputerStatus,
+    "state" | "controlHolder" | "screenAvailable" | "mode" | "busyBotName"
+  >;
 };
 
 export function shouldApplyMobileThreadRefresh(input: {
@@ -1160,12 +1197,21 @@ export function prependMobileMessagePage(
 
 export { messagingProviderLabel };
 
+function channelMessageLine(block: {
+  provider: Parameters<typeof messagingProviderLabel>[0];
+  transport?: Parameters<typeof messagingProviderLabel>[1];
+  fromLabel: string;
+  text: string;
+}): string {
+  return `${block.fromLabel} (${messagingProviderLabel(block.provider, block.transport)}): ${block.text}`;
+}
+
 /** The message's text exactly as written, for a view that selects part of it. */
 export function selectableMobileMessageText(message: MobileMessage): string {
   return message.blocks
     .map((block) => {
       if (block.kind === "channel_message") {
-        return `${messagingProviderLabel(block.provider, block.transport)} · ${block.fromLabel}: ${block.text}`;
+        return channelMessageLine(block);
       }
       if (block.kind === "text" || block.kind === "progress" || block.kind === "ask")
         return block.text;
@@ -1183,7 +1229,7 @@ export function blockText(message: MobileMessage) {
   return message.blocks
     .map((block) => {
       if (block.kind === "channel_message") {
-        return `${messagingProviderLabel(block.provider, block.transport)} · ${block.fromLabel}: ${block.text}`;
+        return channelMessageLine(block);
       }
       if (block.kind === "cloud_agent")
         return `${block.title}: ${block.status}${block.prUrl ? ` ${block.prUrl}` : ""}`;
@@ -1201,7 +1247,7 @@ export function blockText(message: MobileMessage) {
       if (block.kind === "steps") {
         return (block.steps ?? [])
           .map((step) => `${step.label}${step.count > 1 ? ` ×${step.count}` : ""}`)
-          .join(" · ");
+          .join(", ");
       }
       return ("text" in block ? block.text : "state" in block ? block.state : "") ?? "";
     })
@@ -1216,6 +1262,7 @@ type ThreadEvent = {
   type: string;
   seq?: number;
   runId?: string;
+  threadId?: string;
   payload?: Record<string, unknown>;
 };
 
@@ -1243,6 +1290,8 @@ export async function subscribeThread(
   signal: AbortSignal,
 ) {
   const context = await captureApiRequestContext();
+  syncMobileAvatarSession(currentApiBase(), currentSessionGeneration());
+  const activityFeed = beginMobileAvatarFeed(target, cursor);
   const current = () =>
     context.apiBase === currentApiBase() &&
     context.sessionGeneration === currentSessionGeneration();
@@ -1257,11 +1306,13 @@ export async function subscribeThread(
     body: JSON.stringify({ json: { ...target, cursor } }),
     signal,
   }).catch((error: unknown) => {
+    mobileLogoAvatarActivity.resetSource(activityFeed.source);
     if (current() && !signal.aborted && isServerUnreachable(error)) noteServerReachable(false);
     throw error;
   });
   if (current()) noteServerReachable(!isUnreachableStatus(res.status));
   if (!res.ok || !res.body) {
+    mobileLogoAvatarActivity.resetSource(activityFeed.source);
     cancelResponseBody(res);
     throw httpError(`rpc threads/subscribe failed (${res.status})`, res);
   }
@@ -1297,8 +1348,24 @@ export async function subscribeThread(
       try {
         const parsed = JSON.parse(data) as { json?: ThreadEvent; error?: { message?: string } };
         // Heartbeats prove liveness only; forwarding one would advance the caller's cursor.
-        if (parsed.json?.type && parsed.json.type !== "heartbeat")
-          onEvent(displayIdentityEvent(parsed.json, identityLabels()));
+        if (parsed.json?.type && parsed.json.type !== "heartbeat") {
+          if (!current()) {
+            mobileLogoAvatarActivity.resetSource(activityFeed.source);
+            return;
+          }
+          const event = parsed.json;
+          const threadId = event.threadId ?? activityFeed.threadId;
+          if (threadId && typeof event.seq === "number" && event.seq > cursor)
+            mobileLogoAvatarActivity.apply(activityFeed.source, {
+              threadId,
+              seq: event.seq,
+              botId: event.botId,
+              runId: event.runId,
+              type: event.type,
+              payload: event.payload ?? {},
+            });
+          onEvent(displayIdentityEvent(event, identityLabels()));
+        }
       } catch {
         // Malformed frames and callback errors do not interrupt the subscription.
       }
@@ -1352,6 +1419,7 @@ export async function subscribeThread(
       if (start < value.byteLength) appendFrameBytes(value.subarray(start));
     }
   } finally {
+    mobileLogoAvatarActivity.resetSource(activityFeed.source);
     if (!finished) {
       try {
         void Promise.resolve(reader.cancel()).catch(() => undefined);
@@ -1433,6 +1501,10 @@ export function applyMobileThreadEvent(
     const messages = prev.messages.filter((message) => message.id !== progressId);
     const progressCleared = messages.length !== prev.messages.length;
     const runId = event.runId;
+    const userId =
+      event.type === "run.waiting_input" && typeof event.payload?.userId === "string"
+        ? event.payload.userId
+        : undefined;
     const knownInRun = Boolean(runId && prev.run?.id === runId);
     const knownInActive = Boolean(
       runId && prev.activeRuns?.some((candidate) => candidate.id === runId),
@@ -1440,10 +1512,18 @@ export function applyMobileThreadEvent(
     // Peer bot_message runs are omitted from snapshots while busy; the first wait
     // event is how an open thread learns they need ask/takeover UI.
     const needsInsert = Boolean(runId) && !knownInRun && !knownInActive;
-    const runChanged = Boolean(knownInRun && prev.run && prev.run.status !== status);
+    const runChanged = Boolean(
+      knownInRun &&
+        prev.run &&
+        (prev.run.status !== status || (userId !== undefined && prev.run.userId !== userId)),
+    );
     const activeRunChanged = Boolean(
       knownInActive &&
-        prev.activeRuns?.some((candidate) => candidate.id === runId && candidate.status !== status),
+        prev.activeRuns?.some(
+          (candidate) =>
+            candidate.id === runId &&
+            (candidate.status !== status || (userId !== undefined && candidate.userId !== userId)),
+        ),
     );
     const computer =
       event.type === "computer.takeover.requested" && prev.computer?.busyBotName
@@ -1459,6 +1539,7 @@ export function applyMobileThreadEvent(
         id: runId,
         status,
         ...(event.botId ? { botId: event.botId } : {}),
+        ...(userId !== undefined ? { userId } : {}),
       };
       const baseActive = prev.activeRuns ?? (prev.run ? [prev.run] : []);
       const activeRuns = [...baseActive.filter((candidate) => candidate.id !== runId), waitingRun];
@@ -1474,10 +1555,15 @@ export function applyMobileThreadEvent(
         activeRuns,
       };
     }
-    const run = runChanged && prev.run ? { ...prev.run, status } : prev.run;
+    const run =
+      runChanged && prev.run
+        ? { ...prev.run, status, ...(userId !== undefined ? { userId } : {}) }
+        : prev.run;
     const activeRuns = activeRunChanged
       ? prev.activeRuns?.map((candidate) =>
-          candidate.id === runId ? { ...candidate, status } : candidate,
+          candidate.id === runId
+            ? { ...candidate, status, ...(userId !== undefined ? { userId } : {}) }
+            : candidate,
         )
       : prev.activeRuns;
     return { ...prev, cursor, run, activeRuns, messages, computer };
@@ -1676,9 +1762,9 @@ export async function fetchAccountSecurity(): Promise<AccountSecurity> {
   }
 }
 
-export async function requestAccountDeletionCode(): Promise<void> {
+async function postSignedInAuth(path: string, payload: Record<string, string> = {}): Promise<void> {
   const { response, body, invalidJson } = await fetchMobileJson<unknown>(
-    `${currentApiBase()}/api/auth/request-account-deletion`,
+    `${currentApiBase()}/api/auth${path}`,
     {
       method: "POST",
       headers: {
@@ -1686,7 +1772,7 @@ export async function requestAccountDeletionCode(): Promise<void> {
         origin: "rakazo://",
         ...(await authHeaders()),
       },
-      body: "{}",
+      body: JSON.stringify(payload),
     },
     null,
   );
@@ -1695,3 +1781,12 @@ export async function requestAccountDeletionCode(): Promise<void> {
       authResponseErrorText(response.status, body, invalidJson, t("Could not continue")),
     );
 }
+
+export const requestAccountDeletionCode = () => postSignedInAuth("/request-account-deletion");
+
+/** Emails a confirmation code to an account without a password. */
+export const requestIdentityCode = () => postSignedInAuth("/request-identity-code");
+
+/** Confirms this session's identity for the next few minutes. */
+export const confirmIdentity = (proof: { password: string } | { code: string }) =>
+  postSignedInAuth("/confirm-identity", proof);

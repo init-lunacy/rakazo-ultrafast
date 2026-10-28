@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   instructions: "",
   description: "",
   crossSpaceCommunication: false,
+  avatarSet: undefined as "organic" | "rakazo" | undefined,
   focus: undefined as string | undefined,
   os: "ios",
   work: [] as unknown[],
@@ -50,8 +51,9 @@ function deferredSave() {
   return { promise, resolve, reject };
 }
 
+vi.mock("./side-insets", () => ({ useSideInsets: () => ({}) }));
 vi.mock("./bot-voices", () => ({
-  voiceLabel: (voice: { language: string; name: string }) => `${voice.language} · ${voice.name}`,
+  voiceLabel: (voice: { language: string; name: string }) => `${voice.name} (${voice.language})`,
   deviceVoices: mocks.deviceVoices,
   voiceForBot: mocks.voiceForBot,
   setVoiceForBot: mocks.setVoiceForBot,
@@ -82,6 +84,7 @@ vi.mock("./api", () => ({
         description: mocks.description,
         instructionHistory: mocks.history,
         color: BOT_COLORS[0],
+        avatarSet: mocks.avatarSet,
         autoSpeak: false,
         computerMode: "team",
         fleetManagement: false,
@@ -339,6 +342,7 @@ describe("bot settings device voice menu", () => {
   let container: HTMLDivElement;
   beforeEach(() => {
     mocks.crossSpaceCommunication = false;
+    mocks.avatarSet = undefined;
     vi.clearAllMocks();
     mocks.focus = undefined;
     mocks.instructions = "";
@@ -506,6 +510,50 @@ describe("bot settings device voice menu", () => {
         .click(),
     );
     expect(container.textContent).not.toContain("Shape");
+  });
+
+  it("keeps a legacy set until explicitly switched, saves the choice, and reloads it", async () => {
+    await render();
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Edit avatar"]')!.click(),
+    );
+    const setMenu = () => container.querySelector('[data-menu="Icon set"]')!;
+    const option = (label: string) =>
+      [...setMenu().querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent === label,
+      )!;
+    expect(option("Original").dataset.state).toBe("on");
+    expect(mocks.rpc).not.toHaveBeenCalled();
+    await act(async () => option("Rakazo").click());
+    mocks.rpc.mockResolvedValueOnce({ avatarSet: "rakazo" });
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent === "Save")!
+        .click(),
+    );
+    expect(mocks.rpc).toHaveBeenCalledWith("bots/update", {
+      botId: "bot-fixture",
+      avatarSet: "rakazo",
+    });
+    act(() => root.unmount());
+    root = createRoot(container);
+    mocks.avatarSet = "rakazo";
+    await render();
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Edit avatar"]')!.click(),
+    );
+    expect(option("Rakazo").dataset.state).toBe("on");
+    await act(async () => option("Original").click());
+    mocks.rpc.mockResolvedValueOnce({ avatarSet: "organic" });
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent === "Save")!
+        .click(),
+    );
+    expect(mocks.rpc).toHaveBeenLastCalledWith("bots/update", {
+      botId: "bot-fixture",
+      avatarSet: "organic",
+    });
   });
 
   it("expands Advanced for a native model deep link", async () => {
@@ -809,12 +857,6 @@ describe("bot settings device voice menu", () => {
     );
   });
 
-  it("shows a management subtitle instead of a help control", async () => {
-    await render();
-    expect(container.textContent).toContain("Can edit and organise bots it creates");
-    expect(container.querySelector('[aria-label="About Manage the bots it creates"]')).toBeNull();
-  });
-
   it("persists bot management toggles immediately without adding them to unrelated saves", async () => {
     mocks.rpc.mockResolvedValue(undefined);
     await render();
@@ -1012,8 +1054,8 @@ describe("bot settings device voice menu", () => {
     await render();
     const actions = menu()!.querySelectorAll("button");
     expect([...actions].map((action) => [action.textContent, action.dataset.state])).toEqual([
-      ["en-US · Alice", "on"],
-      ["en-GB · Beth", "off"],
+      ["Alice (en-US)", "on"],
+      ["Beth (en-GB)", "off"],
     ]);
     const labels = [...container.querySelectorAll("span")];
     const label = (text: string) => labels.find((item) => item.textContent === text)!;
@@ -1027,8 +1069,8 @@ describe("bot settings device voice menu", () => {
     const trigger = menu()!.firstElementChild!;
     expect(trigger.getAttribute("role")).toBe("button");
     expect(trigger.getAttribute("aria-label")).toBe("Device voice");
-    expect(trigger.getAttribute("aria-valuetext")).toBe("en-US · Alice");
-    expect(label("en-US · Alice").dataset.style).toContain('"textAlign":"right"');
+    expect(trigger.getAttribute("aria-valuetext")).toBe("Alice (en-US)");
+    expect(label("Alice (en-US)").dataset.style).toContain('"textAlign":"right"');
     expect(menu()!.querySelector("i")!.dataset).toMatchObject({
       ios: "chevron.up.chevron.down",
       android: "chevron-expand",
