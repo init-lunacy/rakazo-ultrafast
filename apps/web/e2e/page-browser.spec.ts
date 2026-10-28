@@ -136,6 +136,10 @@ test("live page helper preserves identity, masks passwords, and reports partial 
       completed: 0,
       uncertain: false,
       error: "A saved password can only be typed into a password field.",
+      // The page tools also report the bot's tabs.
+      opened: [],
+      pinned: null,
+      target: expect.any(String),
     });
     await expect(page.getByLabel("Email")).toHaveValue("");
     const filled = await command("act", {
@@ -783,6 +787,10 @@ test("live page helper types a purchase's card into a payment provider's frame o
       completed: 0,
       uncertain: false,
       error: "This field didn't accept the card, so it was cleared.",
+      // The page tools also report the bot's tabs.
+      opened: [],
+      pinned: null,
+      target: expect.any(String),
     });
     await expect(card.locator("#postal")).toHaveValue("");
 

@@ -1024,7 +1024,7 @@ msgstr "bot"
 #: src/pages/shell/avatar-studio-popover.tsx
 #: src/pages/shell/message-view.tsx
 msgid "Bot"
-msgstr ""
+msgstr "Bot"
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -2830,7 +2830,7 @@ msgstr "Extern gesprek"
 #: src/pages/model-settings/compatible-model-fields.tsx
 #: src/pages/Onboarding.tsx
 msgid "Extra high"
-msgstr ""
+msgstr "Extra hoog"
 
 #. js-lingui-explicit-id
 #: src/lib/model-catalog.ts
@@ -3070,7 +3070,7 @@ msgstr "Transcript verbergen"
 #: src/pages/model-settings/compatible-model-fields.tsx
 #: src/pages/Onboarding.tsx
 msgid "High"
-msgstr ""
+msgstr "Hoog"
 
 #. js-lingui-explicit-id
 #: src/lib/model-catalog.ts
@@ -3133,7 +3133,7 @@ msgstr "Negeren"
 #. js-lingui-explicit-id
 #: src/lib/run-error.ts
 msgid "Image input is not configured for this model."
-msgstr ""
+msgstr "Afbeeldingsinvoer is niet ingesteld voor dit model."
 
 #: src/lib/user-error.ts
 msgid "Image input is not configured for this model."
@@ -3476,7 +3476,7 @@ msgstr "Lijkt een sleutel te bevatten"
 #: src/pages/model-settings/compatible-model-fields.tsx
 #: src/pages/Onboarding.tsx
 msgid "Low"
-msgstr ""
+msgstr "Laag"
 
 #. js-lingui-explicit-id
 #: src/lib/model-catalog.ts
@@ -3547,7 +3547,7 @@ msgstr ""
 #: src/pages/model-settings/compatible-model-fields.tsx
 #: src/pages/Onboarding.tsx
 msgid "Max"
-msgstr ""
+msgstr "Max"
 
 #. js-lingui-explicit-id
 #: src/lib/model-catalog.ts
@@ -3585,7 +3585,7 @@ msgstr "MCP-servers"
 #: src/pages/model-settings/compatible-model-fields.tsx
 #: src/pages/Onboarding.tsx
 msgid "Medium"
-msgstr ""
+msgstr "Gemiddeld"
 
 #. js-lingui-explicit-id
 #: src/lib/model-catalog.ts
@@ -3639,7 +3639,7 @@ msgstr "Noemt: {mentions}"
 #: src/pages/shell/chat-shared.ts
 #: src/pages/shell/composer.tsx
 msgid "Message"
-msgstr ""
+msgstr "Bericht"
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -3685,7 +3685,7 @@ msgstr "Microfoon mislukt"
 #: src/pages/model-settings/compatible-model-fields.tsx
 #: src/pages/Onboarding.tsx
 msgid "Minimal"
-msgstr ""
+msgstr "Minimaal"
 
 #. js-lingui-explicit-id
 #: src/lib/model-catalog.ts
@@ -5821,7 +5821,7 @@ msgstr "deze Mac"
 #. js-lingui-explicit-id
 #: src/lib/run-error.ts
 msgid "This model cannot read images. Choose a model that supports images."
-msgstr ""
+msgstr "Dit model kan geen afbeeldingen lezen. Kies een model dat afbeeldingen ondersteunt."
 
 #: src/lib/user-error.ts
 msgid "This model cannot read images. Choose a model that supports images."

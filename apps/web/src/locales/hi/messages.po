@@ -1024,7 +1024,7 @@ msgstr "बॉट"
 #: src/pages/shell/avatar-studio-popover.tsx
 #: src/pages/shell/message-view.tsx
 msgid "Bot"
-msgstr ""
+msgstr "बॉट"
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -2830,7 +2830,7 @@ msgstr ""
 #: src/pages/model-settings/compatible-model-fields.tsx
 #: src/pages/Onboarding.tsx
 msgid "Extra high"
-msgstr ""
+msgstr "अतिरिक्त उच्च"
 
 #. js-lingui-explicit-id
 #: src/lib/model-catalog.ts
@@ -3070,7 +3070,7 @@ msgstr "ट्रांसक्रिप्ट छिपाएँ"
 #: src/pages/model-settings/compatible-model-fields.tsx
 #: src/pages/Onboarding.tsx
 msgid "High"
-msgstr ""
+msgstr "उच्च"
 
 #. js-lingui-explicit-id
 #: src/lib/model-catalog.ts
@@ -3133,7 +3133,7 @@ msgstr ""
 #. js-lingui-explicit-id
 #: src/lib/run-error.ts
 msgid "Image input is not configured for this model."
-msgstr ""
+msgstr "इस मॉडल के लिए चित्र इनपुट कॉन्फ़िगर नहीं है।"
 
 #: src/lib/user-error.ts
 msgid "Image input is not configured for this model."
@@ -3476,7 +3476,7 @@ msgstr "लगता है कि इसमें कोई कुंजी ह
 #: src/pages/model-settings/compatible-model-fields.tsx
 #: src/pages/Onboarding.tsx
 msgid "Low"
-msgstr ""
+msgstr "निम्न"
 
 #. js-lingui-explicit-id
 #: src/lib/model-catalog.ts
@@ -3547,7 +3547,7 @@ msgstr ""
 #: src/pages/model-settings/compatible-model-fields.tsx
 #: src/pages/Onboarding.tsx
 msgid "Max"
-msgstr ""
+msgstr "अधिकतम"
 
 #. js-lingui-explicit-id
 #: src/lib/model-catalog.ts
@@ -3585,7 +3585,7 @@ msgstr "MCP सर्वर"
 #: src/pages/model-settings/compatible-model-fields.tsx
 #: src/pages/Onboarding.tsx
 msgid "Medium"
-msgstr ""
+msgstr "मध्यम"
 
 #. js-lingui-explicit-id
 #: src/lib/model-catalog.ts
@@ -3639,7 +3639,7 @@ msgstr "ज़िक्र: {mentions}"
 #: src/pages/shell/chat-shared.ts
 #: src/pages/shell/composer.tsx
 msgid "Message"
-msgstr ""
+msgstr "संदेश"
 
 #. js-lingui-explicit-id
 #: src/lib/browser-notifications.ts
@@ -3685,7 +3685,7 @@ msgstr "माइक्रोफ़ोन विफल"
 #: src/pages/model-settings/compatible-model-fields.tsx
 #: src/pages/Onboarding.tsx
 msgid "Minimal"
-msgstr ""
+msgstr "न्यूनतम"
 
 #. js-lingui-explicit-id
 #: src/lib/model-catalog.ts
@@ -5821,7 +5821,7 @@ msgstr "यह Mac"
 #. js-lingui-explicit-id
 #: src/lib/run-error.ts
 msgid "This model cannot read images. Choose a model that supports images."
-msgstr ""
+msgstr "यह मॉडल चित्र नहीं पढ़ सकता। चित्रों का समर्थन करने वाला मॉडल चुनें।"
 
 #: src/lib/user-error.ts
 msgid "This model cannot read images. Choose a model that supports images."
