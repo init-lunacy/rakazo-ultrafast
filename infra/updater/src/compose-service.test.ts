@@ -55,6 +55,23 @@ describe("worker error reporting configuration", () => {
   });
 });
 
+describe("image defaults", () => {
+  it.each([
+    "docker-compose.yml",
+    "docker-compose.prod.yml",
+    "docker-compose.images.yml",
+    "docker-compose.prod.docker.yml",
+  ])("pull Rakazo images from this repository's registry in %s", (file) => {
+    const { services } = parse(
+      readFileSync(path.resolve(import.meta.dirname, "../../compose", file), "utf8"),
+      { merge: true },
+    ) as { services: Record<string, ComposeService> };
+    for (const [name, service] of Object.entries(services)) {
+      expect(service.image ?? "", name).not.toContain("ghcr.io/elie222/");
+    }
+  });
+});
+
 describe("the updater compose service", () => {
   it("exists and runs the updater image", () => {
     expect(updater).toBeDefined();
