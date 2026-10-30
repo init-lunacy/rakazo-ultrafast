@@ -51,6 +51,9 @@ const CARD_AUTOCOMPLETE: Record<PurchaseCardField, string> = {
 /** A saved-login or card fill declined before the page changed; reported as settled, not uncertain. */
 class FillRefused extends Error {}
 
+/** A step the page cannot take as asked, such as an option the dropdown does not have. */
+class SettledStep extends Error {}
+
 type DomWindow = JSDOM["window"];
 type DomElement = InstanceType<DomWindow["Element"]>;
 
@@ -117,8 +120,8 @@ export class PageBrowserSession {
           title: snap.title,
           tree: snap.tree,
           elements: snap.elements,
-          error: `Unknown element ref "${action.ref}". Call browser_snapshot and use a fresh ref.`,
-          fallback: "computer_act",
+          error: `Stale element ref "${action.ref}": the page has changed since that snapshot. Use a ref from the page below.`,
+          uncertain: false,
         };
       }
       try {
@@ -137,7 +140,7 @@ export class PageBrowserSession {
           tree: snap.tree,
           elements: snap.elements,
           error: error instanceof Error ? error.message : String(error),
-          ...(error instanceof FillRefused
+          ...(error instanceof FillRefused || error instanceof SettledStep
             ? { uncertain: false }
             : { fallback: "computer_act" as const }),
         };
@@ -283,8 +286,26 @@ export class PageBrowserSession {
         return;
       }
       if (el instanceof win.HTMLSelectElement) {
-        const match = [...el.options].find((o) => o.value === text || o.text === text);
-        el.value = match ? match.value : text;
+        const norm = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase();
+        const options = [...el.options];
+        const match =
+          options.find((o) => o.value === text) ??
+          options.find((o) => optionLabel(o) === text) ??
+          options.find((o) => norm(optionLabel(o)) === norm(text) || norm(o.value) === norm(text));
+        if (!match) {
+          throw new SettledStep(
+            `This dropdown has no option "${text}". Its options: ${describeOptions(optionsOf(el, win))}.`,
+          );
+        }
+        if (unavailable(win, match)) {
+          throw new SettledStep(
+            `The option "${optionLabel(match)}" is disabled. Its options: ${describeOptions(optionsOf(el, win))}.`,
+          );
+        }
+        // The old choice goes: a multiple select would keep it otherwise.
+        for (const option of options) option.selected = false;
+        match.selected = true;
+        el.dispatchEvent(new win.Event("input", { bubbles: true }));
         el.dispatchEvent(new win.Event("change", { bubbles: true }));
         return;
       }
@@ -323,9 +344,11 @@ export class PageBrowserSession {
       if (value !== undefined) entry.value = value;
       // Deterministic geometry: offline point mapping needs real boxes.
       if (extended) entry.rect = { x: 0, y: elements.length * 24, width: 320, height: 24 };
+      if (node instanceof win.HTMLSelectElement) entry.options = optionsOf(node, win);
       elements.push(entry);
       const valuePart = value !== undefined ? ` value=${JSON.stringify(value)}` : "";
-      lines.push(`- ${role} ${JSON.stringify(name)} [${ref}]${valuePart}`);
+      const optionsPart = entry.options ? ` options: ${describeOptions(entry.options)}` : "";
+      lines.push(`- ${role} ${JSON.stringify(name)} [${ref}]${valuePart}${optionsPart}`);
     }
     return { elements, tree: lines.join("\n") || "(no interactive elements)" };
   }
@@ -358,6 +381,37 @@ function isIgnored(win: DomWindow, el: DomElement): boolean {
   return false;
 }
 
+function optionLabel(option: { label: string; text: string }): string {
+  return (option.label || option.text).replace(/\s+/g, " ").trim();
+}
+
+/** An option is out of reach when it, or the group it is in, is disabled. */
+function unavailable(win: DomWindow, option: HTMLOptionElement): boolean {
+  const group = option.parentElement;
+  return option.disabled || (group instanceof win.HTMLOptGroupElement && group.disabled);
+}
+
+function optionsOf(select: { options: Iterable<HTMLOptionElement> }, win: DomWindow) {
+  return [...select.options].map((option) => ({
+    label: optionLabel(option),
+    value: option.value,
+    ...(option.selected ? { selected: true } : {}),
+    ...(unavailable(win, option) ? { disabled: true } : {}),
+  }));
+}
+
+function describeOptions(options: NonNullable<BrowserSnapshotNode["options"]>): string {
+  return options
+    .map(
+      (option) =>
+        JSON.stringify(option.label) +
+        (option.value !== option.label ? `=${JSON.stringify(option.value)}` : "") +
+        (option.selected ? " (selected)" : "") +
+        (option.disabled ? " (disabled)" : ""),
+    )
+    .join(", ");
+}
+
 function roleFor(win: DomWindow, el: DomElement): string {
   if (el instanceof win.HTMLInputElement && el.type === "file") return "file upload";
   const explicit = el.getAttribute("role");
@@ -379,6 +433,20 @@ function roleFor(win: DomWindow, el: DomElement): string {
 }
 
 function nameFor(win: DomWindow, el: DomElement): string {
+  const root = el.getRootNode();
+  const labelledBy = (el.getAttribute("aria-labelledby") ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((id) =>
+      root instanceof win.Document || root instanceof win.ShadowRoot
+        ? (root.getElementById(id)?.textContent ?? "")
+        : "",
+    )
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (labelledBy) return labelledBy;
   const aria = el.getAttribute("aria-label")?.trim();
   if (aria) return aria;
   if (el instanceof win.HTMLInputElement || el instanceof win.HTMLTextAreaElement) {

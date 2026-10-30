@@ -12,13 +12,13 @@ import {
 import { Search, SlidersHorizontal, Zap } from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";
+import { InviteDialog } from "../../components/InviteDialog";
 import { PasskeyOffer } from "../../components/PasskeyOffer";
 import { SidebarFooter } from "../../components/SidebarFooter";
 import { useBilling } from "../../components/SubscriptionGate";
 import { formatBillingDate } from "../../lib/billing";
 import type { BotsSidebarDensity } from "../../lib/bots-sidebar-density-pref";
 import type { Panel } from "../../lib/right-panel-state";
-import { clearSpaceSelection } from "../../lib/rpc";
 import { useSignOut } from "../../lib/sign-out";
 import { ActivityList } from "../ActivityList";
 import { SpaceSearchResults } from "../SpaceSearch";
@@ -180,7 +180,12 @@ export function ShellSidebar({
                 else setQuery(e.target.value);
               }}
               onKeyDown={(event) => {
-                if (event.key !== "Escape") return;
+                if (
+                  event.key !== "Escape" ||
+                  event.nativeEvent.isComposing ||
+                  event.keyCode === 229
+                )
+                  return;
                 if (activityMode) {
                   setActivityFilters({ ...activityFilters, query: "" });
                   return;
@@ -312,11 +317,14 @@ function ShellSidebarFooter({
       ? billing.byokFreeUntil
       : null;
   const [menuOpen, setMenuOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const referral = billing?.referral;
   const [logOutError, setLogOutError] = useState<string | null>(null);
-  const { signingOut, logOut } = useSignOut(() => {
-    clearSpaceSelection();
-    navigate("/");
-  }, setLogOutError);
+  const { signingOut, logOut } = useSignOut("/sign-in", (message) => {
+    // A failed sign-out reloads the page: reopen the menu so its error shows.
+    setMenuOpen(true);
+    setLogOutError(message);
+  });
   const { label: userName, initial: initials } = accountDisplay(user ?? {}, t`You`);
   const day = freeUntil ? formatBillingDate(freeUntil, i18n.locale || "en") : "";
   return (
@@ -381,6 +389,14 @@ function ShellSidebarFooter({
           setMenuOpen(false);
           openSettings("usage");
         }}
+        onInvite={
+          referral
+            ? () => {
+                setMenuOpen(false);
+                setInviteOpen(true);
+              }
+            : undefined
+        }
         onLogOut={() => {
           setLogOutError(null);
           void logOut();
@@ -388,6 +404,9 @@ function ShellSidebarFooter({
         signingOut={signingOut}
         logOutError={logOutError}
       />
+      {referral ? (
+        <InviteDialog referral={referral} open={inviteOpen} onOpenChange={setInviteOpen} />
+      ) : null}
     </>
   );
 }

@@ -7,6 +7,7 @@ import {
   SandboxDamagedError,
   SandboxRateLimitError,
   SandboxUnavailableError,
+  SandboxUnresponsiveError,
   WorkspaceTooLargeError,
 } from "@rakazo/adapter-kit";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
@@ -44,6 +45,35 @@ describe("sandbox idle", () => {
     vi.unstubAllEnvs();
     installLogger(createLogger({ service: "test", level: "off", sinks: [] }));
   });
+
+  it.each(["bytes", "files"] as const)(
+    "announces an unsaved home once for %s until the next save",
+    async (limit) => {
+      const harness = idleHarness({ exportError: new WorkspaceTooLargeError(limit) });
+      await sleepComputerIfIdle(harness.deps, harness.computer.id);
+      await sleepComputerIfIdle(harness.deps, harness.computer.id);
+      expect(harness.prisma.message.create).toHaveBeenCalledOnce();
+      expect(harness.prisma.message.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            role: "system",
+            blocks: [
+              {
+                kind: "meta",
+                text: `${new WorkspaceTooLargeError(limit).message}. It will keep running unsaved. Remove large files or files you no longer need so it can be saved.`,
+              },
+            ],
+          }),
+        }),
+      );
+      expect(harness.events.notify).toHaveBeenCalledOnce();
+      expect(harness.sandbox.stop).not.toHaveBeenCalled();
+      expect(harness.computer.state).toBe("running");
+      harness.computer.homeRevisionAt = new Date();
+      await sleepComputerIfIdle(harness.deps, harness.computer.id);
+      expect(harness.prisma.message.create).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("defaults to ten minutes when SANDBOX_IDLE_MS is unset", () => {
     expect(computerIdleSleepEnabled()).toBe(true);
@@ -93,18 +123,72 @@ describe("sandbox idle", () => {
     );
   });
 
-  it("keeps a computer alive without suspending it while a run is active", async () => {
-    const harness = idleHarness();
-    harness.prisma.run.findFirst.mockResolvedValueOnce({ id: "run" });
+  it("logs and drops a sleep check the job queue rejects", async () => {
+    const sink = createTestSink();
+    installLogger(createLogger({ service: "test", sinks: [sink] }));
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      const harness = idleHarness({ billsWhileRunning: true, runningSince: new Date(0) });
+      let enqueued = 0;
+      // A vi.fn rejection is observed by the spy itself and could never go unhandled.
+      harness.deps.jobs.enqueue = () => {
+        enqueued += 1;
+        return Promise.reject(new Error("Background job publisher is closed"));
+      };
 
-    await sleepComputerIfIdle(harness.deps, harness.computer.id);
+      scheduleComputerSleep(harness.deps.jobs, harness.computer.id);
+      await expect(touchRunningComputer(harness.deps, harness.computer)).resolves.toBeUndefined();
+      await new Promise((resolve) => setImmediate(resolve));
 
-    expect(harness.home.commit).not.toHaveBeenCalled();
-    expect(harness.sandbox.stop).not.toHaveBeenCalled();
-    expect(harness.sandbox.execute).not.toHaveBeenCalled();
-    expect(harness.sandbox.keepAlive).toHaveBeenCalledOnce();
-    expect(harness.jobs.enqueue).toHaveBeenCalledOnce();
+      expect(enqueued).toBe(2);
+      expect(harness.sandbox.keepAlive).not.toHaveBeenCalled();
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(
+        sink.events.filter(
+          (event) => event.level === "warn" && event.message === "computer.sleep_schedule_failed",
+        ),
+      ).toHaveLength(2);
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
   });
+
+  it.each(["queued", "leased", "running"])(
+    "keeps a computer awake while a run is %s",
+    async (status) => {
+      const harness = idleHarness();
+      harness.prisma.run.findFirst.mockImplementation(async ({ where }) =>
+        where.status.in.includes(status) ? { id: "run" } : null,
+      );
+
+      await sleepComputerIfIdle(harness.deps, harness.computer.id);
+
+      expect(harness.home.commit).not.toHaveBeenCalled();
+      expect(harness.sandbox.stop).not.toHaveBeenCalled();
+      expect(harness.sandbox.execute).not.toHaveBeenCalled();
+      expect(harness.sandbox.keepAlive).toHaveBeenCalledOnce();
+      expect(harness.jobs.enqueue).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([undefined, false, true])(
+    "suspends a computer whose only active run is waiting_input (billsWhileRunning: %s)",
+    async (billsWhileRunning) => {
+      const harness = idleHarness({ billsWhileRunning });
+      harness.prisma.run.findFirst.mockImplementation(async ({ where }) =>
+        where.status.in.includes("waiting_input") ? { id: "waiting-for-answer" } : null,
+      );
+
+      await sleepComputerIfIdle(harness.deps, harness.computer.id);
+
+      expect(harness.home.commit).toHaveBeenCalledOnce();
+      expect(harness.sandbox.stop).toHaveBeenCalledOnce();
+      expect(harness.computer.state).toBe("suspended");
+      expect(harness.sandbox.keepAlive).not.toHaveBeenCalled();
+      expect(harness.jobs.enqueue).not.toHaveBeenCalled();
+    },
+  );
 
   it("leaves a held computer whose heartbeat finds the sandbox gone to its recovery", async () => {
     const harness = idleHarness();
@@ -115,6 +199,12 @@ describe("sandbox idle", () => {
 
     await expect(sleepComputerIfIdle(harness.deps, harness.computer.id)).resolves.toBeUndefined();
     expect(harness.jobs.enqueue).toHaveBeenCalledOnce();
+
+    harness.sandbox.keepAlive.mockRejectedValueOnce(
+      new SandboxUnresponsiveError("Boat could not be reached"),
+    );
+    await expect(sleepComputerIfIdle(harness.deps, harness.computer.id)).resolves.toBeUndefined();
+    expect(harness.jobs.enqueue).toHaveBeenCalledTimes(2);
 
     harness.sandbox.keepAlive.mockRejectedValueOnce(new Error("requires PRIVATE networking"));
     await expect(sleepComputerIfIdle(harness.deps, harness.computer.id)).rejects.toThrow(
@@ -177,6 +267,29 @@ describe("sandbox idle", () => {
     await sleepComputerIfIdle(harness.deps, harness.computer.id);
 
     expect(harness.sandbox.stop).toHaveBeenCalledOnce();
+  });
+
+  it("claims past only the lease a run waiting for takeover holds, at its current fence", async () => {
+    const harness = idleHarness();
+    harness.prisma.computerExecutionLease.findMany.mockResolvedValue([
+      { runId: "waiting", fence: 3 },
+      { runId: "working", fence: 7 },
+    ]);
+    harness.prisma.run.findMany.mockImplementation(async ({ where }) =>
+      where.id ? [{ id: "waiting" }] : [],
+    );
+
+    await sleepComputerIfIdle(harness.deps, harness.computer.id);
+
+    expect(harness.prisma.computer.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          executionLeases: {
+            none: { expiresAt: { gt: expect.any(Date) }, NOT: [{ runId: "waiting", fence: 3 }] },
+          },
+        }),
+      }),
+    );
   });
 
   it("claims the lease boundary before any checkpoint export", async () => {
@@ -540,6 +653,25 @@ describe("sandbox idle", () => {
     await expect(sleepComputerIfIdle(harness.deps, harness.computer.id)).resolves.toBeUndefined();
     expect(harness.computer.state).toBe("running");
     expect(harness.jobs.enqueue).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits out a rate limit that lasts longer than the idle window before checking again", async () => {
+    vi.stubEnv("SANDBOX_IDLE_MS", "30000");
+    const harness = idleHarness();
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    harness.sandbox.stop.mockRejectedValueOnce(new SandboxRateLimitError({ retryAfterMs: 90_000 }));
+
+    await expect(sleepComputerIfIdle(harness.deps, harness.computer.id)).resolves.toBeUndefined();
+    expect(harness.jobs.enqueue).toHaveBeenLastCalledWith(
+      expect.objectContaining({ availableAt: new Date(now + 90_000) }),
+    );
+
+    harness.sandbox.stop.mockRejectedValueOnce(new SandboxRateLimitError({ retryAfterMs: 5_000 }));
+    await sleepComputerIfIdle(harness.deps, harness.computer.id);
+    expect(harness.jobs.enqueue).toHaveBeenLastCalledWith(
+      expect.objectContaining({ availableAt: new Date(now + 30_000) }),
+    );
   });
 
   it("takes over a suspend claim abandoned by a sleep job that died", async () => {
@@ -1096,6 +1228,43 @@ describe("background work launch and probe", () => {
     },
   );
 
+  it.skipIf(process.platform === "win32").each([true, false])(
+    "sweeps every stale marker with held background work: %s",
+    async (held) => {
+      const markerId = `computer-sweep-${randomUUID()}`;
+      const activeMarker = `/tmp/rakazo-background-${markerId}-run-1-a-held`;
+      const staleMarkers = [
+        `/tmp/rakazo-background-${markerId}-run-1-b-stale`,
+        `/tmp/rakazo-background-${markerId}-run-2-c-stale`,
+      ];
+      for (const marker of [activeMarker, ...staleMarkers]) markers.add(marker);
+
+      if (held) {
+        const active = spawn(
+          "bash",
+          [
+            "-c",
+            BACKGROUND_WORK_LAUNCH,
+            "rakazo-background-launch",
+            markerId,
+            "run-1",
+            "a-held",
+            "exec sleep 30",
+          ],
+          { stdio: "ignore", detached: true },
+        );
+        children.push(active);
+        await expect.poll(() => existsSync(activeMarker)).toBe(true);
+      }
+      for (const marker of staleMarkers) writeFileSync(marker, "");
+
+      expect(await probeBackgroundWork(markerId)).toBe(held ? 0 : 1);
+      for (const marker of staleMarkers) expect(existsSync(marker)).toBe(false);
+      expect(existsSync(activeMarker)).toBe(held);
+      expect(await probeBackgroundWork(markerId)).toBe(held ? 0 : 1);
+    },
+  );
+
   it.skipIf(process.platform === "win32")(
     "cleans a completed marker without blocking a later launch",
     async () => {
@@ -1408,8 +1577,26 @@ function idleHarness(
     homeRevisionAt: options.homeRevisionAt ?? null,
     updatedAt: new Date("2026-01-01T00:00:00.000Z"),
   };
+  const notices = new Map<string, { id: string }>();
   const prisma = {
+    $transaction: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work(prisma),
+    thread: { update: vi.fn().mockResolvedValue({ nextMessageSeq: 1, nextEventSeq: 1 }) },
+    message: {
+      findUnique: vi.fn(
+        async ({ where }) => notices.get(where.threadId_clientNonce.clientNonce) ?? null,
+      ),
+      create: vi.fn(async ({ data }) => {
+        const message = { id: "notice" };
+        notices.set(data.clientNonce, message);
+        return message;
+      }),
+    },
     computer: {
+      findFirst: vi.fn(async () => ({
+        state: "running",
+        restorePending: false,
+        screenGeneration: 0,
+      })),
       findUnique: vi.fn(async () => ({ ...computer })),
       updateMany: vi.fn(async (args) => {
         if (args.where.updatedAt && args.where.updatedAt.getTime() !== computer.updatedAt.getTime())
@@ -1428,6 +1615,7 @@ function idleHarness(
         .mockResolvedValue(options.takeoverRequestedAt ? [{ id: "waiting-for-user" }] : []),
     },
     event: {
+      create: vi.fn().mockResolvedValue({ seq: 1 }),
       findFirst: vi.fn(async ({ where }) => {
         if (where.type === "computer.takeover.granted") {
           return options.takeoverSinceSave ? { id: "later-takeover" } : null;
@@ -1437,6 +1625,7 @@ function idleHarness(
           : null;
       }),
     },
+    computerExecutionLease: { findMany: vi.fn().mockResolvedValue([]) },
     agentHome: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     computerRun: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     bot: {
@@ -1475,7 +1664,10 @@ function idleHarness(
     cancel: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
   };
-  const events = { append: vi.fn().mockResolvedValue({}) };
+  const events = {
+    append: vi.fn().mockResolvedValue({}),
+    notify: vi.fn().mockResolvedValue(undefined),
+  };
   return {
     computer,
     prisma,

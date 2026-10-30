@@ -37,6 +37,7 @@ import { isTerminalModelSetupError } from "./run-model.js";
 import { runNotificationsEnabled } from "./run-notifications.js";
 import { REACTION_SILENT_REPLY_GUIDANCE } from "./run-replies.js";
 import { offeredFleetTools, selectBuiltinToolsForRun } from "./run-tool-selection.js";
+import { historyMyChatsAllowed } from "./run-tools-memory.js";
 import {
   loadCurrentTurnImages,
   missingTurnImagesInstruction,
@@ -56,11 +57,32 @@ const createRunExecutor = (deps: Parameters<typeof createExecutor>[0]) =>
   createExecutor({ ...deps, prisma: withModelRoles(deps.prisma) });
 
 describe("bot tool permissions", () => {
+  it("describes bounded cross-chat keyword fanout and authorized reads", () => {
+    const tools = selectBuiltinToolsForRun({
+      historyRetrievalEnabled: true,
+      graphicalToolsAllowed: false,
+      groupId: null,
+      trigger: "user",
+      semanticMemoryEnabled: false,
+      messagingChannelRun: false,
+    });
+    const search = tools.find((tool) => tool.name === "search_history")!;
+    expect(search.description).toContain("2–4 keyword variants");
+    expect(search.description).toContain("direct human app run");
+    expect(search.inputSchema).toMatchObject({
+      properties: { queries: { maxItems: 5 }, scope: { enum: ["this_chat", "my_chats"] } },
+      oneOf: [{ required: ["query"] }, { required: ["queries"] }],
+    });
+    expect(tools.find((tool) => tool.name === "read_history")?.inputSchema).toMatchObject({
+      properties: { threadId: { type: "string" } },
+    });
+  });
+
   it("never lets self-edit change disabled tools alongside an allowed field", () => {
-    expect(parseUpdateBotPatch({ name: "Scout", disabledBuiltinTools: [] }, "Bot")).toEqual({
+    expect(parseUpdateBotPatch({ name: "Scout", disabledBuiltinTools: [] })).toEqual({
       patch: { name: "Scout" },
     });
-    expect(parseUpdateBotPatch({ disabledBuiltinTools: [] }, "Scout")).toHaveProperty("error");
+    expect(parseUpdateBotPatch({ disabledBuiltinTools: [] })).toHaveProperty("error");
   });
 
   it("filters history and app connection tools without widening the capability-gated selection", () => {
@@ -1124,6 +1146,7 @@ function compatiblePrismaParts(modelId: string, plaintext: string) {
       },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       secret: {
+        findMany: vi.fn(async () => []),
         findFirst: vi.fn(async () => ({ id: "secret-compat", ciphertext: plaintext })),
         findUnique: vi.fn(async () => null),
       },
@@ -1203,6 +1226,7 @@ function pinnedRoutineRunPrisma(modelId: string) {
     task: { findUniqueOrThrow: vi.fn(async () => ({ id: "task-1", prompt: "hello" })) },
     connection: { findMany: vi.fn(async () => []) },
     taughtSkill: { findMany: vi.fn(async () => []) },
+    secret: { findMany: vi.fn(async () => []) },
     vaultCredential: { findMany: vi.fn(async () => []) },
     agentSkill: { findMany: vi.fn(async () => []) },
     scratchpadItem: { findMany: vi.fn(async () => []) },
@@ -1236,49 +1260,49 @@ async function continuePinnedRoutineRun(plaintext: string, modelId: string) {
 
 describe("parseUpdateBotPatch", () => {
   it("treats a blank bot_id as omitted, as providers send it", () => {
-    expect(parseUpdateBotPatch({ name: "Scout", bot_id: "" }, "Chief")).toEqual({
+    expect(parseUpdateBotPatch({ name: "Scout", bot_id: "" })).toEqual({
       patch: { name: "Scout" },
     });
   });
 
   it("accepts notifyOnFinish on its own", () => {
-    expect(parseUpdateBotPatch({ notifyOnFinish: false }, "Chief")).toEqual({
+    expect(parseUpdateBotPatch({ notifyOnFinish: false })).toEqual({
       patch: { notifyOnFinish: false },
     });
-    expect(parseUpdateBotPatch({ notifyOnFinish: true }, "Chief")).toEqual({
+    expect(parseUpdateBotPatch({ notifyOnFinish: true })).toEqual({
       patch: { notifyOnFinish: true },
     });
   });
 
   it("accepts notify_on_finish as an alias", () => {
-    expect(parseUpdateBotPatch({ notify_on_finish: false }, "Chief")).toEqual({
+    expect(parseUpdateBotPatch({ notify_on_finish: false })).toEqual({
       patch: { notifyOnFinish: false },
     });
   });
 
   it("keeps name patches and notifyOnFinish together", () => {
-    expect(parseUpdateBotPatch({ name: "Scout", notifyOnFinish: false }, "Chief")).toEqual({
+    expect(parseUpdateBotPatch({ name: "Scout", notifyOnFinish: false })).toEqual({
       patch: { name: "Scout", notifyOnFinish: false },
     });
   });
 
   it("rejects a non-boolean notifyOnFinish", () => {
-    expect(parseUpdateBotPatch({ notifyOnFinish: "false" }, "Chief")).toEqual({
+    expect(parseUpdateBotPatch({ notifyOnFinish: "false" })).toEqual({
       error: "notifyOnFinish must be true or false.",
     });
   });
 
   it("requires at least one supported field", () => {
-    expect(parseUpdateBotPatch({}, "Chief")).toEqual({
+    expect(parseUpdateBotPatch({})).toEqual({
       error:
-        "Provide at least one of name, title, description, notifyOnFinish, color, artifact_id, or use_attached_image.",
+        "Provide at least one of name, description, notifyOnFinish, color, artifact_id, or use_attached_image.",
     });
   });
 
   it("leaves avatar-only args for the executor to resolve", () => {
-    expect(parseUpdateBotPatch({ color: "#8B5CF6" }, "Chief")).toEqual({ patch: {} });
-    expect(parseUpdateBotPatch({ artifact_id: "art-1" }, "Chief")).toEqual({ patch: {} });
-    expect(parseUpdateBotPatch({ use_attached_image: true }, "Chief")).toEqual({ patch: {} });
+    expect(parseUpdateBotPatch({ color: "#8B5CF6" })).toEqual({ patch: {} });
+    expect(parseUpdateBotPatch({ artifact_id: "art-1" })).toEqual({ patch: {} });
+    expect(parseUpdateBotPatch({ use_attached_image: true })).toEqual({ patch: {} });
   });
 });
 
@@ -1332,7 +1356,7 @@ describe("userTurnInstructions", () => {
     "A bot and a subagent are different. Never use both for the same request.",
     "create_space proposes a new privacy boundary inside the current organization. Use it when the user asks to create a space or separate data between teams or projects. Never claim the space exists before the tool succeeds.",
     "spawn_bot creates a lasting regular bot (own chat, computer, memory) that appears in the user's bot list. If the user asked to create a bot, call spawn_bot once and stop. Do not run_subagent to demo it.",
-    "update_bot updates this bot's own name (chat header / list label), title, description, avatar, and notifyOnFinish. Your description is the short public summary teammates see; it does not change your instructions. When the user asks you to rename yourself, change your title or description, change your profile picture, or turn finish notifications on or off, call update_bot — do not claim you changed them without the tool. Pass color for a hex or encoded shape, artifact_id for an image in this space, or use_attached_image when they attached a picture on this message.",
+    "update_bot updates this bot's own name (chat header / list label), description, avatar, and notifyOnFinish. Your description is the one-line public summary teammates see; your instructions are private and say how you do your job. When you have no instructions yet and your job becomes clear, set them with update_bot; after that, propose changes with propose_instructions_update. When the user asks you to rename yourself, change your description, change your profile picture, or turn finish notifications on or off, call update_bot — do not claim you changed them without the tool. Pass color for a hex or encoded shape, artifact_id for an image in this space, or use_attached_image when they attached a picture on this message.",
     "run_subagent is a short helper inside this turn only. It is not a bot, has no thread, and does not show in the list. Use it for parallel work you will summarize here.",
   ];
   const archiveBot =
@@ -2049,7 +2073,11 @@ describe("createRunExecutor", () => {
             })),
           },
           task: { create: taskCreate },
-          run: { create: runCreate, findMany: vi.fn(async () => []) },
+          run: {
+            create: runCreate,
+            findMany: vi.fn(async () => []),
+            findUnique: vi.fn(async () => null),
+          },
         }),
       ),
     } as unknown as PrismaClient;
@@ -2118,7 +2146,11 @@ describe("createRunExecutor", () => {
             })),
           },
           task: { create: taskCreate },
-          run: { create: runCreate, findMany: vi.fn(async () => []) },
+          run: {
+            create: runCreate,
+            findMany: vi.fn(async () => []),
+            findUnique: vi.fn(async () => null),
+          },
         }),
       ),
     } as unknown as PrismaClient;
@@ -2193,7 +2225,11 @@ describe("createRunExecutor", () => {
               findUnique: vi.fn(async () => claimedModel),
             },
             task: { create: taskCreate },
-            run: { create: runCreate, findMany: vi.fn(async () => []) },
+            run: {
+              create: runCreate,
+              findMany: vi.fn(async () => []),
+              findUnique: vi.fn(async () => null),
+            },
           }),
         ),
       } as unknown as PrismaClient;
@@ -2343,7 +2379,11 @@ describe("createRunExecutor", () => {
             })),
           },
           task: { create: taskCreate },
-          run: { create: runCreate, findMany: vi.fn(async () => []) },
+          run: {
+            create: runCreate,
+            findMany: vi.fn(async () => []),
+            findUnique: vi.fn(async () => null),
+          },
         }),
       ),
     } as unknown as PrismaClient;
@@ -2415,7 +2455,11 @@ describe("createRunExecutor", () => {
             })),
           },
           task: { create: taskCreate },
-          run: { create: runCreate, findMany: vi.fn(async () => []) },
+          run: {
+            create: runCreate,
+            findMany: vi.fn(async () => []),
+            findUnique: vi.fn(async () => null),
+          },
         }),
       ),
     } as unknown as PrismaClient;
@@ -2981,6 +3025,7 @@ description: Prepare standup notes
           ),
         },
         secret: {
+          findMany: vi.fn(async () => []),
           findFirst: vi.fn(async () =>
             plaintext === undefined
               ? null
@@ -3114,6 +3159,7 @@ description: Prepare standup notes
       userModelCredential: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       taughtSkill: { findMany: vi.fn(async () => []) },
+      secret: { findMany: vi.fn(async () => []) },
       vaultCredential: { findMany: vi.fn(async () => []) },
       agentSkill: { findMany: vi.fn(async () => []) },
       scratchpadItem: { findMany: vi.fn(async () => []) },
@@ -3231,6 +3277,7 @@ description: Prepare standup notes
       userModelCredential: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       taughtSkill: { findMany: vi.fn(async () => []) },
+      secret: { findMany: vi.fn(async () => []) },
       vaultCredential: { findMany: vi.fn(async () => []) },
       agentSkill: { findMany: vi.fn(async () => []) },
       scratchpadItem: { findMany: vi.fn(async () => []) },
@@ -3291,6 +3338,7 @@ description: Prepare standup notes
       userModelCredential: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       secret: {
+        findMany: vi.fn(async () => []),
         findFirst: vi.fn(async () => ({ id: "fixture-secret", ciphertext: "fixture-ciphertext" })),
         findUnique: vi.fn(async () => null),
       },
@@ -3527,6 +3575,21 @@ description: Prepare standup notes
         executorFor(owner, flag).resolveConnectedModel(scope, COMPATIBLE_PROVIDER, "space-model"),
       ).resolves.toMatchObject({ baseUrl: COMPATIBLE_BASE_URL, allowPrivateEndpoint: true });
     });
+  });
+
+  it("carries the saved protocol into primary and connected model resolution", async () => {
+    const plaintext = serializeModelSecret({
+      kind: "openai_compatible",
+      baseUrl: COMPATIBLE_BASE_URL,
+      apiProtocol: "responses",
+      apiKey: "fake-api-key",
+    });
+    const executor = compatibleExecutor(compatiblePrismaParts("space-model", plaintext), plaintext);
+    const scope = { userId: "user-1", spaceId: "ws-1" };
+    expect(
+      await executor.resolveConnectedModel(scope, COMPATIBLE_PROVIDER, "space-model"),
+    ).toMatchObject({ apiProtocol: "responses" });
+    expect(await executor.resolveModel(scope)).toMatchObject({ apiProtocol: "responses" });
   });
 
   it("sends saved compatible headers from executor resolution to the model request", async () => {
@@ -4292,4 +4355,27 @@ describe("call_user availability", () => {
     expect(offered({ trigger: "tickets" })).toBe(false);
     expect(offered({ voiceCall: true })).toBe(false);
   });
+});
+
+describe("cross-chat history grant", () => {
+  it.each(["user", "follow_up"])("allows only human %s requests in the app thread", (trigger) => {
+    const run = { trigger, threadId: "thread" };
+    expect(historyMyChatsAllowed(run, { role: "user", threadId: "thread" }, false)).toBe(true);
+    expect(historyMyChatsAllowed(run, { role: "user", threadId: "thread" }, true)).toBe(false);
+    expect(historyMyChatsAllowed(run, { role: "bot", threadId: "thread" }, false)).toBe(false);
+    expect(historyMyChatsAllowed(run, { role: "user", threadId: "other" }, false)).toBe(false);
+    expect(historyMyChatsAllowed(run, null, false)).toBe(false);
+  });
+  it.each(["bot_message", "routine", "schedule", "messaging", "webhook", "created", "call_end"])(
+    "denies %s even with a human-looking source",
+    (trigger) => {
+      expect(
+        historyMyChatsAllowed(
+          { trigger, threadId: "thread" },
+          { role: "user", threadId: "thread" },
+          false,
+        ),
+      ).toBe(false);
+    },
+  );
 });

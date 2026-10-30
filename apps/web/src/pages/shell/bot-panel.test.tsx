@@ -162,6 +162,7 @@ let queryClient: QueryClient;
 const onSave = vi.fn(
   async (_patch: Parameters<ComponentProps<typeof BotSettings>["onSave"]>[0]) => undefined,
 );
+const onExport = vi.fn(async () => undefined);
 
 async function render(
   description = "Billing",
@@ -178,7 +179,7 @@ async function render(
           bot={bot(description, overrides)}
           memoryProviderConfigured={memoryProviderConfigured}
           onSave={onSave}
-          onExport={async () => undefined}
+          onExport={onExport}
           onClear={() => undefined}
         />
       </QueryClientProvider>,
@@ -232,6 +233,7 @@ async function clickSave() {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   onSave.mockReset().mockResolvedValue(undefined);
+  onExport.mockReset().mockResolvedValue(undefined);
   vi.mocked(rpc.bots.update).mockReset();
   vi.mocked(rpc.bots.get).mockReset();
   container = document.createElement("div");
@@ -268,10 +270,11 @@ it("shows the main sections and keeps only rare controls in Advanced", async () 
   expect(container.querySelector('[id$="-model"]')).toBeNull();
   expect(container.querySelector('[id$="-thinking"]')).toBeNull();
   expect(container.querySelector('[id$="-auto-speak"]')).toBeNull();
-  expect(container.querySelector('textarea[id$="-instructions"]')).not.toBeNull();
+  expect(container.querySelector('textarea[id$="-instructions"]')).toBeNull();
   await act(async () =>
     advanced.querySelector<HTMLButtonElement>("button[aria-expanded]")?.click(),
   );
+  expect(advanced.querySelector('textarea[id$="-instructions"]')).not.toBeNull();
   expect(
     container
       .querySelector('[id$="-disabled-tools"]')
@@ -428,6 +431,20 @@ describe("BotSettings bot management saves", () => {
       toggle.click();
     });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("shows a failed export instead of leaving it unhandled", async () => {
+    await render();
+    await expandAdvanced();
+    onExport.mockRejectedValueOnce(Object.assign(new Error("Bad Gateway"), { status: 502 }));
+    const exportButton = [...container.querySelectorAll("button")].find(
+      (node) => node.textContent === "Export",
+    );
+    if (!exportButton) throw new Error("Missing export");
+    await act(async () => {
+      exportButton.click();
+    });
+    expect(container.textContent).toContain("Could not reach the server");
   });
 
   it.each([false, true])("saves only the bot management toggle from %s", async (enabled) => {
@@ -619,9 +636,8 @@ describe("instruction settings refresh", () => {
   });
 });
 
-it("uses the empty label placeholder and cancels an inline name edit", async () => {
-  await render("", { title: "" });
-  expect(container.textContent).toContain("Add a label");
+it("cancels an inline name edit", async () => {
+  await render();
   await act(async () =>
     container.querySelector<HTMLButtonElement>('[aria-label="Edit name"]')!.click(),
   );
@@ -642,27 +658,23 @@ it("opens Advanced for a model deep link and focuses the model control", async (
   expect(document.activeElement?.id.endsWith("-model")).toBe(true);
 });
 
-it("saves inline edits on blur and clears a label on Enter", async () => {
+it("saves inline name edits on blur and on Enter", async () => {
   await render();
-  for (const [editLabel, label, value, key] of [
-    ["Edit name", "Name", "Atlas", "name"],
-    ["Edit label", "Title", "", "title"],
-  ]) {
+  for (const [value, event] of [
+    ["Atlas", new FocusEvent("focusout", { bubbles: true })],
+    ["Ada", new KeyboardEvent("keydown", { key: "Enter", bubbles: true })],
+  ] as const) {
     await act(async () =>
-      container.querySelector<HTMLButtonElement>(`[aria-label="${editLabel}"]`)!.click(),
+      container.querySelector<HTMLButtonElement>('[aria-label="Edit name"]')!.click(),
     );
-    const input = container.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Name"]')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    await act(async () => {
-      if (key === "name") input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
-      else input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    });
-    expect(onSave.mock.lastCall?.[0]).toHaveProperty(key!, value);
+    await act(async () => input.dispatchEvent(event));
+    expect(onSave.mock.lastCall?.[0]).toHaveProperty("name", value);
   }
-  expect(container.textContent).toContain("Add a label");
 });
 
 it.each(["color", "notifyOnFinish"])(

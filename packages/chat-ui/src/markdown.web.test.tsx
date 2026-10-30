@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ReactNode } from "react";
-import { act } from "react";
+import { act, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -12,7 +12,9 @@ import {
   LinkFaviconsContext,
   LinkifiedText,
   MarkdownCopyProvider,
+  MarkdownLinkPromptProvider,
   RemoteImagesContext,
+  useLinkPrompt,
 } from "./markdown.web";
 
 describe("web markdown remote images", () => {
@@ -478,6 +480,44 @@ async function render(node: ReactNode) {
 }
 
 describe("web external link confirmation", () => {
+  it("asks before following a link drawn inside an SVG", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    function Drawing() {
+      const ref = useRef<HTMLDivElement>(null);
+      const dialog = useLinkPrompt(ref);
+      return (
+        <div ref={ref}>
+          <svg>
+            <a href="https://example.test/point">
+              <circle r={4} />
+            </a>
+          </svg>
+          {dialog}
+        </div>
+      );
+    }
+    const view = await render(<Drawing />);
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    await act(async () => {
+      view.container.querySelector("circle")?.dispatchEvent(click);
+    });
+    expect(click.defaultPrevented).toBe(true);
+    expect(document.querySelector("[role='alertdialog']")?.textContent).toContain(
+      "https://example.test/point",
+    );
+    expect(open).not.toHaveBeenCalled();
+    await act(async () => {
+      buttonNamed(document, "Open")?.click();
+    });
+    expect(open).toHaveBeenCalledWith(
+      "https://example.test/point",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    open.mockRestore();
+    await view.cleanup();
+  });
+
   it("asks before an external bot link and opens it only after confirmation", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     const view = await render(
@@ -557,6 +597,82 @@ describe("web external link confirmation", () => {
     }
     expect(document.querySelector("[role='alertdialog']")).toBeNull();
     expect(open).not.toHaveBeenCalled();
+    open.mockRestore();
+    await view.cleanup();
+  });
+
+  it("opens the link and trusts its site from the third button", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const trustSite = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    const view = await render(
+      <MarkdownLinkPromptProvider trustedSites={[]} trustSite={trustSite}>
+        <ChatMarkdown>{"See [Docs](https://docs.example.test/a)"}</ChatMarkdown>
+      </MarkdownLinkPromptProvider>,
+    );
+    await act(async () => {
+      view.container.querySelector("a")?.click();
+    });
+    expect(open).not.toHaveBeenCalled();
+    await act(async () => {
+      buttonNamed(document, "Always open example.test")?.click();
+    });
+    // A failed save still opens the link.
+    expect(open).toHaveBeenCalledWith(
+      "https://docs.example.test/a",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect(trustSite).toHaveBeenCalledWith("https://docs.example.test/a");
+    expect(document.querySelector("[role='alertdialog']")).toBeNull();
+    open.mockRestore();
+    await view.cleanup();
+  });
+
+  it("offers no third button without a way to trust a site", async () => {
+    const view = await render(<ChatMarkdown>{"[Docs](https://example.test/a)"}</ChatMarkdown>);
+    await act(async () => {
+      view.container.querySelector("a")?.click();
+    });
+    const dialog = document.querySelector("[role='alertdialog']");
+    expect([...(dialog?.querySelectorAll("button") ?? [])].map((b) => b.textContent)).toEqual([
+      "Cancel",
+      "Open",
+    ]);
+    await act(async () => {
+      buttonNamed(document, "Cancel")?.click();
+    });
+    await view.cleanup();
+  });
+
+  it("opens a link to a trusted site directly", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const view = await render(
+      <MarkdownLinkPromptProvider trustedSites={["example.test"]} trustSite={vi.fn()}>
+        <ChatMarkdown>
+          {"[Docs](https://docs.example.test/a) [Other](https://other.test/a)"}
+        </ChatMarkdown>
+      </MarkdownLinkPromptProvider>,
+    );
+    const [trusted, other] = [...view.container.querySelectorAll("a")];
+    let prevented: boolean | undefined;
+    const record = (event: MouseEvent) => {
+      prevented = event.defaultPrevented;
+      event.preventDefault();
+    };
+    document.addEventListener("click", record);
+    await act(async () => {
+      trusted?.click();
+    });
+    expect(prevented).toBe(false);
+    expect(document.querySelector("[role='alertdialog']")).toBeNull();
+    await act(async () => {
+      other?.click();
+    });
+    expect(prevented).toBe(true);
+    expect(document.querySelector("[role='alertdialog'] strong")?.textContent).toBe("other.test");
+    document.removeEventListener("click", record);
     open.mockRestore();
     await view.cleanup();
   });

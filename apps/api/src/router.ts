@@ -7,6 +7,7 @@ import type {
   ProductAnalytics,
   SandboxProvider,
   SecretStore,
+  TransactionalEmailProvider,
 } from "@rakazo/adapter-kit";
 import type {
   CloudAgentConnection,
@@ -109,14 +110,18 @@ export interface RouterDeps {
   };
   /** Present only when the deployment bills; self-hosted installs leave it unset. */
   billing?: BillingService;
+  email?: TransactionalEmailProvider;
+  onEmailError?: (error: unknown) => void;
   speechSummary?: VoiceDeps["speechSummary"];
   env: {
     ticketBoardEnabled?: boolean;
     jevAvailable?: boolean;
     navLinks?: NavLink[];
+    adminEmails?: string[];
     phoneCallsEnabled?: boolean;
     phoneCallRingSeconds?: number;
     maxUploadSizeBytes?: number;
+    maxAttachmentsPerMessage?: number;
     agentRuntime: string;
     teamChatJudgeProvider?: string;
     teamChatJudgeModel?: string;

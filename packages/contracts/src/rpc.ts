@@ -12,10 +12,8 @@ import {
 } from "./action-offers.js";
 import {
   AgentImportCreateInput,
-  AgentImportInfoSchema,
   AgentImportPlanSchema,
   AgentImportPreviewInput,
-  AgentImportUndoInput,
 } from "./agent-import.js";
 import { AgentImportSetupStateInput, AgentImportSetupStateSchema } from "./agent-import-setup.js";
 import { AiConsentQuerySchema, AiConsentStatusSchema } from "./ai-consent.js";
@@ -23,7 +21,7 @@ import { AnalyticsScreenInput } from "./analytics.js";
 import {
   ARTIFACT_DESCRIPTION_MAX_LENGTH,
   ARTIFACT_NAME_MAX_LENGTH,
-  ATTACHMENT_MAX_COUNT,
+  ATTACHMENT_COUNT_CEILING,
 } from "./attachments.js";
 import {
   BoardEventSchema,
@@ -59,6 +57,7 @@ import {
   AgentSkillSchema,
   AppBootstrapSchema,
   ApprovalModeSchema,
+  ApprovalRulePreviewSchema,
   ArtifactSchema,
   ArtifactVersionSchema,
   ArtifactWithContentSchema,
@@ -112,6 +111,9 @@ import {
   PluginMarketplaceCatalogSchema,
   PluginPartSchema,
   PluginPreviewSchema,
+  PluginSubmissionReviewSchema,
+  PluginSubmissionSchema,
+  PluginSubmissionStatusSchema,
   REPLY_QUOTE_MAX_LENGTH,
   ReorderBotsInput,
   ROUTINE_MENTION_BATCH_MAX,
@@ -197,7 +199,7 @@ const threadSendInput = threadTarget
   .safeExtend({
     imageHandling: z.enum(["confirm", "file"]).optional(),
     text: z.string().optional(),
-    artifactIds: z.array(Id).max(ATTACHMENT_MAX_COUNT).optional(),
+    artifactIds: z.array(Id).max(ATTACHMENT_COUNT_CEILING).optional(),
     /** Bare bot ids (legacy) or typed mention chips from the composer. */
     mentions: z
       .array(z.union([Id, structuredMentionTarget]))
@@ -273,6 +275,10 @@ export const appContract = {
     portal: oc
       .input(z.object({ client: BillingClientSchema }).optional())
       .output(z.object({ url: z.string().url() })),
+    /** Records who invited this organization; ignored once it has subscribed. */
+    claimReferral: oc
+      .input(z.object({ code: z.string().min(1).max(64) }))
+      .output(z.object({ ok: z.literal(true) })),
   },
   preferences: {
     update: oc
@@ -433,9 +439,7 @@ export const appContract = {
     create: oc.input(CreateBotInput).output(BotSchema),
     importPreview: oc.input(AgentImportPreviewInput).output(AgentImportPlanSchema),
     importCreate: oc.input(AgentImportCreateInput).output(BotSchema),
-    importInfo: oc.input(botId).output(AgentImportInfoSchema.nullable()),
     importSetupState: oc.input(AgentImportSetupStateInput).output(AgentImportSetupStateSchema),
-    importUndo: oc.input(AgentImportUndoInput).output(AgentImportInfoSchema),
     duplicate: oc.input(botId).output(BotSchema),
     reorder: oc.input(ReorderBotsInput).output(z.object({ ok: z.literal(true) })),
     update: oc.input(UpdateBotInput).output(BotSchema),
@@ -598,9 +602,18 @@ export const appContract = {
             fields: z.array(LoginFieldInput).min(1).max(LOGIN_FIELD_LIMIT).optional(),
             /** A login card's answer from apps that predate `fields`; `answer` carries its password. */
             username: z.string().min(1).max(512).optional(),
+            /** Only for a login card: use the login for this run only instead of saving it. */
+            remember: z.literal(false).optional(),
             /** Turns down a pending secret request; `answer` is then empty. */
             dismiss: z.literal(true).optional(),
           })
+          .refine(
+            (input) => input.remember === undefined || Boolean(input.fields ?? input.username),
+            {
+              message: "Only a website login can be used without saving it",
+              path: ["remember"],
+            },
+          )
           .refine(
             (input) =>
               input.dismiss
@@ -892,6 +905,12 @@ export const appContract = {
     catalog: oc
       .input(z.object({ query: z.string().trim().max(200).default("") }))
       .output(PluginMarketplaceCatalogSchema),
+    /** Admins only. */
+    submissions: oc
+      .input(z.object({ status: PluginSubmissionStatusSchema.default("pending") }))
+      .output(z.array(PluginSubmissionSchema)),
+    /** Admins only. */
+    review: oc.input(PluginSubmissionReviewSchema).output(PluginSubmissionSchema),
   },
   capabilities: {
     list: oc.output(z.array(CapabilityInstallSchema)),
@@ -978,7 +997,7 @@ export const appContract = {
         .output(z.array(BotMcpServerSchema)),
     },
     oauth: {
-      begin: oc.input(z.object({ serverId: Id, redirectUri: z.string().url() })).output(
+      begin: oc.input(z.object({ serverId: Id, redirectUri: z.string().url().optional() })).output(
         z.discriminatedUnion("status", [
           z.object({
             status: z.literal("authorization_required"),
@@ -1069,6 +1088,9 @@ export const appContract = {
       list: oc.output(MessagingInstallationsStatusSchema),
       /** Without a bot, the workspace answers as the first bot in the user's default space. */
       start: oc.input(z.object({ botId: Id.optional() })).output(z.object({ url: z.string() })),
+      complete: oc
+        .input(z.object({ state: z.string().max(64), code: z.string().max(4096) }))
+        .output(z.object({ ok: z.literal(true) })),
       remove: oc.input(z.object({ id: Id })).output(z.object({ ok: z.literal(true) })),
     },
     status: oc.output(MessagingStatusSchema),
@@ -1103,6 +1125,33 @@ export const appContract = {
   },
   approvalRules: {
     list: oc.input(settingsScopeInput.optional()).output(z.array(ActionApprovalRuleSchema)),
+    preview: oc
+      .input(
+        settingsScopeInput.extend({
+          id: Id,
+          effect: z.enum(["always_allow", "deny", "remove"]),
+          sample: z.object({
+            tools: z
+              .array(
+                z.object({
+                  name: z.string().trim().min(1).max(200),
+                  connectorKind: z.string().trim().min(1).max(200).optional(),
+                  readOnly: z.boolean().optional(),
+                }),
+              )
+              .min(1)
+              .max(20),
+            wrapper: z
+              .object({
+                name: z.string().trim().min(1).max(200),
+                connectorKind: z.string().trim().min(1).max(200).optional(),
+              })
+              .optional(),
+            site: z.string().trim().min(1).max(253).optional(),
+          }),
+        }),
+      )
+      .output(ApprovalRulePreviewSchema),
     set: oc
       .input(
         settingsScopeInput.extend({
@@ -1124,6 +1173,19 @@ export const appContract = {
     dismiss: oc
       .input(z.object({ offerId: Id }))
       .output(z.object({ status: ActionOfferStatusSchema })),
+  },
+  /**
+   * Sites the signed-in user opens from chat links without the external-link prompt, in every
+   * space. The server computes each site from a link; bot fetches never read this list.
+   */
+  trustedLinkSites: {
+    list: oc.output(z.array(z.string())),
+    trust: oc
+      .input(z.object({ url: z.string().min(1).max(8192) }))
+      .output(z.object({ site: z.string() })),
+    remove: oc
+      .input(z.object({ site: z.string().min(1).max(253) }))
+      .output(z.object({ ok: z.literal(true) })),
   },
   autoReview: {
     get: oc.input(settingsScopeInput.optional()).output(ActionAutoReviewSettingsSchema),
@@ -1186,6 +1248,11 @@ export const appContract = {
   },
   export: {
     bot: oc.input(botId).output(ExportManifestSchema),
+    /**
+     * A one-time token for `GET /api/account/export?token=`, which streams the account zip. Needs
+     * a recent identity confirmation on this session (IDENTITY_CONFIRMATION_REQUIRED).
+     */
+    accountToken: oc.output(z.object({ token: z.string() })),
   },
   notifications: {
     registerPush: oc
@@ -1226,7 +1293,7 @@ export const appContract = {
         z
           .object({
             provider: z.string(),
-            /** Optional only for a self-hosted server, which may run without a key. */
+            /** Optional for a self-hosted server and for providers without keys. */
             apiKey: z.string().max(4096).default(""),
             voiceId: z.string().max(120).optional(),
             speechModel: z.string().max(64).optional(),
@@ -1238,12 +1305,9 @@ export const appContract = {
             scope: SettingsScopeSchema.optional(),
           })
           .superRefine((input, ctx) => {
-            if (input.provider === OPENAI_COMPATIBLE_PROVIDER_ID) {
-              if (!input.baseUrl?.trim()) {
-                ctx.addIssue({ code: "custom", path: ["baseUrl"], message: "Enter a server URL." });
-              }
-            } else if (input.apiKey.length < 8) {
-              ctx.addIssue({ code: "custom", path: ["apiKey"], message: "Enter an API key." });
+            // Hosted keys are checked by the server, which knows which providers are keyless.
+            if (input.provider === OPENAI_COMPATIBLE_PROVIDER_ID && !input.baseUrl?.trim()) {
+              ctx.addIssue({ code: "custom", path: ["baseUrl"], message: "Enter a server URL." });
             }
           }),
       )

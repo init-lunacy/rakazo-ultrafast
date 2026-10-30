@@ -4,6 +4,7 @@ import { runContinueJob } from "@rakazo/adapter-kit";
 import {
   createPluginMarketplace,
   isTransientFetchError,
+  McpOAuthClientRequiredError,
   persistPreparedSecret,
   pluginPreviewDto,
   prepareApiInstall,
@@ -15,7 +16,7 @@ import {
 } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import { signupSurveyAsksTeamSize } from "@rakazo/contracts";
-import { containsSecret } from "@rakazo/core";
+import { comparePlugins, containsSecret, matchesPluginQuery } from "@rakazo/core";
 import type { Prisma } from "@rakazo/db";
 import {
   AVAILABILITY_SELECT,
@@ -37,7 +38,7 @@ import {
   resolveMcpApprovalCards,
   revertConnectedMcpApprovals,
 } from "../mcp-approval.js";
-import { buildMcpUpdateMaterial } from "../mcp-material.js";
+import { buildMcpUpdateMaterial, legacyMcpArgs } from "../mcp-material.js";
 import {
   assertMcpOAuthTemplates,
   assertMcpRemoteEndpoint,
@@ -55,6 +56,12 @@ import {
   startOnboarding,
 } from "../onboarding.js";
 import { installPlugin, lockPluginInstalls, setPluginParts } from "../plugin-installs.js";
+import {
+  approvedPluginEntries,
+  isAdmin,
+  listPluginSubmissions,
+  reviewPluginSubmission,
+} from "../plugin-submissions.js";
 import type { RouterContext } from "./context.js";
 import { computerContext, isUniqueViolation } from "./shared.js";
 
@@ -73,6 +80,10 @@ export function mcpRoutes(ctx: RouterContext) {
     authed,
   } = ctx;
   const pluginMarketplace = createPluginMarketplace(deps.pluginMarketplaceRead);
+  const requireAdmin = async (actor: Actor) => {
+    if (!(await isAdmin(deps, actor.userId)))
+      throw new ORPCError("FORBIDDEN", { message: "Admins only" });
+  };
   /** Removes an install and, for a plugin, the servers, secrets and skills it added. */
   const removeInstall = async (actor: Actor, id: string) => {
     const notify: Array<{ threadId: string; seq: number }> = [];
@@ -110,9 +121,29 @@ export function mcpRoutes(ctx: RouterContext) {
   };
   return {
     marketplace: {
-      catalog: authed.marketplace.catalog.handler(({ input }) =>
-        pluginMarketplace.catalog(input.query),
-      ),
+      catalog: authed.marketplace.catalog.handler(async ({ input }) => {
+        const [catalog, approved] = await Promise.all([
+          pluginMarketplace.catalog(input.query),
+          approvedPluginEntries(deps.prisma),
+        ]);
+        // A plugin also listed by another registry shows once, as the version we reviewed.
+        const reviewed = new Set(approved.map((entry) => entry.installedSource));
+        return {
+          ...catalog,
+          entries: [
+            ...approved.filter((entry) => matchesPluginQuery(entry, input.query)),
+            ...catalog.entries.filter((entry) => !reviewed.has(entry.installedSource)),
+          ].sort(comparePlugins),
+        };
+      }),
+      submissions: authed.marketplace.submissions.handler(async ({ context, input }) => {
+        await requireAdmin(context.actor);
+        return listPluginSubmissions(deps.prisma, input.status);
+      }),
+      review: authed.marketplace.review.handler(async ({ context, input }) => {
+        await requireAdmin(context.actor);
+        return reviewPluginSubmission(deps, input, context.signal);
+      }),
     },
     capabilities: {
       list: authed.capabilities.list.handler(async ({ context }) => {
@@ -446,9 +477,11 @@ export function mcpRoutes(ctx: RouterContext) {
               await assertMcpRemoteEndpoint(config.oauthClient?.authorizationServer, deps);
             }
             const endpointChanged = existing.endpoint !== nextEndpoint;
+            existingMaterial.args ??= legacyMcpArgs(existing.args);
             const update = buildMcpUpdateMaterial(existingMaterial, config, {
               clearOAuth: endpointChanged,
               endpointChanged,
+              commandChanged: existing.command !== ("command" in config ? config.command : null),
             });
             if (update.action === "store" && config.transport === "stdio") {
               await assertMcpRemoteEndpoint(
@@ -533,7 +566,8 @@ export function mcpRoutes(ctx: RouterContext) {
                       transport: config.transport,
                       endpoint: nextEndpoint,
                       command: "command" in config ? config.command : null,
-                      args: ("args" in config ? config.args : []) as Prisma.InputJsonValue,
+                      args: [],
+                      hasArgs: update.action === "store" && Boolean(update.material.args?.length),
                       env: ("env" in config
                         ? Object.fromEntries(Object.keys(config.env).map((key) => [key, true]))
                         : {}) as Prisma.InputJsonValue,
@@ -803,15 +837,26 @@ export function mcpRoutes(ctx: RouterContext) {
         begin: authed.mcp.oauth.begin.handler(async ({ context, input }) => {
           try {
             const expectedRedirect = new URL("/mcp/oauth/callback", deps.env.webOrigin).toString();
-            if (new URL(input.redirectUri).toString() !== expectedRedirect) {
+            // Native clients omit the redirect; the registered web callback is always used.
+            if (input.redirectUri && new URL(input.redirectUri).toString() !== expectedRedirect) {
               throw new Error("MCP OAuth redirect URI is not allowed");
             }
             return await mcpOAuth.begin({
               ...input,
+              redirectUri: expectedRedirect,
               spaceId: context.actor.spaceId,
               userId: context.actor.userId,
             });
           } catch (error) {
+            if (error instanceof McpOAuthClientRequiredError) {
+              await recordMcpServerHealth(
+                deps.prisma,
+                input.serverId,
+                { status: "error", message: error.message },
+                error.revision,
+              );
+              throw new ORPCError(error.code, { status: 400, message: error.message });
+            }
             throw new ORPCError("BAD_REQUEST", {
               message: error instanceof Error ? error.message : "Could not start MCP OAuth",
             });

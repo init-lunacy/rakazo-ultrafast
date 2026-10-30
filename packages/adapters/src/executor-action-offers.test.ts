@@ -102,6 +102,7 @@ function fixture(script: (request: AgentRunRequest) => AsyncGenerator<unknown>) 
       findUniqueOrThrow: async () => ({ id: run.taskId, prompt: "Compare two hotels" }),
     },
     connection: { findMany: async () => [] },
+    secret: { findMany: async () => [] },
     spaceModelPreference: { findFirst: async () => null },
     userModelCredential: { findFirst: async () => null },
     deploymentSettings: {

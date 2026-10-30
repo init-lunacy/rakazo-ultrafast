@@ -4,7 +4,7 @@ Rakazo Ultrafast is a downstream fork of [Rakazo](https://github.com/elie222/rak
 tracks upstream closely and carries a small set of changes on top. This file lists every
 change the fork carries, where it touches upstream code, and when it can be dropped.
 
-Last upstream sync: `ee157300c` (2026-10-28).
+Last upstream sync: `6e31c3fe9` (2026-10-30).
 
 ## How the fork stays close
 
@@ -28,7 +28,7 @@ Last upstream sync: `ee157300c` (2026-10-28).
 1. `git fetch upstream` and list the upstream commits that touch the fork's hooks:
 
    ```sh
-   git log --oneline ee157300c..upstream/main -- \
+   git log --oneline 6e31c3fe9..upstream/main -- \
      packages/db/prisma/schema.prisma packages/db/src/events.ts packages/db/src/row-security.ts \
      packages/db/src/usage.ts packages/adapters/src/executor.ts packages/adapters/src/pi-runtime.ts \
      packages/adapters/src/builtin-tools.ts packages/adapters/src/context-selection.ts \

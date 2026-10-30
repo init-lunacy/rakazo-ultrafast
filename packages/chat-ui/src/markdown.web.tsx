@@ -1,5 +1,14 @@
-import type { CSSProperties, MouseEvent, ReactNode } from "react";
-import { Component, createContext, memo, useCallback, useContext, useRef, useState } from "react";
+import type { CSSProperties, MouseEvent, ReactNode, RefObject } from "react";
+import {
+  Component,
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -26,7 +35,8 @@ import {
   linkFaviconOrigin,
   linkLabel,
   markdownLinkDisplayParts,
-  markdownLinkRequiresConfirmation,
+  markdownLinkNeedsPrompt,
+  markdownLinkSite,
   markdownMentionId,
   markRemoteImageLoaded,
   plainTextLinkParts,
@@ -37,7 +47,7 @@ import {
   useLinkFavicon,
 } from "./markdown";
 import { useMarkdownCopy } from "./markdown-copy";
-import { useMarkdownLinkCopy } from "./markdown-link-prompt";
+import { useMarkdownLinkCopy, useMarkdownLinkTrust } from "./markdown-link-prompt";
 import { MarkdownTable, MarkdownTableSourceContext } from "./markdown-table";
 import { isMermaidFence, mermaidSvgImage } from "./mermaid";
 import { useMermaidSvg } from "./mermaid.web";
@@ -198,10 +208,14 @@ function pageOrigin() {
   return origin && origin !== "null" ? origin : null;
 }
 
-function holdExternalLink(event: MouseEvent<HTMLAnchorElement>, request: (url: string) => void) {
+function holdExternalLink(
+  event: MouseEvent<HTMLAnchorElement>,
+  request: (url: string) => void,
+  trustedSites: readonly string[],
+) {
   if (event.button !== 0 && event.button !== 1) return;
   const destination = event.currentTarget.href;
-  if (!destination || !markdownLinkRequiresConfirmation(destination, pageOrigin())) return;
+  if (!destination || !markdownLinkNeedsPrompt(destination, pageOrigin(), trustedSites)) return;
   event.preventDefault();
   request(destination);
 }
@@ -218,8 +232,14 @@ function ExternalLinkUrl({ url }: { url: string }) {
   );
 }
 
+function openExternalLink(url: string) {
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 function ExternalLinkAlert({ url, onDismiss }: { url: string; onDismiss: () => void }) {
   const copy = useMarkdownLinkCopy();
+  const { trust } = useMarkdownLinkTrust();
+  const site = trust ? markdownLinkSite(url) : undefined;
   return (
     <AlertDialog
       open
@@ -236,9 +256,22 @@ function ExternalLinkAlert({ url, onDismiss }: { url: string; onDismiss: () => v
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>{copy.cancel}</AlertDialogCancel>
+          {trust && site ? (
+            <AlertDialogAction
+              variant="outline"
+              className="h-auto min-h-8 shrink whitespace-normal break-all"
+              onClick={() => {
+                openExternalLink(url);
+                trust(url);
+                onDismiss();
+              }}
+            >
+              {copy.alwaysOpen(site)}
+            </AlertDialogAction>
+          ) : null}
           <AlertDialogAction
             onClick={() => {
-              window.open(url, "_blank", "noopener,noreferrer");
+              openExternalLink(url);
               onDismiss();
             }}
           >
@@ -259,16 +292,44 @@ function useExternalLinkConfirm() {
   return { request, dialog };
 }
 
+/** Sends clicks on links drawn inside an element, such as a chart's SVG, through the prompt. */
+export function useLinkPrompt(container: RefObject<HTMLElement | null>): ReactNode {
+  const { request, dialog } = useExternalLinkConfirm();
+  const { sites } = useMarkdownLinkTrust();
+  useEffect(() => {
+    const element = container.current;
+    if (!element) return;
+    const hold = (event: globalThis.MouseEvent) => {
+      if (event.button !== 0 && event.button !== 1) return;
+      const anchor = event.target instanceof Element ? event.target.closest("a") : null;
+      const href = anchor && element.contains(anchor) ? anchor.getAttribute("href") : null;
+      if (!href) return;
+      event.preventDefault();
+      const url = new URL(href, document.baseURI).href;
+      if (markdownLinkNeedsPrompt(url, pageOrigin(), sites)) request(url);
+      else openExternalLink(url);
+    };
+    element.addEventListener("click", hold);
+    element.addEventListener("auxclick", hold);
+    return () => {
+      element.removeEventListener("click", hold);
+      element.removeEventListener("auxclick", hold);
+    };
+  }, [container, request, sites]);
+  return dialog;
+}
+
 function ConfirmableAnchor({ href, ...props }: React.ComponentPropsWithoutRef<"a">) {
   const request = useContext(ConfirmLinkContext);
+  const { sites } = useMarkdownLinkTrust();
   return (
     <a
       {...props}
       href={href}
       target="_blank"
       rel="noreferrer noopener"
-      onClick={(event) => holdExternalLink(event, request)}
-      onAuxClick={(event) => holdExternalLink(event, request)}
+      onClick={(event) => holdExternalLink(event, request, sites)}
+      onAuxClick={(event) => holdExternalLink(event, request, sites)}
     />
   );
 }

@@ -21,6 +21,7 @@ import {
   BACKGROUND_RUN_TRIGGERS,
   callIdFromClientNonce,
   isConversationalRun,
+  messageBypassesTakeoverWait,
   messageReaction,
   projectMessages,
   QUEUE_HOLDING_RUN_STATUSES,
@@ -746,6 +747,7 @@ export async function sendThreadMessage(
     events: ThreadEvents;
     jobs: JobPublisher;
     imageAdmission?: Parameters<typeof assertThreadImageInput>[5];
+    maxAttachmentsPerMessage?: number;
     analytics?: ProductAnalytics;
   },
   actor: Actor,
@@ -847,7 +849,7 @@ export async function sendThreadMessage(
       if (target.kind === "bot") {
         const mentionTargets = splitMentionTargets(input.mentions);
         const { blocks: attachmentBlocks, artifacts } = await resolveSendAttachments(
-          { prisma: tx },
+          { prisma: tx, maxAttachmentsPerMessage: deps.maxAttachmentsPerMessage },
           actor,
           target.botId,
           input.artifactIds,
@@ -959,8 +961,10 @@ export async function sendThreadMessage(
             { runIds: [], queued: false },
           );
         }
-        const holdingRuns = activeRuns.filter((run) =>
-          QUEUE_HOLDING_RUN_STATUSES.some((status) => status === run.status),
+        const holdingRuns = activeRuns.filter(
+          (run) =>
+            QUEUE_HOLDING_RUN_STATUSES.some((status) => status === run.status) &&
+            !messageBypassesTakeoverWait(run),
         );
         const active = holdingRuns.find(steersUserMessage) ?? holdingRuns[0];
         if (active) {
@@ -1076,7 +1080,7 @@ export async function sendThreadMessage(
           explicitMentions: mentionTargets.botMentionIds,
         });
       const { blocks: attachmentBlocks, artifacts } = await resolveGroupSendAttachments(
-        { prisma: tx },
+        { prisma: tx, maxAttachmentsPerMessage: deps.maxAttachmentsPerMessage },
         actor,
         target.groupId,
         memberBotIds,
@@ -1163,7 +1167,7 @@ export async function sendThreadMessage(
           }
           continue;
         }
-        if (!STEERABLE_RUN_STATUSES.has(run.status)) continue;
+        if (!STEERABLE_RUN_STATUSES.has(run.status) || messageBypassesTakeoverWait(run)) continue;
         const current = activeByBotId.get(run.botId);
         if (!current || (!steersUserMessage(current) && steersUserMessage(run))) {
           activeByBotId.set(run.botId, run);

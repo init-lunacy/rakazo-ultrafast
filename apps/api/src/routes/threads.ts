@@ -3,6 +3,7 @@ import { runContinueJob, runJobKey } from "@rakazo/adapter-kit";
 import { settleCallRequest } from "@rakazo/adapters";
 import type { ProductEvent } from "@rakazo/contracts";
 import {
+  AttachmentValidationError,
   CALL_CLIENT_NONCE_PREFIX,
   callClientNonce,
   QUEUE_HOLDING_RUN_STATUSES,
@@ -159,6 +160,7 @@ export function threadsRoutes(ctx: RouterContext) {
         return sendThreadMessage(
           {
             ...deps,
+            maxAttachmentsPerMessage: deps.env.maxAttachmentsPerMessage,
             imageAdmission: confirmingImages
               ? {
                   secrets: deps.secrets,
@@ -174,7 +176,12 @@ export function threadsRoutes(ctx: RouterContext) {
           target.kind === "bot"
             ? (runId) => releaseComputerControl(deps, context.actor, target.botId, "done", runId)
             : undefined,
-        );
+        ).catch((error: unknown) => {
+          if (error instanceof AttachmentValidationError) {
+            throw new ORPCError("BAD_REQUEST", { message: error.message });
+          }
+          throw error;
+        });
       }),
       react: authed.threads.react.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
@@ -522,6 +529,7 @@ export function threadsRoutes(ctx: RouterContext) {
             clientNonce: input.clientNonce,
             fields: input.fields,
             username: input.username,
+            remember: input.remember,
             dismiss: input.dismiss,
           })
           .catch((error: unknown) => {

@@ -65,6 +65,8 @@ export function SettingsOverlay({
   onTimezoneChange,
   actionOfferSettings,
   onActionOfferSettingsChange,
+  onAccountImported,
+  onImportAgent,
   billingEnabled = false,
   sandboxProvider,
   onSandboxProviderChange,
@@ -92,6 +94,8 @@ export function SettingsOverlay({
   onTimezoneChange: (timezone: string) => Promise<void>;
   actionOfferSettings: ActionOfferSettings;
   onActionOfferSettingsChange: (patch: Partial<ActionOfferSettings>) => Promise<void>;
+  onAccountImported?: () => Promise<void>;
+  onImportAgent?: () => void;
   billingEnabled?: boolean;
   sandboxProvider?: string | null;
   onSandboxProviderChange?: (sandboxProvider: string) => void;
@@ -381,6 +385,8 @@ export function SettingsOverlay({
                         onTimezoneChange={onTimezoneChange}
                         actionOfferSettings={actionOfferSettings}
                         onActionOfferSettingsChange={onActionOfferSettingsChange}
+                        onAccountImported={onAccountImported}
+                        onImportAgent={onImportAgent}
                       />
                       {/* One space is just the app, so there is nothing to tell apart or manage. */}
                       {spaces.length > 1 && onOpenSpace ? (
