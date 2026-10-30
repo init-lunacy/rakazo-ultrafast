@@ -21,6 +21,7 @@ import { SILENCE_JUDGE_CALIBRATION, SILENCE_JUDGE_VERSION } from "../evals/silen
 import { resolveControls, resolveSuite } from "../evals/suites.js";
 import type { DiagnosticWireObservation } from "../evals/wire-observer.js";
 import { diagnosticWireFetch } from "../evals/wire-observer.js";
+import { runApprovalSuite } from "./approval-eval.js";
 import {
   assertComputerImage,
   DEFAULT_COMPUTER_IMAGE,
@@ -57,6 +58,16 @@ async function main() {
       output: { type: "string", default: "test-report/evals/report.json" },
     },
   });
+  if (values.suite === "approval")
+    // The other suites choose their own timeout; this one keeps the former CLI default.
+    return runApprovalSuite(
+      { ...values, "timeout-ms": values["timeout-ms"] ?? "180000" },
+      {
+        codeRevision: codeRevision(),
+        workingDiffHash: workingDiffHash(),
+        readConnection,
+      },
+    );
   const suite = resolveSuite(values.suite!);
   const { cases, fixtureVersion } = suite;
   if (values["wire-diagnostics"] && values.suite !== "history")
@@ -446,6 +457,8 @@ async function main() {
       PIPEDREAM_CLIENT_SECRET: "",
       PIPEDREAM_PROJECT_ID: "",
       SMTP_URL: "",
+      EMAIL_PROVIDER: "none",
+      EMAIL_API_KEY: "",
       SLACK_BOT_TOKEN: "",
       TELEGRAM_BOT_TOKEN: "",
       WHATSAPP_ACCESS_TOKEN: "",
@@ -464,7 +477,7 @@ async function main() {
       timeout: 120_000,
     });
     // Import runtime modules only after generation; their barrel exports load Prisma.
-    const { createApp } = await import("../../../../apps/api/src/app.ts");
+    const { createApp } = await import("@rakazo/api/app");
     const { runTrial } = await import("../evals/runner.js");
     const { dispatcherFetch, DockerSandboxProvider, PiAgentRuntime } = await import(
       "@rakazo/adapters"
@@ -594,6 +607,8 @@ async function main() {
               pipedreamClientSecret: undefined,
               pipedreamProjectId: undefined,
               smtpUrl: undefined,
+              emailProvider: "none",
+              emailApiKey: undefined,
               emailFrom: undefined,
               sendblueApiKeyId: undefined,
               sendblueApiSecret: undefined,

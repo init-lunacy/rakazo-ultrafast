@@ -47,19 +47,18 @@ name: Settings
 - tapOn: "Back"
 - openLink: "rakazo:///models"
 - extendedWaitUntil:
-    visible: "Model"
+    visible: "Main model"
     timeout: 15000
-- assertNotVisible: "Active model"
 - takeScreenshot: 06-models
 - openLink: "rakazo:///integrations"
 - extendedWaitUntil:
     visible: "Search apps"
     timeout: 15000
 - takeScreenshot: 07-integrations
-- tapOn:
-    id: "integrations-advanced"
+- tapOn: "Add custom"
+- tapOn: "MCP server"
 - extendedWaitUntil:
-    visible: "Add MCP server"
+    visible: "Remote MCP server"
     timeout: 10000
 - takeScreenshot: 08-integrations-advanced
 - openLink: "rakazo:///voice"

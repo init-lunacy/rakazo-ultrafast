@@ -1,9 +1,11 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { BOT_NAME_MAX_LENGTH } from "@rakazo/contracts";
+import type { BotAvatarSet } from "@rakazo/contracts";
+import { BOT_NAME_MAX_LENGTH, DEFAULT_NEW_BOT_AVATAR_SET } from "@rakazo/contracts";
 import {
   ORGANIC_AVATAR_LOOKS,
   organicAvatarFamily,
   organicAvatarSampleIdentity,
+  seededLogoAvatarColor,
 } from "@rakazo/core";
 import {
   BOT_AVATAR_COLORS,
@@ -30,7 +32,8 @@ function pick<T>(options: readonly T[]): T {
 
 export interface CreateBotDialogInput {
   name: string;
-  color: string;
+  color?: string;
+  avatarSet: BotAvatarSet;
   /** The organic family the preview drew; omitted when a studio shape is picked. */
   avatarFamily?: number;
 }
@@ -39,9 +42,11 @@ export interface CreateBotDialogInput {
 export function CreateBotDialog({
   onCancel,
   onCreate,
+  onImport,
 }: {
   onCancel: () => void;
   onCreate: (input: CreateBotDialogInput) => Promise<void>;
+  onImport?: () => void;
 }) {
   const { t } = useLingui();
   const nameRef = useRef<HTMLInputElement>(null);
@@ -50,19 +55,24 @@ export function CreateBotDialog({
     value: pick(BOT_AVATAR_COLORS),
     identity: pick(ORGANIC_IDENTITIES),
   }));
+  const [avatarSet, setAvatarSet] = useState<BotAvatarSet>(DEFAULT_NEW_BOT_AVATAR_SET);
+  const [colorChosen, setColorChosen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const trimmed = name.trim();
+  const color =
+    avatarSet === "rakazo" && !colorChosen ? seededLogoAvatarColor(look.identity) : look.value;
 
   async function create() {
     if (!trimmed || submitting) return;
     setError(null);
     setSubmitting(true);
-    const organic = parseBotAvatar(look.value).shapeIndex === undefined;
+    const organic = avatarSet === "organic" && parseBotAvatar(look.value).shapeIndex === undefined;
     try {
       await onCreate({
         name: trimmed,
-        color: look.value,
+        color,
+        avatarSet,
         ...(organic ? { avatarFamily: organicAvatarFamily(look.identity) } : {}),
       });
     } catch (err) {
@@ -94,11 +104,11 @@ export function CreateBotDialog({
         >
           <DialogHeader>
             <DialogTitle className="text-center">
-              <Trans>Create new Bot</Trans>
+              <Trans>New bot</Trans>
             </DialogTitle>
           </DialogHeader>
           <div className="flex justify-center py-2">
-            <BotAvatar color={look.value} identity={look.identity} size={96} />
+            <BotAvatar color={color} identity={look.identity} size={96} avatarSet={avatarSet} />
           </div>
           <Input
             ref={nameRef}
@@ -115,14 +125,32 @@ export function CreateBotDialog({
             </p>
           ) : null}
           <BotLookPicker
-            value={look.value}
+            value={color}
             identity={look.identity}
             organicIdentities={ORGANIC_IDENTITIES}
-            onChange={(value, identity) =>
-              setLook((current) => ({ value, identity: identity ?? current.identity }))
-            }
+            avatarSet={avatarSet}
+            onAvatarSetChange={(set, value) => {
+              setAvatarSet(set);
+              setLook((current) => ({ ...current, value }));
+            }}
+            onChange={(value, identity) => {
+              setColorChosen(true);
+              setLook((current) => ({ value, identity: identity ?? current.identity }));
+            }}
           />
           <DialogFooter>
+            {onImport ? (
+              <Button
+                type="button"
+                variant="ghost"
+                className="sm:me-auto"
+                disabled={submitting}
+                data-testid="create-bot-import"
+                onClick={onImport}
+              >
+                <Trans>Import</Trans>
+              </Button>
+            ) : null}
             <Button type="button" variant="outline" disabled={submitting} onClick={onCancel}>
               <Trans>Cancel</Trans>
             </Button>

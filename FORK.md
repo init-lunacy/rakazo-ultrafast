@@ -4,7 +4,7 @@ Rakazo Ultrafast is a downstream fork of [Rakazo](https://github.com/elie222/rak
 tracks upstream closely and carries a small set of changes on top. This file lists every
 change the fork carries, where it touches upstream code, and when it can be dropped.
 
-Last upstream sync: `c9bac2782` (2026-10-24).
+Last upstream sync: `ee157300c` (2026-10-28).
 
 ## How the fork stays close
 
@@ -28,13 +28,17 @@ Last upstream sync: `c9bac2782` (2026-10-24).
 1. `git fetch upstream` and list the upstream commits that touch the fork's hooks:
 
    ```sh
-   git log --oneline c9bac2782..upstream/main -- \
+   git log --oneline ee157300c..upstream/main -- \
      packages/db/prisma/schema.prisma packages/db/src/events.ts packages/db/src/row-security.ts \
      packages/db/src/usage.ts packages/adapters/src/executor.ts packages/adapters/src/pi-runtime.ts \
      packages/adapters/src/builtin-tools.ts packages/adapters/src/context-selection.ts \
      packages/adapters/src/browser-tools.ts packages/adapters/src/computer-browser.ts \
-     packages/adapters/src/fake-browser.ts packages/adapters/src/jev-auto-review.ts \
-     packages/adapter-kit/src apps/api/src/router.ts apps/api/src/thread-target.ts \
+     packages/adapters/src/fake-browser.ts packages/adapters/src/run-context.ts \
+     packages/adapters/src/run-turn.ts packages/adapters/src/run-tool-selection.ts \
+     packages/adapters/src/run-instructions.ts packages/adapters/src/run-tools.ts \
+     packages/adapters/src/run-tools-computer.ts packages/adapters/src/run-tools-fleet.ts \
+     packages/adapter-kit/src apps/api/src/router.ts apps/api/src/routes \
+     apps/api/src/thread-target.ts \
      packages/contracts/src/domain.ts packages/contracts/src/rpc.ts \
      infra/sandboxes/supervisor/src infra/sandboxes/computer/rakazo-page-browser \
      packages/testkit/src/evals packages/testkit/src/cli/evals.ts \
@@ -57,17 +61,15 @@ Status: **fork-only** (stays here), **to upstream** (worth proposing), **propose
 
 | Change | Kind | Status | Upstream files it edits (conflict surface) | Drop when |
 | --- | --- | --- | --- | --- |
-| Action cards (`action_offers`) | feature | fork-only | `db/prisma/schema.prisma`, `db/src/events.ts`, `db/src/row-security.ts`, `adapters/src/executor.ts`, `api/src/thread-target.ts`, `api/src/router.ts`, `contracts/src/{domain,rpc}.ts`, web shell and settings, mobile settings, locales | — |
-| Page decider | feature | fork-only (model decider and element rects: to upstream) | `adapters/src/{executor,browser-tools,computer-browser,fake-browser,jev-auto-review}.ts`, `adapter-kit/src/{types,interfaces}.ts`, `rakazo-page-browser`, web bot settings | upstream ships a pluggable page decider |
+| Action cards (`action_offers`) | feature | fork-only | `db/prisma/schema.prisma`, `db/src/events.ts`, `db/src/row-security.ts`, `adapters/src/{executor,run-context,run-turn,run-tools}.ts`, `api/src/thread-target.ts`, `api/src/routes`, `contracts/src/{domain,rpc}.ts`, web shell and settings, mobile settings, locales | — |
+| Page decider | feature | fork-only (model decider and element rects: to upstream) | `adapters/src/{executor,browser-tools,computer-browser,fake-browser,run-tools-computer}.ts`, `adapter-kit/src/{types,interfaces}.ts`, `rakazo-page-browser`, web bot settings | upstream ships a pluggable page decider |
 | Browser tabs | feature | fork-only (runs index, no launch on cleanup: to upstream) | `adapters/src/{executor,browser-tools,computer-browser,pi-runtime}.ts`, `supervisor/src/{index,supervisor-logic}.ts`, `rakazo-page-browser`, web shell, mobile computer screen | upstream ships addressable tabs |
 | Browsing benchmark | test | to upstream (fixture server sharing first) | `testkit/src/cli/evals.ts`, `testkit/src/evals/{runner,suites,sandbox}.ts`, `docs/agent-verification.md` | upstream adds a browsing suite |
 | Eval step timings (splits upstream's task time into model, computer and product time) | test | to upstream | `testkit/src/evals/{runner,report}.ts` | upstream merges it |
 | Page text paging and snapshot sizing | bug fix | to upstream | `rakazo-page-browser`, `adapters/src/{browser-tools,computer-browser}.ts` | upstream merges it |
 | Per-step overhead: token estimate reuse, usage without a transaction | performance | to upstream | `adapters/src/pi-runtime.ts`, `db/src/usage.ts` | upstream merges it |
-| Per-step overhead: prompt trimming | performance | fork-only (prompt choices upstream may not share) | `adapters/src/{context-selection,executor}.ts` | upstream trims the same guidance |
-| Fleet tools only when needed | performance | to upstream | `adapters/src/{pi-runtime,executor,builtin-tools}.ts`, `adapter-kit/src/types.ts` | upstream merges it |
-| Supervisor screen reuse | performance | to upstream | `supervisor/src/{index,supervisor-logic}.ts` | upstream merges it |
-| Secret redaction order | bug fix | to upstream | `core` secret redaction | upstream merges it |
+| Per-step overhead: prompt trimming | performance | fork-only (prompt choices upstream may not share) | `adapters/src/{context-selection,run-instructions}.ts` | upstream trims the same guidance |
+| Fleet tools only when needed | performance | to upstream | `adapters/src/{pi-runtime,executor,run-tool-selection,run-tools-fleet}.ts`, `adapter-kit/src/types.ts` | upstream merges it |
 | Reaction lock order | bug fix | to upstream | `api` reaction path | upstream merges it |
 | Row-level security coverage test | test | to upstream | `db/src/row-security.ts` | upstream merges it |
 | Fork integration fixes | glue | fork-only | `testkit/src/authorization.test.ts`, `adapters/src/executor.ts` | — |

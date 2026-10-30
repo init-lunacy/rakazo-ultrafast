@@ -1,4 +1,5 @@
-import type { BotColorDef } from "@rakazo/core";
+import type { BotAvatarSet } from "@rakazo/contracts";
+import type { BotColorDef, LogoAvatarActivity } from "@rakazo/core";
 import {
   ACTIVE_RUN_STATUSES,
   avatarIdentitySeed,
@@ -14,9 +15,11 @@ import {
   shippedBotAvatarShapePath,
 } from "@rakazo/core";
 import { tokens } from "@rakazo/ui-tokens";
-import type { CSSProperties } from "react";
+import type { ComponentProps, CSSProperties } from "react";
 import { memo, useId, useMemo, useSyncExternalStore } from "react";
+import { useBotAvatarActivity } from "./bot-avatar-activity.js";
 import { cn } from "./lib/utils.js";
+import { LogoAvatar } from "./logo-avatar.js";
 import "./styles.css";
 
 export type { BotColorDef };
@@ -72,6 +75,8 @@ export function defaultBotAvatarValue(rawColor: string): string {
 
 export interface BotAvatarProps {
   color: string;
+  avatarSet?: BotAvatarSet;
+  activity?: LogoAvatarActivity;
   size?: number;
   status?: string;
   identity?: string;
@@ -80,6 +85,8 @@ export interface BotAvatarProps {
 
 export const BotAvatar = memo(function BotAvatar({
   color,
+  avatarSet,
+  activity,
   size = 36,
   status,
   identity = "",
@@ -133,6 +140,19 @@ export const BotAvatar = memo(function BotAvatar({
     );
   }
 
+  if (parsed.shapeIndex === undefined && avatarSet === "rakazo") {
+    const Avatar = activity === undefined ? LiveLogoAvatar : LogoAvatar;
+    return (
+      <Avatar
+        avatarValue={color ? colorDef.hex : undefined}
+        identity={effectiveId}
+        size={size}
+        activity={activity}
+        status={status}
+        className={className}
+      />
+    );
+  }
   if (parsed.shapeIndex === undefined) {
     return (
       <OrganicAvatar
@@ -189,8 +209,6 @@ export const BotAvatar = memo(function BotAvatar({
       </svg>
       <svg
         viewBox={VIEWBOX}
-        width={size}
-        height={size}
         aria-hidden="true"
         className={cn(
           "overflow-visible transition-transform duration-300",
@@ -198,7 +216,10 @@ export const BotAvatar = memo(function BotAvatar({
             ? "animate-pulse scale-[1.04] motion-reduce:animate-none"
             : "hover:scale-[1.03] motion-reduce:hover:scale-100",
         )}
+        // Inline size so a parent's icon sizing (Button sizes bare SVGs) cannot shrink it.
         style={{
+          width: size,
+          height: size,
           filter: isWorking
             ? `drop-shadow(0 0 8px ${colorDef.light}) drop-shadow(0 0 2px #ffffff)`
             : "drop-shadow(0 2px 4px rgba(0,0,0,0.45))",
@@ -221,6 +242,15 @@ export const BotAvatar = memo(function BotAvatar({
     </div>
   );
 });
+
+/** Only live Rakazo consumers subscribe to public activity updates. */
+function LiveLogoAvatar({
+  status,
+  ...props
+}: ComponentProps<typeof LogoAvatar> & { status?: string }) {
+  const activity = useBotAvatarActivity(props.identity ?? "", status);
+  return <LogoAvatar {...props} activity={activity} />;
+}
 
 function OrganicAvatar({
   color,

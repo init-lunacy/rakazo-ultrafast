@@ -1,13 +1,9 @@
 import { MenuView } from "@expo/ui/community/menu";
-import type {
-  AccountSecurity,
-  ActionAutoReviewSettings,
-  ActionOfferSettings,
-  UsageSummary,
-} from "@rakazo/contracts";
+import type { AccountSecurity, ActionOfferSettings, UsageSummary } from "@rakazo/contracts";
 import { DEFAULT_ACTION_OFFER_SETTINGS } from "@rakazo/contracts";
 import { accountDisplay, displayName } from "@rakazo/core";
 import * as Notifications from "expo-notifications";
+import type { Href } from "expo-router";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
@@ -26,6 +22,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AppMark } from "../../components/app-mark";
+import { ApprovalModeRow, ApprovalRulesRow } from "../../components/approval-settings-rows";
 import { MenuPicker } from "../../components/menu-picker";
 import { NameDialog } from "../../components/name-dialog";
 import { NativeActionButton } from "../../components/native-action-button";
@@ -58,6 +55,7 @@ import {
   mobileTokens,
   setAppearancePreference,
 } from "../../lib/appearance";
+import { useApprovalSettings } from "../../lib/approval-settings";
 import { archivedChatCounts, loadArchivedChats } from "../../lib/archived-chats";
 import { replaceWithSignIn } from "../../lib/auth-routing";
 import { promptAccountDeletion } from "../../lib/delete-account-prompt";
@@ -95,12 +93,14 @@ import {
 } from "../../lib/response-streaming";
 import { promptSectionName } from "../../lib/section-name-prompt";
 import { isSettingsLink, openFromSettingsSheet } from "../../lib/settings-sheet";
+import { ACCOUNT_SETTINGS } from "../../lib/settings-target";
+import { useSideInsets } from "../../lib/side-insets";
 import { continueWithSso } from "../../lib/sso";
 import { UI_LOCALE_LABELS } from "../../lib/ui-locale";
 import { errorText } from "../../lib/user-error";
 
-/** Render account settings, including the entry point for voice configuration. */
 export default function Account() {
+  const sideInsets = useSideInsets();
   const { t, locale } = useI18n();
   const router = useRouter();
   const { focus } = useLocalSearchParams<{ focus?: string }>();
@@ -123,7 +123,7 @@ export default function Account() {
     t,
     errorText,
     updateAccountName,
-    refresh: () => rpc<MobileMe>("me"),
+    refresh: () => rpc("me"),
     onSaved: (name) => setMe((current) => (current ? { ...current, name } : current)),
     onRefreshed: setMe,
     setNameDraft,
@@ -190,39 +190,36 @@ export default function Account() {
   const offerSettings = me?.actionOfferSettings ?? DEFAULT_ACTION_OFFER_SETTINGS;
   async function saveOfferSettings(patch: Partial<ActionOfferSettings>) {
     try {
-      setMe(await rpc<MobileMe>("preferences/update", { actionOfferSettings: patch }));
+      setMe(await rpc("preferences/update", { actionOfferSettings: patch }));
     } catch {
       // The row keeps its last saved value.
     }
   }
-  const [autoReview, setAutoReview] = useState<ActionAutoReviewSettings | null>(null);
-  const [skipApprovalsPending, setSkipApprovalsPending] = useState(false);
   const stackOptions = useStackedSettings();
   const styles = useThemedStyles(createAccountStyles);
   const versionInfo = getAppVersionInfo();
   const updateLabel = formatUpdateLabel(versionInfo.update, t);
   const versionAccessibility = [versionInfo.nativeLabel, updateLabel].filter(Boolean).join(". ");
+  const approvals = useApprovalSettings(ACCOUNT_SETTINGS);
+  const settingsLink = ({ title, href }: { title: string; href: Extract<Href, string> }) => (
+    <SettingsRow
+      key={href}
+      accessibilityRole="button"
+      chevron="right"
+      disabled={pending}
+      // Artifacts lives on the root stack, so it closes the sheet before opening.
+      onPress={() =>
+        isSettingsLink(href) ? router.push(href) : openFromSettingsSheet(router, href)
+      }
+      title={title}
+    />
+  );
 
   useEffect(() => {
-    if (!advancedOpen || autoReview) return;
-    void rpc<ActionAutoReviewSettings>("autoReview/get")
-      .then(setAutoReview)
-      .catch(() => undefined);
-  }, [advancedOpen, autoReview]);
-
-  function setSkipApprovals(skipApprovals: boolean) {
-    setSkipApprovalsPending(true);
-    void rpc<ActionAutoReviewSettings>("autoReview/set", { skipApprovals })
-      .then(setAutoReview)
-      .catch((cause: unknown) => Alert.alert(t("Run actions without asking"), errorText(cause)))
-      .finally(() => setSkipApprovalsPending(false));
-  }
-
-  useEffect(() => {
-    void rpc<MobileMe>("me")
+    void rpc("me")
       .then(setMe)
       .catch(() => undefined);
-    void rpc<UsageSummary>("usage/summary")
+    void rpc("usage/summary")
       .then(setUsage)
       .catch(() => undefined);
     if (Platform.OS === "android") {
@@ -251,7 +248,7 @@ export default function Account() {
       title={t("Usage")}
       detail={
         usage
-          ? t("{runs} runs · {tokens} tokens", {
+          ? t("{runs} runs, {tokens} tokens", {
               runs: count.format(usage.runs),
               tokens: tokens(usage.totalTokens),
             })
@@ -267,7 +264,7 @@ export default function Account() {
           key={`${row.provider}:${row.model}`}
           accessible
           title={row.model}
-          detail={`${row.provider} · ${t("{calls} calls · {tokens} tokens", {
+          detail={`${row.provider}, ${t("{calls} calls, {tokens} tokens", {
             calls: count.format(row.modelCalls),
             tokens: tokens(row.totalTokens),
           })}`}
@@ -477,6 +474,7 @@ export default function Account() {
   return (
     <SafeAreaView edges={["bottom"]} style={styles.screen}>
       <ScrollView
+        style={sideInsets}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={[styles.content, stackOptions && styles.compactContent]}
         contentInsetAdjustmentBehavior="automatic"
@@ -694,22 +692,29 @@ export default function Account() {
               { title: t("Artifacts"), href: "/artifacts" },
               { title: t("Models"), href: "/models" },
               { title: t("Voice"), href: "/voice" },
+            ] as const
+          ).map(settingsLink)}
+          <ApprovalModeRow key="approvals" approvals={approvals} disabled={pending} />
+          {approvals.ruleCount ? (
+            <ApprovalRulesRow
+              key="approval-rules"
+              count={approvals.ruleCount}
+              disabled={pending}
+              onPress={() => router.push("/approvals")}
+            />
+          ) : null}
+          {(
+            [
+              { title: t("Vault"), href: "/vault" },
+              ...(me?.paymentWalletProvider
+                ? [{ title: t("Wallet"), href: "/wallet" } as const]
+                : []),
               { title: t("Integrations"), href: "/integrations" },
+              { title: t("Skills"), href: "/skills" },
+              { title: t("Messaging"), href: "/messaging" },
               { title: t("AI data sharing"), href: "/ai-data-sharing" },
             ] as const
-          ).map(({ title, href }) => (
-            <SettingsRow
-              key={href}
-              accessibilityRole="button"
-              chevron="right"
-              disabled={pending}
-              // Artifacts lives on the root stack, so it closes the sheet before opening.
-              onPress={() =>
-                isSettingsLink(href) ? router.push(href) : openFromSettingsSheet(router, href)
-              }
-              title={title}
-            />
-          ))}
+          ).map(settingsLink)}
         </SettingsGroup>
 
         <SettingsGroup>
@@ -733,14 +738,6 @@ export default function Account() {
               label={loadRemoteImagesLabel}
               value={loadRemoteImages}
               onChange={(checked) => void setRemoteImagesPreference(checked ? "on" : "off")}
-            />
-          ) : null}
-          {advancedOpen ? (
-            <SettingsSwitch
-              label={t("Run actions without asking")}
-              value={autoReview?.skipApprovals ?? false}
-              disabled={!autoReview || skipApprovalsPending}
-              onChange={setSkipApprovals}
             />
           ) : null}
         </SettingsGroup>

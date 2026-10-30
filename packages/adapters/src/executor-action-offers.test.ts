@@ -4,6 +4,7 @@ import type * as ActionOfferToolModule from "./action-offer-tool.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
 import type * as GroupHandoffModule from "./group-handoff.js";
+import { withModelRoles } from "./testing/model-roles.js";
 
 vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof ComputerLifecycleModule>()),
@@ -70,6 +71,7 @@ function fixture(script: (request: AgentRunRequest) => AsyncGenerator<unknown>) 
     },
     attempt: {
       create: async () => ({ id: "attempt-1" }),
+      findMany: async () => [],
       update: vi.fn(),
       updateMany: async () => ({ count: 1 }),
     },
@@ -108,12 +110,14 @@ function fixture(script: (request: AgentRunRequest) => AsyncGenerator<unknown>) 
     taughtSkill: { findMany: async () => [] },
     chatGroup: { findMany: async () => [] },
     botSection: { findMany: async () => [] },
-    agentSecret: { findMany: async () => [] },
-    botSecret: { findMany: async () => [] },
+    vaultCredential: { findMany: async () => [] },
     agentSkill: { findMany: async () => [] },
     scratchpadItem: { findMany: async () => [] },
+    spaceSettingOverride: { findUnique: async () => null },
     actionApprovalRule: { findMany: async () => [] },
+    userActionApprovalRule: { findMany: async () => [] },
     actionAutoReviewPreference: { findUnique: async () => ({ enabled: false }) },
+    userActionAutoReviewPreference: { findUnique: async () => ({ enabled: false }) },
     steeringMessage: { findFirst: async () => null },
     externalEffect: {
       findMany: async () => [],
@@ -133,9 +137,11 @@ function fixture(script: (request: AgentRunRequest) => AsyncGenerator<unknown>) 
     run: script,
   } as unknown as AgentRuntime;
   const executor = createRunExecutor({
-    prisma: Object.assign(prisma, {
-      $transaction: async (action: (tx: typeof prisma) => unknown) => action(prisma),
-    }),
+    prisma: withModelRoles(
+      Object.assign(prisma, {
+        $transaction: async (action: (tx: typeof prisma) => unknown) => action(prisma),
+      }),
+    ),
     runtime,
     connector: { discoverTools: async () => [], resolveCall: async () => undefined },
     sandbox: { describe: () => ({ capabilities: { graphical: false } }) },

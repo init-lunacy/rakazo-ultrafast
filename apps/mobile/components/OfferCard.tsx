@@ -62,7 +62,7 @@ export function OfferCard({
         setSettled("taken");
       } else {
         // A card taken on another device stays taken.
-        const { status } = await rpc<{ status: ActionOfferStatus }>("actionOffers/dismiss", {
+        const { status } = await rpc("actionOffers/dismiss", {
           offerId: card.id,
         });
         setSettled(status);

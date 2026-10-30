@@ -34,6 +34,8 @@ type ComputerOverlayProps = {
   runStatus?: Run["status"];
   sendError: string | null;
   embeddedScreenUrl: string | null;
+  /** Changes to load the screen again in a new frame. */
+  screenFrameKey?: number;
   screenFrameRef: (frame: HTMLIFrameElement | null) => void;
   computerScreenError: ReactNode;
   computerBooting: ReactNode;
@@ -41,6 +43,7 @@ type ComputerOverlayProps = {
   onStopRun: () => void;
   onRelease: (reason?: ComputerReleaseReason) => Promise<void>;
   onTakeControl: () => void;
+  onStart: () => void;
   onRefreshTeaching: () => Promise<void>;
   onRefreshComputer: () => Promise<void>;
   onClose: () => void;
@@ -59,6 +62,7 @@ export function ComputerOverlay({
   runStatus,
   sendError,
   embeddedScreenUrl,
+  screenFrameKey,
   screenFrameRef,
   computerScreenError,
   computerBooting,
@@ -66,6 +70,7 @@ export function ComputerOverlay({
   onStopRun,
   onRelease,
   onTakeControl,
+  onStart,
   onRefreshTeaching,
   onRefreshComputer,
   onClose,
@@ -85,7 +90,13 @@ export function ComputerOverlay({
           className="app-no-drag flex items-center justify-between gap-4 border-b border-sidebar-border px-[18px] py-3.5"
         >
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            <BotAvatar color={bot.color} identity={bot.id} size={28} status={bot.status} />
+            <BotAvatar
+              avatarSet={bot.avatarSet}
+              color={bot.color}
+              identity={bot.id}
+              size={28}
+              status={bot.status}
+            />
             {recordingSkill ? (
               <TeachRecordingChrome
                 recording={recordingSkill}
@@ -195,6 +206,7 @@ export function ComputerOverlay({
           ) : computer?.state === "running" && embeddedScreenUrl && !computerScreenError ? (
             <>
               <iframe
+                key={screenFrameKey}
                 title={t`Bot screen`}
                 ref={screenFrameRef}
                 src={embeddedScreenUrl}
@@ -219,9 +231,20 @@ export function ComputerOverlay({
             <div className="grid h-full place-items-center text-sm text-muted-foreground/80">
               {computerScreenError ??
                 computerBooting ??
-                (computer?.state === "suspended"
-                  ? t`Computer is asleep`
-                  : computerLabel(computer?.mode, bot.name))}
+                (computer?.state === "stopped" || computer?.state === "suspended" ? (
+                  <div className="flex flex-col items-center gap-3">
+                    <p>
+                      {computer.state === "suspended"
+                        ? t`Computer is asleep`
+                        : t`Computer is stopped`}
+                    </p>
+                    <Button variant="outline" size="sm" onClick={onStart}>
+                      <Trans>Start</Trans>
+                    </Button>
+                  </div>
+                ) : (
+                  computerLabel(computer?.mode, bot.name)
+                ))}
             </div>
           )}
         </div>

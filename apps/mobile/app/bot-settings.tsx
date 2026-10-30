@@ -1,4 +1,4 @@
-import type { ComputerMode, ThinkingLevel } from "@rakazo/contracts";
+import type { Bot, BotAvatarSet, ComputerMode, ThinkingLevel } from "@rakazo/contracts";
 import {
   BOT_AVATAR_SHAPE_COUNT,
   BOT_COLORS,
@@ -6,6 +6,7 @@ import {
   BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
+  resolveBotAvatarSet,
 } from "@rakazo/contracts";
 import {
   credentialForModel,
@@ -41,7 +42,7 @@ import { NativeSwitch } from "../components/native-switch";
 import { NativeSymbol } from "../components/native-symbol";
 import { ProfileEditDialog } from "../components/profile-edit-dialog";
 import { Chevron } from "../components/row-accessories";
-import type { MobileBot, MobileMe, MobileModel, MobileModelCredential } from "../lib/api";
+import type { MobileMe, MobileModel, MobileModelCredential } from "../lib/api";
 import { rpc } from "../lib/api";
 import {
   avatarColor,
@@ -57,14 +58,13 @@ import { loadDeviceVoiceEnabled } from "../lib/device-voice";
 import { useI18n } from "../lib/i18n";
 import { native, useMobileTokens } from "../lib/native";
 import { createQueuedSave } from "../lib/queued-save";
+import { useSideInsets } from "../lib/side-insets";
+import { thinkingLevelLabel } from "../lib/thinking-level";
 import { errorText } from "../lib/user-error";
 import { stopVoicePlayback } from "../lib/voice";
 
-type BotSettingsRecord = MobileBot & {
-  description?: string;
-};
-
 export default function BotSettingsScreen() {
+  const sideInsets = useSideInsets();
   const tokens = useMobileTokens();
   const { t } = useI18n();
   const router = useRouter();
@@ -75,13 +75,14 @@ export default function BotSettingsScreen() {
   } = useLocalSearchParams<{ botId: string; model?: string; focus?: string }>();
   const scrollRef = useRef<ScrollView>(null);
   const modelY = useRef(0);
-  const [bot, setBot] = useState<BotSettingsRecord | null>(null);
+  const [bot, setBot] = useState<Bot | null>(null);
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [instructions, setInstructions] = useState("");
   const [color, setColor] = useState<string>(BOT_COLORS[0]);
   const [computerMode, setComputerMode] = useState<ComputerMode>("team");
+  const [avatarSet, setAvatarSet] = useState<BotAvatarSet>("organic");
   const [avatarOpen, setAvatarOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(focus === "model" || pickedModel !== undefined);
   const [modelKey, setModelKey] = useState("");
@@ -156,7 +157,7 @@ export default function BotSettingsScreen() {
 
   useEffect(() => {
     if (!botId) return;
-    void rpc<BotSettingsRecord>("bots/get", { botId })
+    void rpc("bots/get", { botId })
       .then((next) => {
         setBot(next);
         setName(next.name);
@@ -167,6 +168,7 @@ export default function BotSettingsScreen() {
         setDescription(next.description ?? "");
         setInstructions(next.instructions ?? "");
         setColor(next.color);
+        setAvatarSet(resolveBotAvatarSet(next.avatarSet));
         setComputerMode(next.computerMode);
         setModelKey(
           next.modelProvider && next.modelId
@@ -185,11 +187,7 @@ export default function BotSettingsScreen() {
   }, [botId, crossSpaceSave, fleetSave, notifySave, profileSaves]);
 
   useEffect(() => {
-    void Promise.all([
-      rpc<MobileMe>("me"),
-      rpc<MobileModel[]>("models/list"),
-      rpc<MobileModelCredential[]>("models/credentials"),
-    ])
+    void Promise.all([rpc("me"), rpc("models/list"), rpc("models/credentials")])
       .then(([nextMe, nextCatalog, nextCredentials]) => {
         setMe(nextMe);
         setCatalog(nextCatalog);
@@ -328,6 +326,7 @@ export default function BotSettingsScreen() {
     }
     if (choice !== voiceChoice.current) return;
     try {
+      // Native speech loads only when a voice is previewed, as in lib/voice.
       const Speech = await import("expo-speech");
       if (choice !== voiceChoice.current) return;
       await Speech.stop();
@@ -368,6 +367,7 @@ export default function BotSettingsScreen() {
         instructions?: string;
         expectedInstructions?: string;
         color?: string;
+        avatarSet?: BotAvatarSet;
         modelProvider?: string | null;
         modelId?: string | null;
         thinkingLevel?: ThinkingLevel | null;
@@ -381,6 +381,7 @@ export default function BotSettingsScreen() {
         input.expectedInstructions = bot.instructions;
       }
       if (color !== bot.color) input.color = color;
+      if (avatarSet !== resolveBotAvatarSet(bot.avatarSet)) input.avatarSet = avatarSet;
       const modelChanged =
         (selected?.provider ?? null) !== (bot.modelProvider ?? null) ||
         (selected?.modelId ?? null) !== (bot.modelId ?? null);
@@ -405,7 +406,7 @@ export default function BotSettingsScreen() {
       }
       // Use key presence so clearing description to "" still persists.
       if (Object.keys(input).length > 1) {
-        const updated = await rpc<BotSettingsRecord | undefined>("bots/update", input);
+        const updated = await rpc("bots/update", input);
         // Saved edits and their history become the baseline, so a retry after a failed switch write
         // does not resend them.
         const { botId: _botId, expectedInstructions: _expected, ...saved } = input;
@@ -431,6 +432,7 @@ export default function BotSettingsScreen() {
     (description.trim() !== (bot.description ?? "") ||
       instructions !== (bot.instructions ?? "") ||
       color !== bot.color ||
+      avatarSet !== resolveBotAvatarSet(bot.avatarSet) ||
       computerMode !== bot.computerMode ||
       autoSpeak !== bot.autoSpeak ||
       (selectedModel?.provider ?? null) !== (bot.modelProvider ?? null) ||
@@ -491,7 +493,7 @@ export default function BotSettingsScreen() {
       <Stack.Screen options={glassHeaderOptions(t("Chat settings"))} />
       <ScrollView
         ref={scrollRef}
-        style={{ flex: 1, backgroundColor: tokens.background }}
+        style={[{ flex: 1, backgroundColor: tokens.background }, sideInsets]}
         contentContainerStyle={{ padding: 24 }}
         automaticallyAdjustKeyboardInsets
         contentInsetAdjustmentBehavior="automatic"
@@ -506,7 +508,13 @@ export default function BotSettingsScreen() {
               onPress={() => setAvatarOpen(true)}
               style={{ padding: 4 }}
             >
-              <BotAvatar color={color} identity={bot.id} size={64} status={bot.status} />
+              <BotAvatar
+                color={color}
+                avatarSet={avatarSet}
+                identity={bot.id}
+                size={64}
+                status={bot.status}
+              />
               <View
                 style={{
                   position: "absolute",
@@ -563,7 +571,7 @@ export default function BotSettingsScreen() {
                     value=""
                     choices={bot.instructionHistory.map((version) => ({
                       key: version.id,
-                      label: `${new Date(version.createdAt).toLocaleString()} · ${version.reason}`,
+                      label: `${new Date(version.createdAt).toLocaleString()} (${version.reason})`,
                     }))}
                     onChange={(versionId) => {
                       if (pending || instructions !== bot.instructions) return;
@@ -574,7 +582,7 @@ export default function BotSettingsScreen() {
                           {
                             text: t("Restore"),
                             onPress: () => {
-                              void rpc<MobileBot>("bots/restoreInstructions", {
+                              void rpc("bots/restoreInstructions", {
                                 botId: bot.id,
                                 versionId,
                                 expectedInstructions: bot.instructions,
@@ -741,16 +749,9 @@ export default function BotSettingsScreen() {
                 />
               </View>
               <View style={styles.row}>
-                <View style={{ gap: 4, flex: 1 }}>
-                  <Text
-                    style={[styles.rowLabel, { color: tokens.foreground, flex: 0, flexShrink: 1 }]}
-                  >
-                    {t("Manage the bots it creates")}
-                  </Text>
-                  <Text style={{ color: tokens.mutedForeground, fontSize: 12 }}>
-                    {t("Can edit and organise bots it creates")}
-                  </Text>
-                </View>
+                <Text style={[styles.rowLabel, { color: tokens.foreground }]}>
+                  {t("Manage the bots it creates")}
+                </Text>
                 <NativeSwitch
                   accessibilityLabel={t("Manage the bots it creates")}
                   onValueChange={(value) => {
@@ -763,9 +764,6 @@ export default function BotSettingsScreen() {
               </View>
             </SettingsGroup>
             <SettingsGroup label={t("Description")}>
-              <Text style={{ color: tokens.mutedForeground, fontSize: 12 }}>
-                {t("How other bots see it")}
-              </Text>
               <GrowingTextInput
                 label={t("Description")}
                 value={description}
@@ -856,6 +854,19 @@ export default function BotSettingsScreen() {
                 </Text>
               </Pressable>
             ) : null}
+            <MenuPicker
+              label={t("Icon set")}
+              choices={[
+                { key: "rakazo", label: t("Rakazo") },
+                { key: "organic", label: t("Original") },
+              ]}
+              value={avatarSet}
+              onChange={(next) => {
+                setAvatarSet(resolveBotAvatarSet(next));
+                setColor((current) => avatarColor(current));
+              }}
+              plain
+            />
             <Text style={{ color: tokens.mutedForeground, marginTop: 16, fontSize: 14 }}>
               {t("Color")}
             </Text>
@@ -897,13 +908,21 @@ export default function BotSettingsScreen() {
                   <Pressable
                     accessibilityRole="radio"
                     accessibilityLabel={t("Default")}
-                    accessibilityState={{ checked: avatarShape(color) === null }}
-                    onPress={() => setColor((current) => avatarColor(current))}
+                    accessibilityState={{
+                      checked: avatarSet === "organic" && avatarShape(color) === null,
+                    }}
+                    onPress={() => {
+                      setAvatarSet("organic");
+                      setColor((current) => avatarColor(current));
+                    }}
                     style={{
                       padding: 4,
                       borderRadius: 14,
                       borderWidth: 2,
-                      borderColor: avatarShape(color) === null ? tokens.foreground : "transparent",
+                      borderColor:
+                        avatarSet === "organic" && avatarShape(color) === null
+                          ? tokens.foreground
+                          : "transparent",
                     }}
                   >
                     <BotAvatar color={avatarColor(color)} identity={bot.id} size={36} />
@@ -914,7 +933,10 @@ export default function BotSettingsScreen() {
                       accessibilityRole="radio"
                       accessibilityLabel={t("Shape {number}", { number: shape + 1 })}
                       accessibilityState={{ checked: avatarShape(color) === shape }}
-                      onPress={() => setColor((current) => withAvatarShape(current, shape))}
+                      onPress={() => {
+                        setAvatarSet("organic");
+                        setColor((current) => withAvatarShape(current, shape));
+                      }}
                       style={{
                         padding: 4,
                         borderRadius: 14,
@@ -950,16 +972,6 @@ function SettingsSectionHeading({ children }: { children: string }) {
       {children}
     </Text>
   );
-}
-
-function thinkingLevelLabel(level: ThinkingLevel, t: (message: string) => string) {
-  if (level === "xhigh") return t("Extra high");
-  if (level === "low") return t("Low");
-  if (level === "medium") return t("Medium");
-  if (level === "high") return t("High");
-  if (level === "minimal") return t("Minimal");
-  if (level === "max") return t("Max");
-  return `${level.slice(0, 1).toUpperCase()}${level.slice(1)}`;
 }
 
 const styles = StyleSheet.create({

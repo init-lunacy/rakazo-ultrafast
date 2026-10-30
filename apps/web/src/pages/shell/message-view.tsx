@@ -1,9 +1,14 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { ChatMarkdown, LinkifiedText, withBlockMentions } from "@rakazo/chat-ui/web";
-import type { MessageReaction, ThreadMessage } from "@rakazo/contracts";
+import type {
+  BotAvatarSet,
+  LoginFieldInput,
+  MessageReaction,
+  ThreadMessage,
+} from "@rakazo/contracts";
 import type { ChildBotBlock } from "@rakazo/core";
 import { isPeerReceiptBlocks, isSecretAskBlock, isToolActivityBlock } from "@rakazo/core";
-import { BotAvatar, Button, resolvePersonaColorDef } from "@rakazo/ui-web";
+import { BotAvatar, Button, cn, resolvePersonaColorDef } from "@rakazo/ui-web";
 import { UserRound } from "lucide-react";
 import { memo, useMemo } from "react";
 import { ArtifactFileCard } from "../../components/ArtifactFileCard";
@@ -29,6 +34,8 @@ import {
 } from "../../lib/tool-activity-view";
 import { ReplyLine } from "./chat-context";
 import { FALLBACK_BOT_COLOR, previewMessageText } from "./chat-shared";
+import type { ImportSetupTarget } from "./import-setup-card";
+import { ImportSetupCard } from "./import-setup-card";
 import {
   AppConnectCard,
   ArtifactImage,
@@ -62,9 +69,12 @@ export const MessageView = memo(function MessageView({
   speaking,
   onSpeak,
   onOpenComputer,
+  onOpenImportSetup,
+  onOpenImport,
   showToolActivity,
   onReply,
   onMarkUnread,
+  markedUnread = false,
   onReact,
 }: {
   artifactTarget: ArtifactTarget;
@@ -76,7 +86,7 @@ export const MessageView = memo(function MessageView({
   onAnswer: (
     message: ThreadMessage,
     text: string,
-    username?: string,
+    fields?: LoginFieldInput[],
     dismiss?: boolean,
   ) => Promise<void>;
   onOpenBot: (botId: string) => void;
@@ -86,7 +96,9 @@ export const MessageView = memo(function MessageView({
   onTogglePeerReplies: (markerId: string) => void;
   speakerName?: string;
   memberName?: (botId: string | undefined) => string | undefined;
-  peerBot: (botId: string) => { name?: string; color: string; status?: string } | undefined;
+  peerBot: (
+    botId: string,
+  ) => { name?: string; color: string; status?: string; avatarSet?: BotAvatarSet } | undefined;
   replyParent?: ThreadMessage;
   onJumpToMessage?: (messageId: string) => void;
   onRefresh: () => Promise<void>;
@@ -96,9 +108,14 @@ export const MessageView = memo(function MessageView({
   speaking: boolean;
   onSpeak: () => void;
   onOpenComputer: (botId?: string) => void;
+  /** Opens where an imported item's setup is finished. */
+  onOpenImportSetup?: (target: ImportSetupTarget) => void;
+  /** Opens the agent importer (from Chief's first-run focus card). */
+  onOpenImport?: () => void;
   showToolActivity: boolean;
   onReply: (message: ThreadMessage) => void;
   onMarkUnread: (message: ThreadMessage) => void;
+  markedUnread?: boolean;
   onReact: (message: ThreadMessage, reaction: MessageReaction) => Promise<void>;
 }) {
   const { t } = useLingui();
@@ -126,7 +143,12 @@ export const MessageView = memo(function MessageView({
   const renderMention = (id: string) => {
     const block = mentions?.find((bot) => bot.botId === id);
     return block ? (
-      <BotMention block={block} color={peerBot(id)?.color} onOpenBot={onOpenBot} />
+      <BotMention
+        block={block}
+        avatarSet={peerBot(id)?.avatarSet}
+        color={peerBot(id)?.color}
+        onOpenBot={onOpenBot}
+      />
     ) : undefined;
   };
   const replyBotId = message.replyPreview?.botId ?? replyParent?.botId;
@@ -145,6 +167,7 @@ export const MessageView = memo(function MessageView({
         >
           <BotAvatar
             color={speakerBot?.color ?? FALLBACK_BOT_COLOR}
+            avatarSet={speakerBot?.avatarSet}
             identity={message.botId}
             size={22}
           />
@@ -179,6 +202,7 @@ export const MessageView = memo(function MessageView({
       side={message.role === "user" ? "start" : "end"}
       onReply={onReply}
       onMarkUnread={onMarkUnread}
+      markedUnread={markedUnread}
       onReact={onReact}
     />
   );
@@ -202,7 +226,7 @@ export const MessageView = memo(function MessageView({
           <div className="flex w-fit max-w-full justify-start [@media(hover:none)]:w-full">
             <div
               data-testid="message-bot-bubble"
-              className="max-w-full space-y-2.5 rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90"
+              className="max-w-full space-y-2.5 rounded-[20px] bg-muted px-[18px] py-3 text-body1 text-foreground"
               dir="auto"
             >
               {visibleNarrationBlocks.map((block, i) => {
@@ -240,14 +264,15 @@ export const MessageView = memo(function MessageView({
                 return null;
               })}
               {!isLive && voiceReady && message.blocks.some((block) => block.kind === "text") ? (
-                <button
-                  type="button"
+                <Button
+                  variant="text"
+                  size="xs"
                   aria-label={speaking ? t`Stop speaking` : t`Speak this reply`}
                   onClick={onSpeak}
-                  className="text-[12px] text-muted-foreground hover:text-foreground"
+                  className="font-normal"
                 >
                   {speaking ? <Trans>Stop</Trans> : <Trans>Speak</Trans>}
-                </button>
+                </Button>
               ) : null}
             </div>
           </div>
@@ -259,7 +284,7 @@ export const MessageView = memo(function MessageView({
   return (
     <>
       {messageContext}
-      <div className="relative flex flex-col gap-2">
+      <div className={cn("relative flex flex-col gap-2", message.role === "user" && "items-end")}>
         {blocks.map((block, i) => {
           if (block.kind === "steps" && shouldRenderToolCard(block, showToolActivity)) {
             return (
@@ -298,6 +323,7 @@ export const MessageView = memo(function MessageView({
                 key={i}
                 ariaLabel={label}
                 color={peerBot(peerBotId)?.color ?? FALLBACK_BOT_COLOR}
+                avatarSet={peerBot(peerBotId)?.avatarSet}
                 identity={peerBotId}
                 label={label}
                 onClick={() => onOpenPeerMessages({ peerBotId, peerBotName: peer })}
@@ -320,9 +346,11 @@ export const MessageView = memo(function MessageView({
                 key={i}
                 className="flex items-center justify-center gap-2 py-1 text-[13.5px] text-muted-foreground"
               >
+                <span className="shrink-0">
+                  {messageProviderLabel(block.provider, block.transport)}
+                </span>
                 <span>
-                  {messageProviderLabel(block.provider, block.transport)} · {block.fromLabel}:{" "}
-                  {block.text}
+                  {block.fromLabel}: {block.text}
                 </span>
               </div>
             );
@@ -346,7 +374,7 @@ export const MessageView = memo(function MessageView({
               >
                 <div
                   data-testid="message-bot-bubble"
-                  className="max-w-full rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90"
+                  className="max-w-full rounded-[20px] bg-muted px-[18px] py-3 text-body1 text-foreground"
                   dir="auto"
                 >
                   <ChatMarkdown streaming renderMention={renderMention}>
@@ -365,6 +393,7 @@ export const MessageView = memo(function MessageView({
                 <BotMention
                   block={block}
                   color={peerBot(block.botId)?.color}
+                  avatarSet={peerBot(block.botId)?.avatarSet}
                   onOpenBot={onOpenBot}
                 />
                 {block.status === "created" ? null : (
@@ -378,7 +407,15 @@ export const MessageView = memo(function MessageView({
           if (block.kind === "choice") {
             const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
             if (!botId) return null;
-            return <ChoiceCard key={i} botId={botId} block={block} onBotChanged={onBotChanged} />;
+            return (
+              <ChoiceCard
+                key={i}
+                botId={botId}
+                block={block}
+                onBotChanged={onBotChanged}
+                onImportAgent={onOpenImport}
+              />
+            );
           }
           if (block.kind === "app_connect") {
             const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
@@ -398,6 +435,17 @@ export const MessageView = memo(function MessageView({
             return (
               <div key={i} className="flex justify-start">
                 <ChartBlockView name={block.name} spec={block.spec} data={block.data} />
+              </div>
+            );
+          }
+          if (block.kind === "import_setup") {
+            return (
+              <div key={i} className="flex justify-start">
+                <ImportSetupCard
+                  botId={"botId" in artifactTarget ? artifactTarget.botId : message.botId}
+                  block={block}
+                  onOpen={onOpenImportSetup}
+                />
               </div>
             );
           }
@@ -452,7 +500,7 @@ export const MessageView = memo(function MessageView({
                 <div
                   data-testid="message-user-bubble"
                   data-quote-message-id={quoteMessageId}
-                  className="max-w-full whitespace-pre-wrap wrap-anywhere rounded-[20px] bg-chat-user px-[18px] py-3 text-[15.5px] leading-[1.45] text-chat-user-foreground"
+                  className="max-w-full whitespace-pre-wrap wrap-anywhere rounded-[20px] bg-chat-user px-[18px] py-3 text-body1 text-chat-user-foreground"
                   dir="auto"
                 >
                   <LinkifiedText>{block.text}</LinkifiedText>
@@ -469,21 +517,22 @@ export const MessageView = memo(function MessageView({
               >
                 <div
                   data-testid="message-bot-bubble"
-                  className="max-w-full rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90"
+                  className="max-w-full rounded-[20px] bg-muted px-[18px] py-3 text-body1 text-foreground"
                   dir="auto"
                 >
                   <div data-quote-message-id={quoteMessageId}>
                     <ChatMarkdown renderMention={renderMention}>{block.text}</ChatMarkdown>
                   </div>
                   {voiceReady ? (
-                    <button
-                      type="button"
+                    <Button
+                      variant="text"
+                      size="xs"
                       aria-label={speaking ? t`Stop speaking` : t`Speak this reply`}
                       onClick={onSpeak}
-                      className="mt-2 text-[12px] text-muted-foreground hover:text-foreground"
+                      className="mt-2 font-normal"
                     >
                       {speaking ? <Trans>Stop</Trans> : <Trans>Speak</Trans>}
-                    </button>
+                    </Button>
                   ) : null}
                 </div>
                 {i === hoverAnchorIndex ? hoverActions : null}
@@ -497,7 +546,7 @@ export const MessageView = memo(function MessageView({
                   {block.lines.map((line) => (
                     <div key={line.k} className="flex items-baseline gap-2.5 text-[15px]">
                       <span className="text-success">✓</span>
-                      <span className="font-semibold text-white">{line.k}</span>
+                      <span className="font-semibold text-foreground">{line.k}</span>
                       <span className="text-muted-foreground">→</span>
                       <span>{line.v}</span>
                     </div>
@@ -516,7 +565,7 @@ export const MessageView = memo(function MessageView({
                   block={block}
                   canAnswer={canAnswer}
                   canDismiss={canDismiss}
-                  onAnswer={(text, username) => onAnswer(message, text, username)}
+                  onAnswer={(text, fields) => onAnswer(message, text, fields)}
                   onDismiss={() => onAnswer(message, "", undefined, true)}
                 />
                 {i === hoverAnchorIndex ? hoverActions : null}
@@ -589,10 +638,12 @@ export const MessageView = memo(function MessageView({
 function BotMention({
   block,
   color,
+  avatarSet,
   onOpenBot,
 }: {
   block: ChildBotBlock;
   color: string | undefined;
+  avatarSet?: BotAvatarSet;
   onOpenBot: (botId: string) => void;
 }) {
   const live = block.status === "created" && color;
@@ -621,7 +672,7 @@ function BotMention({
       className="-mx-1 inline-flex items-baseline gap-1.5 rounded-md px-1 transition-colors hover:bg-accent"
     >
       <span className="self-center">
-        <BotAvatar color={color} identity={block.botId} size={18} />
+        <BotAvatar avatarSet={avatarSet} color={color} identity={block.botId} size={18} />
       </span>
       {name}
     </button>

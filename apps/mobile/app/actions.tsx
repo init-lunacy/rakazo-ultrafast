@@ -4,7 +4,6 @@ import { useCallback, useState } from "react";
 import { FlatList, Pressable, Text, View } from "react-native";
 import { OfferCard } from "../components/OfferCard";
 import { offerRoute } from "../lib/action-offers";
-import type { MobileSpaceNavigation } from "../lib/api";
 import { rpc } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { useMobileTokens } from "../lib/native";
@@ -22,8 +21,8 @@ export default function ActionsSheet() {
       const tick = async () => {
         try {
           const [list, navigation] = await Promise.all([
-            rpc<ActionOfferListItem[]>("actionOffers/list"),
-            rpc<MobileSpaceNavigation>("spaces/list"),
+            rpc("actionOffers/list"),
+            rpc("spaces/list"),
           ]);
           if (cancelled) return;
           setItems(list);

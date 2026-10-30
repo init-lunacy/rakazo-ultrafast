@@ -36,7 +36,6 @@ type FakeTabs = {
 export interface FakeBrowserProviderOptions {
   /** Inject HTML for a URL without hitting the network (offline tests). */
   pages?: Record<string, { title?: string; html: string }>;
-  /** Optional fetch override for navigate. */
   fetch?: typeof globalThis.fetch;
 }
 

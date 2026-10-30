@@ -15,6 +15,7 @@ import type {
   TransactionalEmailProvider,
 } from "@rakazo/adapter-kit";
 import {
+  SandboxDamagedError,
   SandboxRateLimitError,
   SandboxUnavailableError,
   VoiceAccountError,
@@ -22,23 +23,29 @@ import {
 import type {
   ComposioProvider,
   ConnectorRegistry,
+  PluginRepoFetcher,
+  PluginTextReader,
   RemoteConnectorDependencies,
+  UserDeviceGateway,
 } from "@rakazo/adapters";
 import {
   applyMessagingOutboundStatus,
   ChatSdkMessagingSurface,
   CodexCatalogCache,
   ComposioConnector,
+  contentKeyProviderFromEnv,
   createAgentHomeStore,
   createArtifactStore,
   createBackgroundJobHandlers,
   createCloudAgentConnection,
   createConnectorStack,
+  createIdleComputerSweeper,
   createJobReconciler,
   createMessagingContextLoader,
   createMessagingTeamChatHistory,
   createMessagingTeamChatSender,
   createModelCreditReconciler,
+  createPaymentWalletProvider,
   createProductAnalytics,
   createRunExecutor,
   createRunSandbox,
@@ -47,7 +54,6 @@ import {
   createTicketChangeNotifier,
   createWebProvider,
   deploymentModelUsageLookup,
-  destroyBot,
   EmailEmulator,
   ExpoPushProvider,
   GraphileJobPublisher,
@@ -55,6 +61,7 @@ import {
   InMemoryRealtimeFanout,
   InstalledConnectorProvider,
   IntegrationProviderSettings,
+  installedMessaging,
   isComposioEnabled,
   isMessagingSurfaceEnabled,
   isPipedreamEnabled,
@@ -71,20 +78,25 @@ import {
   RunJobPublisher,
   reconcileCloudAgents,
   reconcileComputerUpdates,
+  reconcilePurchases,
   removePiUserSessions,
   resolveDeploymentModel,
   ScriptedAgentRuntime,
-  SmtpEmailProvider,
   SpaceMemoryProviderResolver,
   StripeBillingProvider,
   sandboxProviderOptionsFromEnv,
   stripeBillingConfigFromEnv,
   toTeamChatInbound,
+  UserDeviceHub,
+  UserDevices,
+  userDeviceForwardSecret,
+  userDeviceInternalAddress,
+  verifyModelServesAgents,
   withSecretPersistence,
 } from "@rakazo/adapters";
 import { createAuth, isBlockedAuthPath, loopbackTwinOrigins } from "@rakazo/auth";
 import type { Actor, AuthCapabilities } from "@rakazo/contracts";
-import { SERVER_BUILD_HEADER } from "@rakazo/contracts";
+import { isLocalhostOrLoopbackIp, SERVER_BUILD_HEADER } from "@rakazo/contracts";
 import { signupPolicyFromEnv } from "@rakazo/core";
 import type { Pool, PrismaClient } from "@rakazo/db";
 import {
@@ -96,6 +108,7 @@ import {
   describeRowSecurity,
   IsolationError,
   installSecurityEventStore,
+  ProviderTransactionBusyError,
   parsePositiveInteger,
   provisionMessagingIdentity,
   pushSessionExpiresAt,
@@ -117,6 +130,7 @@ import { requestLogging } from "@rakazo/logging/hono";
 import { MarkdownMemoryStore } from "@rakazo/memory";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { deleteAccountContent } from "./account-deletion.js";
 import { mountAppAssociation, nativePasskeys } from "./app-association.js";
 import { storeInboundAttachment } from "./artifacts.js";
 import { createBillingService } from "./billing.js";
@@ -131,10 +145,12 @@ import {
 } from "./client-ip.js";
 import { cspReportRoutes } from "./csp-report.js";
 import { mountDiagramScript } from "./diagram-script.js";
+import { configuredEmailProvider } from "./email.js";
 import type { AppEnv } from "./env.js";
 import { loadEnv } from "./env.js";
 import { healthRoutes } from "./health.js";
 import { mountLocalComputerHost } from "./local-settings.js";
+import { marketingEmailRoutes, sendWelcomeEmail } from "./marketing-email.js";
 import {
   createMessagingInboundHandler,
   teamChatSenderCanWakeMessageRoutines,
@@ -147,6 +163,7 @@ import { mountApiRequestBodyLimits } from "./request-body-limit.js";
 import { createRouter } from "./router.js";
 import { mountScreenTarget } from "./screen-proxy.js";
 import { createAuthResponseAudit } from "./security-audit.js";
+import { createSpeechSummarizer } from "./speech-summary.js";
 import { isDeferredReservationLost, TeamChatBridge } from "./team-chat-bridge.js";
 import { ModelTeamChatEngagementJudge } from "./team-chat-judge.js";
 import {
@@ -154,7 +171,9 @@ import {
   prefersTeamChatSurface,
   settleWithTimeout,
   TEAM_CHAT_STARTUP_SHUTDOWN_MS,
+  TeamChatStartupRetries,
 } from "./team-chat-startup.js";
+import { mountUserDeviceRoutes } from "./user-devices.js";
 import { mountVoiceHttpRoutes, voiceAccountErrorStatus } from "./voice.js";
 import { mountWebhookHttpRoutes } from "./webhook.js";
 
@@ -185,6 +204,8 @@ export interface AppHandles {
   runtime: AgentRuntime;
   awaitIdle?: () => Promise<void>;
   backgroundFailures?: () => Array<{ name: string; count: number }>;
+  /** Node `upgrade` listener for desktop device sockets; absent when the feature is off. */
+  handleUpgrade?: UserDeviceHub["handleUpgrade"];
   stop: () => Promise<void>;
 }
 
@@ -208,10 +229,14 @@ type CreateAppOverrides = Partial<AppEnv> & {
   notifications?: NotificationProvider;
   billing?: BillingProvider;
   remoteConnectors?: RemoteConnectorDependencies;
+  pluginRepoFetcher?: PluginRepoFetcher;
+  pluginMarketplaceRead?: PluginTextReader;
   modelConnectionFetch?: typeof fetch;
   logger?: Logger;
   runtime?: AgentRuntime;
   contextStrategy?: AgentContextStrategy;
+  /** Test-only stand-in for desktops connected to this server. */
+  userDevices?: UserDeviceGateway;
 };
 
 async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
@@ -228,9 +253,12 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     billing: billingOverride,
     remoteConnectors,
     modelConnectionFetch,
+    pluginRepoFetcher,
+    pluginMarketplaceRead,
     logger: loggerOverride,
     runtime: runtimeOverride,
     contextStrategy,
+    userDevices: userDevicesOverride,
     ...envOverrides
   } = overrides;
   const env = { ...loadEnv(process.env), ...envOverrides };
@@ -241,6 +269,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     : createDb(env.databaseUrl, {
         poolMax: parsePositiveInteger(process.env.DB_POOL_MAX, 4),
         applicationName: "rakazo-api",
+        keyProvider: contentKeyProviderFromEnv(),
         encryptContent: env.contentEncryption,
       });
   let { prisma } = created;
@@ -298,9 +327,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
 
   const jobKind = env.wakeupDriver;
   const inMemoryJobs = jobKind === "memory" ? new InMemoryJobQueue() : undefined;
-  // prismaOverride skips createDb, so there is no shared pool. The previous
-  // GraphileJobPublisher(databaseUrl) path opened its own connections; keep a
-  // bounded pool for that override path instead of passing undefined.
+  // prismaOverride skips createDb, so there is no shared pool; keep a bounded one for jobs.
   let ownedJobPool: Pool | undefined;
   if (!inMemoryJobs && !created.pool) {
     ownedJobPool = createPool(env.databaseUrl, {
@@ -350,8 +377,9 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     env.mcpAllowPrivateEndpoint,
   );
   const memoryProviders = new SpaceMemoryProviderResolver(prisma, secrets);
-  const oauthLogins = new PiOAuthLogins();
+  const oauthLogins = new PiOAuthLogins(undefined, { prisma, secrets });
   const home = createAgentHomeStore(env.dataDir, prisma);
+  void home.removeStaleStaging().catch((error) => getLogger().error("home staging cleanup", error));
   const artifacts = createArtifactStore(env.dataDir, prisma);
   const memory = new MarkdownMemoryStore(prisma);
   const mcp = new McpConnector(
@@ -371,12 +399,11 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
   const pipedream =
     pipedreamOverride ??
     (isPipedreamEnabled(pipedreamConfig) ? new PipedreamConnector(pipedreamConfig) : undefined);
-  // This process registers the inbound sink (messaging.onInbound below),
-  // so it's the one that must hold Telegram's live getUpdates connection —
-  // see messagingPlatformsFromEnv's docstring for why a second poller
-  // elsewhere (e.g. the worker) would actively break this.
-  const messagingPlatforms = messagingPlatformsFromEnv(env, { pollInboundMessages: true });
-  const messaging =
+  // This process registers the inbound sink, so it must hold Telegram's getUpdates connection.
+  const messagingPlatforms = messagingPlatformsFromEnv(env, { pollInboundMessages: true }).filter(
+    (platform) => platform.provider !== "slack" || !env.slackClientId,
+  );
+  const legacyMessaging =
     messagingOverride ??
     (isMessagingSurfaceEnabled(messagingPlatforms, {
       deploymentModelConfigured: env.deploymentModelConfigured,
@@ -384,22 +411,22 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     })
       ? new ChatSdkMessagingSurface(messagingPlatforms)
       : undefined);
+  const { messaging, installations: messagingInstallations } = messagingOverride
+    ? { messaging: messagingOverride, installations: undefined }
+    : installedMessaging(prisma, secrets, env, legacyMessaging, jobs);
+  const configuredEmail = emailOverride ?? configuredEmailProvider(env);
   const localEmailEmulator =
-    !emailOverride && !env.smtpUrl && env.emailEmulator
+    !configuredEmail && env.emailEmulator
       ? new EmailEmulator((message) => {
           getLogger().info("email emulator captured message", {
             "email.subject": message.subject,
           });
         })
       : undefined;
-  if (localEmailEmulator && !isLoopbackHost(env.apiHost)) {
+  if (localEmailEmulator && !isLocalhostOrLoopbackIp(env.apiHost)) {
     throw new Error("EMAIL_EMULATOR requires API_HOST to be a loopback host");
   }
-  const email: TransactionalEmailProvider | undefined =
-    emailOverride ??
-    (env.smtpUrl
-      ? new SmtpEmailProvider({ url: env.smtpUrl, from: env.emailFrom ?? "" })
-      : localEmailEmulator);
+  const email: TransactionalEmailProvider | undefined = configuredEmail ?? localEmailEmulator;
   const stripeBilling = stripeBillingConfigFromEnv(env);
   const billingProvider: BillingProvider | undefined =
     billingOverride ?? (stripeBilling ? new StripeBillingProvider(stripeBilling) : undefined);
@@ -478,31 +505,36 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
         ),
     },
     onEmailError: (error) => getLogger().error("transactional email delivery failed", error),
+    afterSignIn:
+      email && env.welcomeEmailEnabled
+        ? (userId) =>
+            sendWelcomeEmail(
+              {
+                prisma,
+                email,
+                origin: env.authUrl,
+                secret: env.authSecret,
+                onError: (error) => getLogger().error("welcome email delivery failed", error),
+              },
+              userId,
+            )
+        : undefined,
     extraOrigins: MOBILE_AUTH_ORIGINS,
     androidAppCertFingerprints: env.passkeyAndroidCertFingerprints,
     beforeDeleteUser: async (userId) => {
       // First, so a provider failure aborts deletion before anything is destroyed.
       await billing?.cancelForDeletedUser(userId);
-      const bots = await prisma.bot.findMany({
-        where: { userId },
-        select: { id: true, userId: true, spaceId: true, name: true, archivedAt: true },
-      });
-      await Promise.all(
-        bots.map((bot) =>
-          destroyBot(
-            { prisma, sandbox, home, jobs, artifacts, dataDir: env.dataDir },
-            bot,
-            {
-              operationId: `account-delete:${userId}`,
-              traceId: `account-delete:${userId}`,
-              spaceId: bot.spaceId,
-              userId,
-              botId: bot.id,
-              signal: new AbortController().signal,
-            },
-            { deleteMemories: true },
-          ),
-        ),
+      await deleteAccountContent(
+        {
+          prisma,
+          sandbox,
+          home,
+          jobs,
+          artifacts,
+          dataDir: env.dataDir,
+          messagingInstallations,
+        },
+        userId,
       );
       await removePiUserSessions(env.dataDir, userId);
       await pushTokens
@@ -530,10 +562,21 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     CURSOR_API_KEY: env.cursorApiKey,
     CLOUD_AGENT_SPACE_ID: env.cloudAgentSpaceId,
   });
+  const paymentWallet = await createPaymentWalletProvider({
+    PAYMENT_WALLET_PROVIDER: env.paymentWalletProvider,
+    PAYMENT_WALLET_CLIENT_ID: env.paymentWalletClientId,
+  });
   const shutdown = new AbortController();
   // One cache serves models.list, selection validation, and run-time model
   // resolution alike, so a list call warms the run path in this process.
   const codexCatalog = new CodexCatalogCache();
+  const userDeviceSecret = userDeviceForwardSecret(env.encryptionKey);
+  const userDeviceHub = env.userDevicesEnabled
+    ? new UserDeviceHub({ prisma, address: userDeviceInternalAddress(env.apiHost, env.port) })
+    : undefined;
+  const userDevices = userDeviceHub
+    ? new UserDevices({ prisma, forwardSecret: userDeviceSecret, hub: userDeviceHub })
+    : undefined;
   const executor = createRunExecutor({
     billingEnabled: modelCreditsEnabled,
     maxUploadSizeBytes: env.maxUploadSizeBytes,
@@ -568,6 +611,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     secretStore: secrets,
     secretHttp: remoteConnectors,
     mcpAllowPrivateEndpoint: env.mcpAllowPrivateEndpoint,
+    mcpStdio: { stdioEnabled: env.mcpStdioEnabled, allowedCommands: env.mcpStdioAllowedCommands },
     deploymentModelKey: env.deploymentModelKey,
     deploymentModelConfigured: env.deploymentModelConfigured,
     dataDir: env.dataDir,
@@ -582,6 +626,8 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     messaging: messaging ? createMessagingContextLoader(prisma) : undefined,
     web: createWebProvider(),
     cloudAgent,
+    userDevices: userDevicesOverride ?? userDevices,
+    paymentWallet,
     shutdownSignal: shutdown.signal,
   });
 
@@ -602,6 +648,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     deploymentModelConfigured: env.deploymentModelConfigured,
     messaging,
     cloudAgent,
+    paymentWallet,
   });
   if (inMemoryJobs) {
     await inMemoryJobs.start(jobHandlers);
@@ -617,18 +664,34 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
           lookup: deploymentModelUsageLookup(),
         }),
         reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
+        reconcilePurchases: () => reconcilePurchases({ prisma, jobs, paymentWallet }),
         reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
         reconcileSecurityEventRetention: createSecurityEventPruner(
           prisma,
           securityEventRetentionDays(),
         ),
+        reconcileIdleComputers: createIdleComputerSweeper({ prisma, jobs }),
       })
     : undefined;
   reconciler?.start();
 
   const router = createRouter({
+    speechSummary:
+      env.voiceSummaryMinChars === undefined
+        ? undefined
+        : {
+            minChars: env.voiceSummaryMinChars,
+            summarize: createSpeechSummarizer({
+              prisma,
+              runtime,
+              resolveModel: executor.resolveModel,
+            }),
+          },
     analytics,
+    pluginRepoFetcher,
+    pluginMarketplaceRead,
     cloudAgent,
+    paymentWallet,
     codexCatalog,
     prisma,
     pushTokens,
@@ -650,12 +713,20 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     connectors: stack.connector,
     remoteConnectors,
     modelConnectionFetch,
+    // The scripted runtime never calls a provider, so neither does its connect.
+    modelConnectionCheck: env.agentRuntime === "pi" ? verifyModelServesAgents : undefined,
     artifacts,
     dataDir: env.dataDir,
     billing,
+    messagingInstallations,
     messaging: {
       enabled: Boolean(messaging),
       providers: messaging?.platforms().map((platform) => platform.provider) ?? [],
+      addresses: Object.fromEntries(
+        (messaging?.platforms() ?? []).flatMap((platform) =>
+          platform.address ? [[platform.provider, platform.address]] : [],
+        ),
+      ),
       openSignup: env.messagingOpenSignup,
     },
     env: {
@@ -663,6 +734,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       phoneCallRingSeconds: env.phoneCallRingSeconds,
       ticketBoardEnabled,
       jevAvailable: env.jevAvailable,
+      navLinks: env.navLinks,
       agentRuntime: env.agentRuntime,
       defaultProvider: env.defaultProvider,
       defaultModel: env.defaultModel,
@@ -678,10 +750,12 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       integrationsCatalogUrl: env.integrationsCatalogUrl,
       mcpAllowPrivateEndpoint: env.mcpAllowPrivateEndpoint,
       desktopHostChoiceEnabled: Boolean(env.desktopStackToken),
+      mcpStdioEnabled: env.mcpStdioEnabled,
+      mcpStdioAllowedCommands: env.mcpStdioAllowedCommands,
     },
   });
   const rpc = new RPCHandler(router, {
-    clientInterceptors: [onError((error, { path }) => handleRpcError(error, path))],
+    clientInterceptors: [onError((error, { path, signal }) => handleRpcError(error, path, signal))],
   });
   const app = new Hono();
   app.use("*", requestLogging(logger));
@@ -717,6 +791,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       billing: Boolean(billing),
       passkeyRpId: auth.passkeyRpId,
       nativePasskeys: nativePasskeys(env, auth.passkeyRpId),
+      crispWebsiteId: billing ? (env.crispWebsiteId ?? null) : null,
     } satisfies AuthCapabilities);
   });
   mountAppAssociation(app, env);
@@ -738,6 +813,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     ),
   );
   app.route("/", cspReportRoutes(requestClientIp));
+  app.route("/", marketingEmailRoutes(prisma, env.authSecret));
   mountApiRequestBodyLimits(app, env.maxUploadSizeBytes);
   mountScreenTarget(app, prisma, env.screenProxySecret);
   mountDiagramScript(app);
@@ -777,6 +853,30 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     return actor && { actor, sessionId: session.session.id };
   };
   const sessionActor = async (request: Request) => (await requestSession(request))?.actor ?? null;
+  if (userDeviceHub && userDevices) {
+    mountUserDeviceRoutes(app, {
+      prisma,
+      hub: userDeviceHub,
+      devices: userDevices,
+      forwardSecret: userDeviceSecret,
+      sessionUserId: async (request) =>
+        (await auth.api.getSession({ headers: request.headers }))?.user.id ?? null,
+      trustedOrigin: (origin) => isTrustedOrigin(origin, env),
+    });
+  }
+  if (messagingInstallations) {
+    app.get("/api/v1/messaging/install/slack/callback", async (c) => {
+      try {
+        await messagingInstallations.complete(
+          c.req.query("state") ?? "",
+          c.req.query("code") ?? "",
+        );
+        return c.redirect(new URL("/app?settings=messaging", env.webOrigin).toString());
+      } catch {
+        return c.text("Slack connection failed. Return to Rakazo and try again.", 400);
+      }
+    });
+  }
   app.use(
     "/rpc/*",
     clientBuildMiddleware({
@@ -825,11 +925,11 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
   }
   // Shared with stop so a shutdown during retry delays does not restart polling.
   let messagingStopped = false;
+  let stopInstalledBridges: (() => Promise<void>) | undefined;
   let clearMessagingRetryDelay: (() => void) | undefined;
   let messagingInitTask: Promise<void> | undefined;
   let clearTeamChatRetryDelay: (() => void) | undefined;
   let teamChatInitTask: Promise<void> | undefined;
-  // Messaging webhooks only exist when the surface is enabled.
   let teamChatBridge: TeamChatBridge | undefined;
   /** Constructed even before start() succeeds so stop() can cancel in-flight startup. */
   let teamChatBridgeInstance: TeamChatBridge | undefined;
@@ -847,6 +947,12 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
         signupAllowlist: env.signupAllowlist,
       },
       acknowledge: receipts?.acknowledge,
+      storeAttachment: ({ spaceId, userId, ...input }) =>
+        storeInboundAttachment(
+          { prisma, artifacts, maxUploadSizeBytes: env.maxUploadSizeBytes },
+          { spaceId, userId },
+          input,
+        ),
     } satisfies Parameters<typeof createMessagingInboundHandler>[0];
     const inbound = createMessagingInboundHandler(inboundDeps);
     const handleTeamChatInbound = async (
@@ -939,7 +1045,10 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     const flushPendingTeamChatInbound = (bridge: TeamChatBridge) => {
       pendingTeamChatInbound.flush((event) => handleTeamChatInbound(bridge, event));
     };
-    if (env.teamChatBotId) {
+    const makeTeamChatBridge = (
+      botId: string,
+      installation?: { id: string; workspaceId: string },
+    ) => {
       const judge =
         env.teamChatJudgeProvider && env.teamChatJudgeModel
           ? new ModelTeamChatEngagementJudge({
@@ -975,10 +1084,91 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
             input,
           ),
         providerId: "slack",
-        botId: env.teamChatBotId,
+        botId,
+        workspaceId: installation?.workspaceId,
+        conversationPrefix: installation ? `slack~${installation.id}:` : undefined,
+        onUnavailable: installation
+          ? () => {
+              installedBridges.delete(installation.id);
+            }
+          : undefined,
+        isAvailable: installation
+          ? async () => Boolean(await messagingInstallations?.isActive(installation.id))
+          : undefined,
         judge,
         acknowledge: receipts?.acknowledge,
       });
+      return bridge;
+    };
+    const installedBridges = new Map<
+      string,
+      { bridge: TeamChatBridge; pending: Promise<TeamChatBridge> }
+    >();
+    const installedRetries = new TeamChatStartupRetries((error) =>
+      getLogger().error("installed team chat restore failed; retrying", error),
+    );
+    const retryInstalledBridge = (installation: {
+      id: string;
+      botId: string;
+      workspaceId: string;
+    }) => {
+      installedRetries.schedule(installation.id, () =>
+        runAsSystem("retry installed team chat", async () => {
+          if (messagingStopped) return;
+          const active = await messagingInstallations?.isActive(installation.id);
+          if (!active || messagingStopped) return;
+          await installedBridge(installation);
+        }),
+      );
+    };
+    const installedBridge = (installation: { id: string; botId: string; workspaceId: string }) => {
+      const existing = installedBridges.get(installation.id);
+      if (existing) return existing.pending;
+      const bridge = makeTeamChatBridge(installation.botId, installation);
+      const pending = bridge
+        .start()
+        .then(() => {
+          installedRetries.succeeded(installation.id);
+          return bridge;
+        })
+        .catch(async (error) => {
+          installedBridges.delete(installation.id);
+          await bridge.stop();
+          retryInstalledBridge(installation);
+          throw error;
+        });
+      installedBridges.set(installation.id, { bridge, pending });
+      return pending;
+    };
+    if (messagingInstallations) {
+      await Promise.all(
+        (await messagingInstallations.targets()).map((installation) =>
+          runAsSystem("resume installed team chat", () => installedBridge(installation)).catch(
+            (error) => {
+              getLogger().error("installed team chat could not resume", error);
+            },
+          ),
+        ),
+      );
+    }
+    stopInstalledBridges = async () => {
+      installedRetries.stop();
+      // Stop first so an in-flight start() is cancelled, then bound the wait
+      // as the static bridge does.
+      await Promise.all(
+        [...installedBridges.values()].map(({ bridge, pending }) =>
+          settleWithTimeout(
+            bridge
+              .stop()
+              .catch(() => undefined)
+              .then(() => pending.catch(() => undefined)),
+            TEAM_CHAT_STARTUP_SHUTDOWN_MS,
+          ),
+        ),
+      );
+    };
+    if (env.teamChatBotId) {
+      const bridge = makeTeamChatBridge(env.teamChatBotId);
       teamChatBridgeInstance = bridge;
       try {
         await bridge.start();
@@ -1026,7 +1216,17 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
         await applyMessagingOutboundStatus(prisma, event);
         return;
       }
-      if (prefersTeamChatSurface(event, env.teamChatBotId)) {
+      if (event.installationBotId && !event.isDirect) {
+        if (!event.installationId || !event.workspaceId) return;
+        const installation = {
+          id: event.installationId,
+          botId: event.installationBotId,
+          workspaceId: event.workspaceId,
+        };
+        await handleTeamChatInbound(await installedBridge(installation), event);
+        return;
+      }
+      if (!event.installationBotId && prefersTeamChatSurface(event, env.teamChatBotId)) {
         const bridge = teamChatBridge;
         if (bridge) {
           await handleTeamChatInbound(bridge, event);
@@ -1049,15 +1249,9 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     };
     messaging.onInbound((event) => runAsSystem("messaging inbound", () => handleInbound(event)));
     mountMessagingWebhookRoutes(app, { messaging });
-    // Start polling-mode adapters (e.g. Telegram with no public webhook URL
-    // registered) immediately rather than waiting for the first webhook
-    // POST or outbound send to lazily trigger it. This is the process that
-    // owns the inbound sink registered just above, so it must be the one
-    // holding the live connection — a second poller elsewhere (e.g. the
-    // worker) would only fight this one for Telegram's single getUpdates
-    // slot without ever seeing the messages itself.
-    // Bounded retries cover transient Telegram startup failures; polling-only
-    // bots otherwise stay dark until an unrelated outbound send re-inits.
+    // Start polling adapters now rather than on the first webhook or send; a second poller
+    // elsewhere would fight this one for Telegram's single getUpdates slot. Bounded retries
+    // cover transient startup failures, otherwise polling-only bots stay dark.
     messagingInitTask = (async () => {
       const delayMs = [0, 2_000, 10_000];
       for (let attempt = 0; attempt < delayMs.length; attempt += 1) {
@@ -1129,11 +1323,13 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     runtime,
     awaitIdle: inMemoryJobs ? () => inMemoryJobs.awaitIdle() : undefined,
     backgroundFailures: inMemoryJobs ? () => inMemoryJobs.failureCounts() : undefined,
+    handleUpgrade: userDeviceHub?.handleUpgrade,
     stop: async () => {
       // Abort in-flight continueRun boot waits before draining jobs so stop() cannot sit
       // on waitForComputerReady for the full boot-wait window during shared Postgres journeys.
       auth.disposeOidcDiscovery();
       shutdown.abort();
+      await userDeviceHub?.close();
       oauthLogins.abortAll();
       messagingStopped = true;
       clearMessagingRetryDelay?.();
@@ -1150,6 +1346,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       await settleWithTimeout(teamChatInitTask, TEAM_CHAT_STARTUP_SHUTDOWN_MS);
       await messaging?.shutdown?.();
       await teamChatBridge?.stop();
+      await stopInstalledBridges?.();
       await email?.drain?.();
       await reconciler?.stop();
       await oauthTokenUpgrade;
@@ -1176,10 +1373,6 @@ export function isTrustedOrigin(
     [env.webOrigin, env.apiUrl, env.authUrl, ...MOBILE_AUTH_ORIGINS].flatMap(originVariants),
   );
   return allowed.has(origin);
-}
-
-function isLoopbackHost(host: string): boolean {
-  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
 }
 
 function originVariants(origin: string): string[] {
@@ -1234,15 +1427,15 @@ function emptyAuthBodyAsJson(request: Request) {
 }
 
 /**
- * An ORPCError is a decision the router made (BAD_REQUEST, UNAUTHORIZED, ...) and reaches the
- * caller intact. Everything else is flattened into an opaque "Internal server error", so
- * unless it is logged here the only record of what actually broke is gone.
- *
- * The cause chain matters as much as the message: undici and most SDKs report a bare
+ * Non-ORPCError failures are flattened into an opaque "Internal server error", so this log is
+ * the only record of what broke. The cause chain matters: undici and most SDKs report a bare
  * "fetch failed" and keep the host and errno one level down.
  */
-/** Log the failure, then give known failures their own status instead of a generic 500. */
-export function handleRpcError(error: unknown, path: readonly string[]): void {
+export function handleRpcError(
+  error: unknown,
+  path: readonly string[],
+  signal?: AbortSignal,
+): void {
   // A missing or foreign resource is the caller's mistake (a stale client, a deleted bot),
   // not a server failure, so it is a warning rather than an error report.
   if (error instanceof IsolationError) {
@@ -1268,11 +1461,28 @@ export function handleRpcError(error: unknown, path: readonly string[]): void {
     });
     throw new ORPCError("SERVICE_UNAVAILABLE", { message: error.message, cause: error });
   }
+  // A provider kept another transaction busy past the wait; nothing failed, so the caller retries.
+  if (error instanceof ProviderTransactionBusyError) {
+    getLogger().warn(`rpc ${path.join("/")} provider transaction busy`);
+    throw new ORPCError("SERVICE_UNAVAILABLE", { message: error.message, cause: error });
+  }
   if (error instanceof SandboxRateLimitError) {
     getLogger().warn(`rpc ${path.join("/")} computer rate limited`, {
       reason: error.cause instanceof Error ? error.cause.message : undefined,
     });
     throw new ORPCError("TOO_MANY_REQUESTS", { message: error.message, cause: error });
+  }
+  // A retry cannot fix a damaged computer; its message tells the user to Recover it.
+  if (error instanceof SandboxDamagedError) {
+    getLogger().warn(`rpc ${path.join("/")} computer damaged`);
+    throw new ORPCError("CONFLICT", { message: error.message, cause: error });
+  }
+  // The client went away mid-request, so whatever failed next has no one waiting for it.
+  if (signal?.aborted && !(error instanceof ORPCError)) {
+    getLogger().warn(`rpc ${path.join("/")} client disconnected`, {
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    return;
   }
   logUnexpectedRpcError(error, path);
 }
