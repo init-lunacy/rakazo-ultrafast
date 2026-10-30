@@ -74,7 +74,7 @@ Status: **fork-only** (stays here), **to upstream** (worth proposing), **propose
 | Row-level security coverage test | test | to upstream | `db/src/row-security.ts` | upstream merges it |
 | Fork integration fixes | glue | fork-only | `testkit/src/authorization.test.ts`, `adapters/src/executor.ts` | — |
 | CI and release guards | CI | fork-only | `.github/workflows/*`, `apps/desktop` release test | — |
-| Branding and docs | docs | fork-only | `README.md`, `docs/self-host.md` | — |
+| Branding and docs | docs | fork-only | `README.md`, `docs/self-host.md`, image defaults in `infra/compose/*.yml` (a test rejects upstream's registry) | — |
 
 Migrations the fork adds: `20261013120000_page_decider`, `20261014120000_run_bot_created_index`,
 `20261021120000_action_offers`, `20261027190000_action_offers_row_security`. Fork-only model:
