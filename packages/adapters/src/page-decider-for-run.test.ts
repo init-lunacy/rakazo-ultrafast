@@ -1,5 +1,5 @@
-import type { AgentRuntime } from "@rakazo/adapter-kit";
-import { describe, expect, it } from "vitest";
+import type { AgentRuntime, ComputerRef } from "@rakazo/adapter-kit";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { pageDeciderForRun } from "./page-decider-for-run.js";
 
 const runtime = {} as AgentRuntime;
@@ -23,6 +23,52 @@ describe("pageDeciderForRun", () => {
       run,
     });
     expect(decider?.describe().id).toBe("systemone");
+  });
+
+  describe("jev usage", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("records each jev decision through the run's usage hook", async () => {
+      vi.stubGlobal("fetch", async () =>
+        Response.json({
+          answers: { element: { type: "choice", choice: "e1", confidence: 1 } },
+          usage: { input_tokens: 10, output_tokens: 1, cost: 0.001 },
+        }),
+      );
+      const usage: unknown[] = [];
+      const decider = await pageDeciderForRun({
+        provider: "jev",
+        modelId: "jev-latest",
+        typesafeKey: "k",
+        resolveModel,
+        runtime,
+        run,
+        onUsage: async (event) => {
+          usage.push(event);
+        },
+      });
+      await decider?.decide(
+        { id: "c1", botId: "b1", kind: "fake", providerRef: "c1" } satisfies ComputerRef,
+        {
+          goal: "Continue",
+          elements: [{ ref: "e1", role: "button", name: "Continue" }],
+          excerpt: "",
+          url: "https://example.test/",
+          title: "",
+          history: [],
+        },
+        {
+          operationId: "1",
+          traceId: "1",
+          spaceId: "w",
+          userId: "u",
+          signal: new AbortController().signal,
+        },
+      );
+      expect(usage).toEqual([expect.objectContaining({ provider: "typesafe", costUsd: 0.001 })]);
+    });
   });
 
   it("is off for jev when the deployment has no key", async () => {

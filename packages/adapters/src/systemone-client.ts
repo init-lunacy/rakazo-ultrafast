@@ -23,15 +23,25 @@ const answerSchema = z.discriminatedUnion("type", [
 ]);
 
 const responseSchema = z.object({
+  id: z.string().optional(),
   model: z.string().optional(),
   answers: z.record(z.string(), answerSchema),
+  usage: z
+    .object({
+      input_tokens: z.number().int().nonnegative().optional(),
+      output_tokens: z.number().int().nonnegative().optional(),
+      cost: z.number().nonnegative().optional(),
+    })
+    .optional(),
 });
+
+export type SystemOneUsage = z.infer<typeof responseSchema>["usage"];
 
 export type SystemOneAnswers = z.infer<typeof responseSchema>["answers"];
 
 /** A failure kind, not a message: each caller keeps its own wording. */
 export type SystemOneResult =
-  | { ok: true; answers: SystemOneAnswers; model?: string }
+  | { ok: true; answers: SystemOneAnswers; model?: string; id?: string; usage?: SystemOneUsage }
   | { ok: false; failure: "transport" | "invalid" }
   | { ok: false; failure: "status"; status: number };
 
@@ -72,7 +82,8 @@ export async function postSystemOne(options: {
     const bytes = await readBodyCapped(response, MAX_RESPONSE_BYTES, options.signal);
     const parsed = responseSchema.safeParse(JSON.parse(new TextDecoder().decode(bytes)));
     if (!parsed.success) return { ok: false, failure: "invalid" };
-    return { ok: true, answers: parsed.data.answers, model: parsed.data.model };
+    const { answers, model, id, usage } = parsed.data;
+    return { ok: true, answers, model, id, usage };
   } catch {
     return { ok: false, failure: "invalid" };
   }

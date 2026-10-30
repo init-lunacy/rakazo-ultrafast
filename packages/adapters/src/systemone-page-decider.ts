@@ -1,6 +1,9 @@
+import { randomUUID } from "node:crypto";
 import type {
   AdapterContext,
   AdapterDescriptor,
+  AgentRuntimeEvent,
+  AgentUsage,
   BrowserSnapshotNode,
   ComputerRef,
   PageDecider,
@@ -11,6 +14,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { PAGE_DECISION_MAX_ELEMENTS, PAGE_DECISION_MAX_EXCERPT_CHARS } from "@rakazo/adapter-kit";
 import { DEFAULT_JEV_MODEL } from "./auto-review.js";
+import type { SystemOneResult } from "./systemone-client.js";
 import { postSystemOne, systemOneNoul, systemOneRanking } from "./systemone-client.js";
 
 const MAX_LABEL_CHARS = 120;
@@ -34,6 +38,29 @@ function kindFor(element: BrowserSnapshotNode): PageDecisionKind {
     : "click";
 }
 
+/**
+ * What a call cost, as upstream's decision provider records it: a rejected
+ * request is free, an answer without usage is unknown, an unreached server
+ * records nothing.
+ */
+function usageOf(result: SystemOneResult): AgentUsage | null {
+  if (result.ok) {
+    return {
+      inputTokens: result.usage?.input_tokens ?? null,
+      outputTokens: result.usage?.output_tokens ?? null,
+      costUsd: result.usage?.cost ?? null,
+      costSource: result.usage?.cost === undefined ? null : "provider-reported",
+      providerRequestId: result.id ?? null,
+      usageSource: "response",
+      operationKind: "setup",
+    };
+  }
+  if (result.failure === "status" && result.status >= 400 && result.status < 500) {
+    return { inputTokens: 0, outputTokens: 0, costUsd: 0, usageSource: "provider-rejected" };
+  }
+  return null;
+}
+
 /** Hosted Jev: one parallel pass answering which element, done, stuck, blocked. */
 export class SystemOnePageDecider implements PageDecider {
   private readonly model: string;
@@ -46,6 +73,7 @@ export class SystemOnePageDecider implements PageDecider {
       model?: string;
       timeoutMs?: number;
       fetch?: typeof fetch;
+      onUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => Promise<unknown>;
     },
   ) {
     this.model = options.model?.trim() || DEFAULT_JEV_MODEL;
@@ -100,6 +128,16 @@ export class SystemOnePageDecider implements PageDecider {
         },
       },
     });
+    const usage = usageOf(result);
+    if (usage) {
+      await this.options.onUsage?.({
+        type: "usage",
+        ...usage,
+        provider: "typesafe",
+        model: this.model,
+        callId: randomUUID(),
+      });
+    }
     if (!result.ok) return { ...EMPTY, error: "The page decider did not answer." };
 
     const byRef = new Map(elements.map((element) => [element.ref, element]));

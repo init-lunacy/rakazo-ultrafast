@@ -30,7 +30,11 @@ export async function pageDeciderForRun(input: {
 
   if (provider === JEV_AUTO_REVIEW_PROVIDER) {
     if (input.typesafeKey)
-      return new SystemOnePageDecider({ apiKey: input.typesafeKey, model: modelId });
+      return new SystemOnePageDecider({
+        apiKey: input.typesafeKey,
+        model: modelId,
+        onUsage: input.onUsage,
+      });
     // The picker only offers Jev when the API has a key, so this worker lacks one.
     getLogger().warn("page decider unavailable for this run", {
       event: "page_decider.unavailable",

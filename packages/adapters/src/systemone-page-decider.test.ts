@@ -96,4 +96,74 @@ describe("SystemOnePageDecider", () => {
     );
     expect(sent).not.toContain("hunter2");
   });
+
+  describe("usage", () => {
+    type Usage = unknown;
+    function withUsage(body: unknown, status = 200) {
+      const usage: Usage[] = [];
+      const decider = new SystemOnePageDecider({
+        apiKey: "test-key",
+        fetch: async () => new Response(JSON.stringify(body), { status }),
+        onUsage: async (event) => {
+          usage.push(event);
+        },
+      });
+      return { metered: decider, usage };
+    }
+
+    it("records the tokens and cost TypeSafe reports for each decision", async () => {
+      const { metered, usage } = withUsage({
+        ...answers({ choice: "e2", confidence: 0.9 }),
+        id: "req-1",
+        usage: { input_tokens: 420, output_tokens: 6, cost: 0.0012 },
+      });
+      await metered.decide(computer, request, context);
+      expect(usage).toEqual([
+        expect.objectContaining({
+          type: "usage",
+          provider: "typesafe",
+          model: "jev-latest",
+          callId: expect.any(String),
+          inputTokens: 420,
+          outputTokens: 6,
+          costUsd: 0.0012,
+          costSource: "provider-reported",
+          providerRequestId: "req-1",
+          usageSource: "response",
+          operationKind: "setup",
+        }),
+      ]);
+    });
+
+    it("records a call TypeSafe answered without usage as unknown, not free", async () => {
+      const { metered, usage } = withUsage(answers({ choice: "e2", confidence: 0.9 }));
+      await metered.decide(computer, request, context);
+      expect(usage).toEqual([
+        expect.objectContaining({ inputTokens: null, outputTokens: null, costUsd: null }),
+      ]);
+    });
+
+    it("records a rejected request as costing nothing", async () => {
+      const { metered, usage } = withUsage({ error: "bad request" }, 400);
+      const decision = await metered.decide(computer, request, context);
+      expect(decision.error).toBeDefined();
+      expect(usage).toEqual([
+        expect.objectContaining({ costUsd: 0, usageSource: "provider-rejected" }),
+      ]);
+    });
+
+    it("records nothing when TypeSafe could not be reached", async () => {
+      const usage: Usage[] = [];
+      await new SystemOnePageDecider({
+        apiKey: "test-key",
+        fetch: async () => {
+          throw new Error("offline");
+        },
+        onUsage: async (event) => {
+          usage.push(event);
+        },
+      }).decide(computer, request, context);
+      expect(usage).toEqual([]);
+    });
+  });
 });
