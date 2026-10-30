@@ -60,7 +60,7 @@ describe("destroyComputers", () => {
 
   it("destroys every provisioned computer through the sandbox", async () => {
     const findMany = vi.fn(async () => rows);
-    const destroy = vi.fn(async () => undefined);
+    const destroy = vi.fn(async (_ref: unknown) => undefined);
     await destroyComputers({ computer: { findMany } } as never, { destroy } as never);
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { providerRef: { not: null } } }),

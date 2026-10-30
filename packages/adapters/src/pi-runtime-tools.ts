@@ -18,7 +18,6 @@ import {
   loginFieldLabelsArgument,
 } from "./bot-secrets.js";
 import { redactUrlSecrets } from "./connector-safety.js";
-import { PAGE_STATE_TOOL_NAMES } from "./context-pruning.js";
 import { shortenToolResultText } from "./context-selection.js";
 import type { PiAgentRuntimeOptions } from "./pi-runtime.js";
 import { sanitizeSensitiveText } from "./pi-runtime-errors.js";
@@ -323,7 +322,6 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
       if (tool.name === "spawn_bot") {
         return {
           name: String(raw.name ?? ""),
-          title: raw.title ? String(raw.title) : "",
           description: raw.description ? String(raw.description) : "",
           instructions: raw.instructions ? String(raw.instructions) : "",
           prompt: raw.prompt ? String(raw.prompt) : "",
@@ -556,18 +554,6 @@ function isAgentToolExecutionResult(result: unknown): result is AgentToolExecuti
   );
 }
 
-/**
- * A page result's tree already lists every element with its ref, role, name and value. Its
- * elements array stays in the result's details for the product, but the model would only read it
- * twice.
- */
-function modelView(result: unknown, name: string): unknown {
-  if (!PAGE_STATE_TOOL_NAMES.has(name) || !result || typeof result !== "object") return result;
-  if (typeof (result as { tree?: unknown }).tree !== "string") return result;
-  const { elements: _elements, ...view } = result as Record<string, unknown>;
-  return view;
-}
-
 export function serializeToolResult(
   result: unknown,
   strategy: AgentRunRequest["contextStrategy"],
@@ -575,7 +561,7 @@ export function serializeToolResult(
   args: Record<string, unknown>,
 ) {
   try {
-    const text = JSON.stringify(modelView(result, name));
+    const text = JSON.stringify(result);
     if (!text) return "ok";
     // skill-tools.ts already bounds skill content; the context budget selector may still shorten it.
     if (text.length <= 12_000 || VERBATIM_TOOL_RESULTS.has(name)) return text;

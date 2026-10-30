@@ -8,7 +8,6 @@ import type { AgentRunRequest, SandboxProvider } from "@rakazo/adapter-kit";
 import { ModelConnectInputSchema } from "@rakazo/contracts";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import type { DiagnosticToolObservation, HistoryDiagnostic } from "../evals/history-observer.js";
 import { observeSyntheticHistory } from "../evals/history-observer.js";
 import type { EvalJudge } from "../evals/judge.js";
@@ -28,6 +27,7 @@ import {
   dockerComputerEnv,
   serveSupervisor,
 } from "./docker-computers.js";
+import { disposableDatabaseEnv, startPostgres } from "./postgres.js";
 
 async function main() {
   const { values } = parseArgs({
@@ -423,20 +423,21 @@ async function main() {
   let stopRequested = false;
   // Set while a trial runs real computers: a second Ctrl-C stops at once but still removes them.
   let stopNow: (() => Promise<void>) | undefined;
+  const stop = new AbortController();
   const requestStop = () => {
     if (stopRequested && stopNow) void stopNow().finally(() => process.exit(130));
     stopRequested = true;
+    stop.abort();
   };
   process.on("SIGINT", requestStop);
   process.on("SIGTERM", requestStop);
   try {
     // Per-run secrets: a real computer has network access, and the database holds the model key.
     const secret = () => randomBytes(32).toString("base64url");
-    postgres = await new PostgreSqlContainer("postgres:18-alpine").withPassword(secret()).start();
+    postgres = await startPostgres(stop.signal, secret());
     const databaseUrl = postgres.getConnectionUri();
     Object.assign(process.env, {
-      DATABASE_URL: databaseUrl,
-      REALTIME_DATABASE_URL: databaseUrl,
+      ...disposableDatabaseEnv(databaseUrl),
       WAKEUP_DRIVER: "memory",
       BETTER_AUTH_SECRET: secret(),
       ENCRYPTION_KEY: secret(),
@@ -618,8 +619,6 @@ async function main() {
               larkAppId: undefined,
               mcpStdioEnabled: false,
               mcpStdioAllowedCommands: [],
-              updaterUrl: undefined,
-              updaterToken: undefined,
             });
             if (docker) {
               const computers = docker.sandbox;

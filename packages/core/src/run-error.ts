@@ -194,7 +194,7 @@ const MALFORMED_KEY_HEADER =
 
 /** The provider says the selected model is gone or cannot serve this kind of request. */
 const MODEL_UNAVAILABLE =
-  /^(?:unsupported|unknown|unrecognized)[ _-]model\b(?![ :]+(?:parameters?|fields?|options?|settings?)\b)|\bmodel\b(?:(?!\.\s)[\s\S]){0,80}?\b(?:not found|does not exist|unavailable|not available|not supported|isn['\u2019]t supported|(?:is|has been) deprecated|does(?: not|n['\u2019]t) support)\b|\bnot supported (?:with|by|for) (?:this|the) model\b/i;
+  /^(?:unsupported|unknown|unrecognized)[ _-]model\b(?![ :]+(?:parameters?|fields?|options?|settings?)\b)|\bmodel\b(?:(?!\.\s)[\s\S]){0,80}?\b(?:not found|does not exist|unavailable|not available|not supported|isn['\u2019]t supported|(?:is|has been) deprecated|does(?: not|n['\u2019]t) support)\b|\bnot supported (?:with|by|for) (?:this|the) model\b|^feature 'tool calls' is not (?:currently )?supported\b/i;
 
 /**
  * Keep provider diagnostics available without exposing them in the visible summary. `recovery`
@@ -403,7 +403,7 @@ export function normalizeRunError(
     summary = translate(MODEL_CONTEXT_TOO_SMALL_ERROR);
   } else if (
     status === 413 ||
-    /context[_ -](?:length|window)|maximum context|exceeds the model context|prompt is too long|too many tokens|request too large/i.test(
+    /context[_ -](?:length|size|window)|maximum context|exceeds the model context|prompt is too long|too many tokens|request too large/i.test(
       signals,
     )
   ) {
@@ -417,7 +417,7 @@ export function normalizeRunError(
   } else if (
     status === 401 ||
     ((status === 403 ||
-      /(?:invalid|incorrect)[_ -](?:api[_ -])?key|api[_ -]?key[_ -](?:invalid|expired)|authentication_error|\bauthentication token has expired\b/i.test(
+      /(?:invalid|incorrect)[_ -](?:api[_ -])?key|api[_ -]?key[_ -](?:invalid|expired)|authentication_error|\bauthentication token (?:has|is) expired\b|\binvalidated oauth token\b/i.test(
         signals,
       )) &&
       /auth|unauthorized|invalid|key/i.test(signals))

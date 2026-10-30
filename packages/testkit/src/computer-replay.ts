@@ -62,9 +62,10 @@ export async function runComputerReplay(
   });
   const click = (id: string, expectedId: string, name: string) =>
     step((request) => {
-      const [ref] = treeRefs(lastToolResult(request, expectedId).tree, name);
-      assert.ok(ref, `Current snapshot is missing ${name}`);
-      return tool(id, "browser_act", { actions: [{ kind: "click", ref }] });
+      const result = lastToolResult(request, expectedId);
+      const target = controlsInTree(result.tree).find((element) => element.name === name);
+      assert.ok(target, `Current snapshot is missing ${name}`);
+      return tool(id, "browser_act", { actions: [{ kind: "click", ref: target.ref }] });
     }, expectedId);
   const emulator = await startModelEmulator({
     steps: [
@@ -162,15 +163,14 @@ export async function runComputerReplay(
   }
 }
 
-/** Refs of the elements named `name` in a page result's tree, the element list the model reads. */
-export function treeRefs(tree: unknown, name: string): string[] {
-  if (typeof tree !== "string") return [];
-  const label = ` ${JSON.stringify(name)} [`;
-  return tree.split("\n").flatMap((line) => {
-    const at = line.indexOf(label);
-    const ref = line.startsWith("- ") && at >= 0 ? line.slice(at + label.length).split("]")[0] : "";
-    return ref ? [ref] : [];
-  });
+/** The controls a snapshot tree lists, as "- role "name" [ref]" lines (the model's text carries no other copy). */
+export function controlsInTree(tree: unknown): Array<{ name: string; ref: string }> {
+  return String(tree ?? "")
+    .split("\n")
+    .flatMap((line) => {
+      const match = /^- [^"]*?("(?:[^"\\]|\\.)*") \[(e\d+)\]/.exec(line);
+      return match ? [{ name: JSON.parse(match[1]!) as string, ref: match[2]! }] : [];
+    });
 }
 
 function lastToolResult(

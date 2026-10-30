@@ -9,10 +9,12 @@ import {
 import type { Actor, Me } from "@rakazo/contracts";
 import {
   attachmentMaxBytes,
+  attachmentMaxCount,
   canonicalPiProviderId,
   parseActionOfferSettings,
 } from "@rakazo/contracts";
 import { MODEL_REQUIRED_SEND_ERROR } from "@rakazo/core";
+import { isAdmin } from "../plugin-submissions.js";
 import type { RouterDeps } from "../router.js";
 import { assertTeachingSendAllowed } from "../taught-skills.js";
 import type { ThreadTarget } from "../thread-target.js";
@@ -27,7 +29,7 @@ function hostCredentials(active: boolean, provider: string) {
 }
 
 export async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
-  const [user, setup] = await Promise.all([
+  const [user, setup, admin] = await Promise.all([
     deps.prisma.user.findUniqueOrThrow({
       where: { id: actor.userId },
       select: {
@@ -39,6 +41,7 @@ export async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
       },
     }),
     modelSetup(deps, actor),
+    isAdmin(deps, actor.userId),
   ]);
   return {
     ticketBoardEnabled: deps.env.ticketBoardEnabled === true,
@@ -46,11 +49,13 @@ export async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
     phoneCallsEnabled: deps.env.phoneCallsEnabled === true,
     navLinks: deps.env.navLinks ?? [],
     maxUploadSizeBytes: attachmentMaxBytes(deps.env),
+    maxAttachmentsPerMessage: attachmentMaxCount(deps.env),
     userId: actor.userId,
     email: user.email,
     name: user.name,
     spaceId: actor.spaceId,
     isDeploymentOwner: false,
+    isAdmin: admin,
     needsModel: setup.needsModel,
     defaultProvider: canonicalPiProviderId(setup.model?.provider ?? deps.env.defaultProvider),
     defaultModel: setup.model?.modelId ?? deps.env.defaultModel,

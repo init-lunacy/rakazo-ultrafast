@@ -17,6 +17,8 @@ import {
   normalizeHost,
 } from "@rakazo/contracts";
 import { Agent } from "undici";
+import { composioToolBatch } from "./composio-batch.js";
+import { sensitiveQueryParameter } from "./connector-http.js";
 import { combineSignals } from "./connector-safety.js";
 import type { ResolvedAddress, ResolveHostname } from "./network-address.js";
 import {
@@ -71,6 +73,7 @@ export async function listRemoteMcpTools(options: RemoteMcpOptions): Promise<Con
       description: tool.description ?? tool.title ?? tool.name,
       inputSchema: tool.inputSchema,
       readOnly: tool.annotations?.readOnlyHint,
+      batch: composioToolBatch(tool.name),
     })),
   );
 }
@@ -144,6 +147,12 @@ async function withRemoteMcpClient<T>(
     await client.close().catch(() => undefined);
     await safeFetch.close().catch(() => undefined);
   }
+}
+
+/** A saved MCP endpoint is stored and shown in plaintext, so its credentials belong in headers. */
+export function assertNoMcpEndpointCredential(endpoint: string): void {
+  const name = sensitiveQueryParameter(new URL(endpoint));
+  if (name) throw new Error(`Put ${name} in a header instead of the server URL`);
 }
 
 export async function assertSafeRemoteUrl(

@@ -1,5 +1,6 @@
 import type {
   AdapterContext,
+  AgentToolExecutionResult,
   BrowserActStep,
   BrowserProvider,
   BrowserSnapshotNode,
@@ -14,6 +15,7 @@ import { getLogger } from "@rakazo/logging";
 import { redactConnectorPayload } from "./connector-safety.js";
 import type { PageDecisionChainResult } from "./page-decision-chain.js";
 import { normalizeGoal, readPage, runPageDecisionChain } from "./page-decision-chain.js";
+import { TOOL_RESULT_TEXT_LIMIT } from "./pi-runtime-limits.js";
 import type { RunBrowserTabs } from "./run-browser-tabs.js";
 import { normalizePurpose } from "./run-browser-tabs.js";
 
@@ -329,7 +331,7 @@ export async function browserActFromTool(
       chain?.opened && result.target && options.tabs
         ? await options.tabs.run.adoptOpened(result.target, chain.opened)
         : [];
-    return redactConnectorPayload(
+    return redactBrowserResult(
       placed(
         chain ? withChain(result, options, chain, view) : formatBrowserResult(result, options),
         place && { ...place, opened: [...place.opened, ...chainOpened] },
@@ -511,6 +513,34 @@ export function parseBrowserActions(value: unknown): BrowserActInput[] {
     }
     return { kind, ref };
   });
+}
+
+/**
+ * Page tool results with the run's secrets taken out. A snapshot writes control names and values as
+ * quoted strings, so a secret with a quote, a backslash or a line break reads differently there:
+ * hide it in that form too.
+ */
+export function redactBrowserResult<T>(result: T, secrets: string[]): unknown {
+  const forms = secrets.flatMap((secret) => {
+    const quoted = JSON.stringify(secret).slice(1, -1);
+    return quoted === secret ? [secret] : [secret, quoted];
+  });
+  return redactConnectorPayload(result, forms);
+}
+
+/**
+ * A page tool result as the model reads it. The snapshot tree already lists every control with its
+ * ref and its notices (what was cut), so the `elements` array only repeats it: it stays in `details`
+ * and out of the text, which keeps a page under the limit that would otherwise cut the tree's middle.
+ * A page from an older computer image, whose tree is not sized for that, is sent as it is.
+ */
+export function browserResultForModel<T>(result: T): T | AgentToolExecutionResult {
+  if (!result || typeof result !== "object") return result;
+  const { elements, ...view } = result as { elements?: unknown; tree?: unknown };
+  if (!Array.isArray(elements) || typeof view.tree !== "string") return result;
+  const text = JSON.stringify(view);
+  if (text.length > TOOL_RESULT_TEXT_LIMIT) return result;
+  return { kind: "agent_tool_result", content: [{ type: "text", text }], details: result };
 }
 
 function formatBrowserResult<T extends { fallback?: "computer_act"; error?: string }>(

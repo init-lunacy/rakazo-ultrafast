@@ -3,7 +3,7 @@ import vm from "node:vm";
 import { JSDOM } from "jsdom";
 import { describe, expect, it, vi } from "vitest";
 import { resolveRequestSecretDestination } from "./bot-secrets.js";
-import { serializeToolResult } from "./pi-runtime-tools.js";
+import { browserResultForModel } from "./browser-tools.js";
 
 /** The live page helper's isolated-world script, executed here rather than reimplemented. */
 function installPageHelper(url: string, html: string) {
@@ -820,19 +820,21 @@ describe("live page helper upload targets", () => {
 describe("live page helper page text", () => {
   const article = `<p>${"a".repeat(5_000)} MIDDLE ${"b".repeat(5_000)} LATE</p><a href="/next">Next</a>`;
 
-  it("returns long page text in windows, each saying where the rest starts", () => {
+  it("reads long page text on from textOffset, each window saying where it ends", () => {
     const { domWindow, browser } = installPageHelper("https://read.example.test/", article);
     const total = domWindow.document.body.textContent!.length;
     const first = browser.snapshot().tree;
-    expect(first.split("\n")[0]).toBe(
-      `[Page text 0–6000 of ${total} characters. Call browser_snapshot with textOffset 6000 for more.]`,
+    const end = Number(
+      new RegExp(`^\\[page text: showing first (\\d+) of ${total} characters\\]\\n`).exec(
+        first,
+      )![1],
     );
     expect(first).toContain("MIDDLE");
     expect(first).not.toContain("LATE");
     expect(first).toMatch(/- link "Next" \[e\w+\]/);
 
-    const rest = browser.snapshot(false, 6_000).tree;
-    expect(rest.split("\n")[0]).toBe(`[Page text 6000–${total} of ${total} characters.]`);
+    const rest = browser.snapshot(false, end).tree;
+    expect(rest.split("\n")[0]).toBe(`[page text: showing characters ${end}–${total} of ${total}]`);
     expect(rest).toContain("LATE");
     expect(rest).not.toContain("MIDDLE");
     expect(rest).toMatch(/- link "Next" \[e\w+\]/);
@@ -843,29 +845,76 @@ describe("live page helper page text", () => {
       { length: 80 },
       (_, i) => `<a href="/item/${i}">Weatherproof trail jacket, size ${i}</a>`,
     ).join("");
-    for (const strategy of ["current", "retrieval"] as const) {
-      const { browser } = installPageHelper(
-        "https://read.example.test/",
-        `<p>${"word ".repeat(4_000)}</p>${links}`,
-      );
-      const snap = browser.snapshot();
-      const [status, text] = snap.tree.split("\n");
-      const next = Number(status!.match(/textOffset (\d+)/)![1]);
-      const seen = serializeToolResult(
-        { url: "https://read.example.test/", title: "", ...snap },
-        strategy,
-        "browser_snapshot",
-        {},
-      );
-      expect(seen).toContain(JSON.stringify(`${status}\n${text}`).slice(1, -1));
-      expect(JSON.parse(seen)).not.toHaveProperty("elements");
-      expect(JSON.parse(seen).tree).toBe(snap.tree);
-      expect(text!.length).toBe(next);
-    }
+    const { browser } = installPageHelper(
+      "https://read.example.test/",
+      `<p>${"word ".repeat(4_000)}</p>${links}`,
+    );
+    const snap = browser.snapshot();
+    const [status, text] = snap.tree.split("\n");
+    const next = Number(status!.match(/showing first (\d+) of/)![1]);
+    const view = browserResultForModel({
+      url: "https://read.example.test/",
+      title: "",
+      ...snap,
+    }) as {
+      content: Array<{ text: string }>;
+    };
+    const seen = JSON.parse(view.content[0]!.text) as object;
+    expect(seen).not.toHaveProperty("elements");
+    expect(seen).toHaveProperty("tree", snap.tree);
+    expect(text!.length).toBe(next);
   });
 
   it("returns a short page's text without a status line", () => {
     const { browser } = installPageHelper("https://read.example.test/", "<p>Short page</p>");
     expect(browser.snapshot().tree.split("\n")[0]).toBe("Short page");
+  });
+});
+
+describe("live page helper referenced names", () => {
+  it("resolves label references in order, including hidden text, and falls back when empty", () => {
+    const { domWindow, browser } = installPageHelper(
+      "https://example.test/",
+      `
+      <span id="first" hidden>  Share </span><span id="second"> with   team </span><span id="empty"> </span>
+      <button aria-labelledby=" second missing first " aria-label="Other"></button>
+      <button aria-labelledby=" missing " aria-label="Fallback"></button>
+      <button aria-labelledby="   " aria-label="Whitespace fallback"></button>
+      <button aria-labelledby="empty" aria-label="Empty fallback"></button>
+    `,
+    );
+    expect(browser.snapshot().elements.map((element) => element.name)).toEqual([
+      "with team Share",
+      "Fallback",
+      "Whitespace fallback",
+      "Empty fallback",
+    ]);
+    domWindow.close();
+  });
+});
+
+describe("live page helper shadow-root names", () => {
+  it("resolves upload labels only within each input's root", () => {
+    const { domWindow, browser } = installPageHelper(
+      "https://example.test/",
+      `<span id="label">Outer label</span><span id="outer-only">Outer only</span><button aria-labelledby="inner-only" aria-label="Light fallback"></button><div id="host"></div>`,
+    );
+    const host = domWindow.document.getElementById("host")!;
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = `
+      <span id="label" hidden>Inner label</span><span id="inner-only">Inner only</span>
+      <input type="file" aria-labelledby="label" aria-label="Fallback one" />
+      <input type="file" aria-labelledby="outer-only" aria-label="Fallback two" />
+    `;
+    expect(
+      browser
+        .snapshot()
+        .elements.filter((element) => element.role === "file upload")
+        .map((element) => element.name),
+    ).toEqual(["Inner label", "Fallback two"]);
+    expect(browser.snapshot().elements.find((element) => element.role === "button")?.name).toBe(
+      "Light fallback",
+    );
+    domWindow.close();
   });
 });

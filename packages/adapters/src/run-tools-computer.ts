@@ -10,8 +10,10 @@ import { resolveLoginFill, shellCommandEnvironment } from "./bot-secrets.js";
 import {
   browserActFromTool,
   browserNavigateFromTool,
+  browserResultForModel,
   browserSnapshotFromTool,
   browserTabsFromTool,
+  redactBrowserResult,
 } from "./browser-tools.js";
 import { BACKGROUND_WORK_LAUNCH } from "./computer-idle.js";
 import {
@@ -29,12 +31,11 @@ import {
   unchangedVisualLoopToolResult,
   unchangedVisualStreakAfterPageBrowser,
 } from "./computer-tools.js";
-import { redactConnectorPayload } from "./connector-safety.js";
 import {
   desktopProtectionGuardMessage,
   protectedComputerLifecycleRefusal,
 } from "./desktop-command-guard.js";
-import { nativeShellCommandArgv } from "./native-shell.js";
+import { nativeShellCommandArgv, usesNativeShell } from "./native-shell.js";
 import { normalizeGoal } from "./page-decision-chain.js";
 import { resolvePurchaseCardFill, resolvePurchasePayTokenFill } from "./purchase-service.js";
 import type { RunContext } from "./run-context.js";
@@ -126,22 +127,24 @@ function formatObservation(
   return result;
 }
 
+async function screenBlocked(ctx: RunContext): Promise<string | undefined> {
+  if (ctx.computer.heldForTakeover) return DESKTOP_HELD_FOR_TAKEOVER_MESSAGE;
+  if (await getActiveTeachingSession(ctx.deps.prisma, ctx.run.spaceId, ctx.run.botId)) {
+    return "Teaching is in progress. Stop teaching before using the computer.";
+  }
+  return undefined;
+}
+
 export async function pageBrowserTool(ctx: RunContext, call: ToolCall) {
   const { deps, run, bot, context } = ctx;
   const { name, args } = call;
-  if (ctx.computer.heldForTakeover) {
-    return call.finish({ error: DESKTOP_HELD_FOR_TAKEOVER_MESSAGE });
-  }
-  if (await getActiveTeachingSession(deps.prisma, run.spaceId, run.botId)) {
-    return call.finish({
-      error: "Teaching is in progress. Stop teaching before using the computer.",
-    });
-  }
+  const blocked = await screenBlocked(ctx);
+  if (blocked) return call.finish({ error: blocked });
   if (name !== "browser_snapshot" && name !== "browser_tabs") ctx.computer.checkpoint.markDirty();
   const tabs = { run: ctx.tabs, agent: piToolAgent(call.executionId) };
   if (name === "browser_tabs") {
     return call.finish(
-      redactConnectorPayload(await browserTabsFromTool(ctx.tabs, tabs.agent), [...ctx.secrets]),
+      redactBrowserResult(await browserTabsFromTool(ctx.tabs, tabs.agent), [...ctx.secrets]),
     );
   }
   // Fail closed: only browser_act may reach the act path below, which clicks.
@@ -162,7 +165,7 @@ export async function pageBrowserTool(ctx: RunContext, call: ToolCall) {
   return computerScreenToolResult(async () => {
     const result =
       name === "browser_navigate"
-        ? redactConnectorPayload(
+        ? redactBrowserResult(
             await browserNavigateFromTool(
               ctx.providers.browser,
               await ctx.computer.get("tool", name),
@@ -173,7 +176,7 @@ export async function pageBrowserTool(ctx: RunContext, call: ToolCall) {
             redactions(),
           )
         : name === "browser_snapshot"
-          ? redactConnectorPayload(
+          ? redactBrowserResult(
               await browserSnapshotFromTool(
                 ctx.providers.browser,
                 await ctx.computer.get("tool", name),
@@ -208,6 +211,7 @@ export async function pageBrowserTool(ctx: RunContext, call: ToolCall) {
                     prisma: deps.prisma,
                     secretStore: deps.secretStore,
                     scope: run,
+                    runId: run.id,
                     name: step.secret,
                     field: step.field,
                   });
@@ -248,23 +252,17 @@ export async function pageBrowserTool(ctx: RunContext, call: ToolCall) {
       name,
       result,
     );
-    return result;
+    return browserResultForModel(result);
   }, call.finish);
 }
 
 /** Tools that drive the bot's computer: screen, page browser and shell. */
 export const computerTools: ToolHandlers = {
   async computer_observe(ctx, call) {
-    const { deps, run, context } = ctx;
+    const { deps, context } = ctx;
     const { name } = call;
-    if (ctx.computer.heldForTakeover) {
-      return { error: DESKTOP_HELD_FOR_TAKEOVER_MESSAGE };
-    }
-    if (await getActiveTeachingSession(deps.prisma, run.spaceId, run.botId)) {
-      return {
-        error: "Teaching is in progress. Stop teaching before using the computer.",
-      };
-    }
+    const blocked = await screenBlocked(ctx);
+    if (blocked) return { error: blocked };
     return computerScreenToolResult(async () =>
       formatObservation(
         ctx,
@@ -273,16 +271,10 @@ export const computerTools: ToolHandlers = {
     );
   },
   async computer_act(ctx, call) {
-    const { deps, run, context } = ctx;
+    const { deps, context } = ctx;
     const { name, args } = call;
-    if (ctx.computer.heldForTakeover) {
-      return { error: DESKTOP_HELD_FOR_TAKEOVER_MESSAGE };
-    }
-    if (await getActiveTeachingSession(deps.prisma, run.spaceId, run.botId)) {
-      return {
-        error: "Teaching is in progress. Stop teaching before using the computer.",
-      };
-    }
+    const blocked = await screenBlocked(ctx);
+    if (blocked) return { error: blocked };
     // With two tabs or more, desktop clicks land in whichever tab is in front.
     const desktop = await ctx.tabs.forDesktop(piToolAgent(call.executionId));
     if (desktop.error) return { error: desktop.error };
@@ -382,7 +374,7 @@ export const computerTools: ToolHandlers = {
       const computer = await ctx.computer.get("tool", name);
       const shellEnvironment =
         ctx.computer.hostEnvironment ??
-        (computer.kind === "desktop"
+        (usesNativeShell(computer.kind)
           ? await deps.sandbox.environment?.(computer, context)
           : undefined);
       const observed = await observeShellCommand(
@@ -467,9 +459,8 @@ export const computerTools: ToolHandlers = {
   async open_path(ctx, call) {
     const { deps, bot, context } = ctx;
     const { name, args } = call;
-    if (ctx.computer.heldForTakeover) {
-      return call.finish({ error: DESKTOP_HELD_FOR_TAKEOVER_MESSAGE });
-    }
+    const blocked = await screenBlocked(ctx);
+    if (blocked) return call.finish({ error: blocked });
     const requestedPath = String(args.path ?? "");
     ctx.computer.checkpoint.markDirty();
     return computerScreenToolResult(async () => {
@@ -505,9 +496,8 @@ export const computerTools: ToolHandlers = {
   async launch_app(ctx, call) {
     const { deps, context } = ctx;
     const { name, args } = call;
-    if (ctx.computer.heldForTakeover) {
-      return call.finish({ error: DESKTOP_HELD_FOR_TAKEOVER_MESSAGE });
-    }
+    const blocked = await screenBlocked(ctx);
+    if (blocked) return call.finish({ error: blocked });
     const application = String(args.application ?? "");
     ctx.computer.checkpoint.markDirty();
     return computerScreenToolResult(async () => {
