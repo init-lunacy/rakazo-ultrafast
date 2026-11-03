@@ -40,6 +40,7 @@ import {
   approvalReplayEffectToolName,
   CATALOG_APPROVAL_TOOL,
   isSubagentToolExecution,
+  piToolAgent,
 } from "./run-effects.js";
 import { fleetPrepareDeps } from "./run-model.js";
 import { BUILTIN_AGENT_TOOL_NAMES, FLEET_WRITE_TOOL_NAMES_SET } from "./run-tool-selection.js";
@@ -390,7 +391,7 @@ export async function prepareToolRequest(
       approved &&
       (approved.site || approved.label || approved.amount)
     ) {
-      const now = await detectPurchase(ctx, name, rest);
+      const now = await detectPurchase(ctx, name, rest, piToolAgent(executionId));
       if (
         !now ||
         now.site !== approved.site ||
@@ -402,7 +403,7 @@ export async function prepareToolRequest(
             "The page changed since the user approved this purchase, so nothing was pressed. Look at the screen and try again.",
         };
     }
-    const purchase = approved ?? (await detectPurchase(ctx, name, rest));
+    const purchase = approved ?? (await detectPurchase(ctx, name, rest, piToolAgent(executionId)));
     // An approval given for something else never covers a purchase: the call is made again and asks.
     if (purchase && !approved && nextApprovedTool === name)
       return {

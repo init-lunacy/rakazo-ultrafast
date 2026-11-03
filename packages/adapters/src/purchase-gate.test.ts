@@ -2,6 +2,7 @@ import type { BrowserProvider } from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
 import type { PurchaseApproval } from "./purchase-gate.js";
 import { detectPurchase, purchaseApprovalOf, purchaseCardSummary } from "./purchase-gate.js";
+import type { TabPlace } from "./run-browser-tabs.js";
 import type { RunContext } from "./run-context.js";
 import type { ToolRequest } from "./run-tool-request.js";
 import { prepareToolRequest } from "./run-tool-request.js";
@@ -28,6 +29,7 @@ function contextWith(
     state: { walletHosts: new Set<string>() },
     secrets: [],
     computer: { pageBrowserAllowed: true, heldForTakeover: false, get: async () => ({ id: "c" }) },
+    tabs: { forAct: async () => ({}) },
     ...overrides,
   } as unknown as RunContext;
 }
@@ -36,7 +38,7 @@ describe("purchase detection for the page tools", () => {
   it("asks the browser about a click or Enter on the screen, and about nothing else", async () => {
     const check = vi.fn(async (_computer: unknown, _request: unknown) => ({ purchase: found }));
     const ctx = contextWith(check as never);
-    const act = (actions: unknown[]) => detectPurchase(ctx, "computer_act", { actions });
+    const act = (actions: unknown[]) => detectPurchase(ctx, "computer_act", { actions }, "main");
     expect(await act([{ kind: "click", x: 1, y: 2 }])).toMatchObject({ site: "shop.example.test" });
     // Each click goes with its spot on the screen, so only the control under it is judged.
     expect(check).toHaveBeenLastCalledWith(
@@ -73,7 +75,7 @@ describe("purchase detection for the page tools", () => {
   it("cannot place a click that follows another step of the batch, or an up that has no pointer", async () => {
     const request = async (actions: unknown[]) => {
       const check = vi.fn(async (_computer: unknown, _request: unknown) => ({ purchase: null }));
-      await detectPurchase(contextWith(check as never), "computer_act", { actions });
+      await detectPurchase(contextWith(check as never), "computer_act", { actions }, "main");
       return check.mock.calls[0]?.[1];
     };
     const click = { kind: "click", x: 5, y: 6 };
@@ -131,13 +133,18 @@ describe("purchase detection for the page tools", () => {
     const ctx = contextWith(check as never);
     for (const text of ["\n", "done\r", " ", "  "]) {
       check.mockClear();
-      await detectPurchase(ctx, "computer_act", { actions: [{ kind: "type", text }] });
+      await detectPurchase(ctx, "computer_act", { actions: [{ kind: "type", text }] }, "main");
       expect(check.mock.calls[0]?.[1], JSON.stringify(text)).toMatchObject({ enter: true });
     }
     check.mockClear();
-    await detectPurchase(ctx, "computer_act", {
-      actions: [{ kind: "type", text: "Ada Lovelace" }],
-    });
+    await detectPurchase(
+      ctx,
+      "computer_act",
+      {
+        actions: [{ kind: "type", text: "Ada Lovelace" }],
+      },
+      "main",
+    );
     expect(check).not.toHaveBeenCalled();
   });
 
@@ -147,14 +154,19 @@ describe("purchase detection for the page tools", () => {
     const keys = ["Return", "KP_Enter", "enter", "ISO_Enter", "Linefeed", "space", "KP_Space"];
     for (const key of [...keys, ...keys.map((name) => `shift+${name}`), "ctrl+alt+Return"]) {
       check.mockClear();
-      await detectPurchase(ctx, "computer_act", { actions: [{ kind: "key", key }] });
+      await detectPurchase(ctx, "computer_act", { actions: [{ kind: "key", key }] }, "main");
       expect(check, key).toHaveBeenCalledOnce();
       expect(check.mock.calls[0]?.[1], key).toMatchObject({ desktop: true, enter: true });
     }
     check.mockClear();
-    await detectPurchase(ctx, "computer_act", {
-      actions: [{ kind: "key", key: "Return", modifiers: ["shift"] }],
-    });
+    await detectPurchase(
+      ctx,
+      "computer_act",
+      {
+        actions: [{ kind: "key", key: "Return", modifiers: ["shift"] }],
+      },
+      "main",
+    );
     expect(check).toHaveBeenCalledOnce();
     // The submitting key may be any part of the key, or any modifier.
     for (const step of [
@@ -164,12 +176,12 @@ describe("purchase detection for the page tools", () => {
       { key: "Tab", modifiers: ["shift", "space"] },
     ]) {
       check.mockClear();
-      await detectPurchase(ctx, "computer_act", { actions: [{ kind: "key", ...step }] });
+      await detectPurchase(ctx, "computer_act", { actions: [{ kind: "key", ...step }] }, "main");
       expect(check, JSON.stringify(step)).toHaveBeenCalledOnce();
     }
     check.mockClear();
     for (const key of ["Tab", "Escape", "a", "ctrl+a", "shift+Tab", "ctrl+Home"]) {
-      await detectPurchase(ctx, "computer_act", { actions: [{ kind: "key", key }] });
+      await detectPurchase(ctx, "computer_act", { actions: [{ kind: "key", key }] }, "main");
     }
     expect(check).not.toHaveBeenCalled();
   });
@@ -219,14 +231,48 @@ describe("purchase detection for the page tools", () => {
     expect([...ctx.state.walletHosts]).toEqual(["other.example.test"]);
   });
 
+  it("checks the tab a browser_act click will press, as browser_act picks it", async () => {
+    const check = vi.fn(async (_computer: unknown, _request: unknown) => ({ purchase: found }));
+    const forAct = vi.fn(async (): Promise<TabPlace> => ({ target: "T-mine" }));
+    const ctx = contextWith(check as never, { tabs: { forAct } });
+    const args = { actions: [{ kind: "click", ref: "e12" }] };
+    const request = {
+      name: "browser_act",
+      executionId: JSON.stringify(["pi-tool", "helper-1", "call-1"]),
+      args,
+    } as unknown as ToolRequest;
+    expect(await prepareToolRequest(ctx, request)).toBeUndefined();
+    expect(forAct).toHaveBeenCalledWith("helper-1", args);
+    expect(check.mock.calls[0]?.[1]).toMatchObject({ target: "T-mine" });
+    // The focused tab, as browser_act uses it before any tab is the agent's own.
+    forAct.mockResolvedValueOnce({});
+    check.mockClear();
+    await detectPurchase(ctx, "browser_act", args, "main");
+    expect(check.mock.calls[0]?.[1]).not.toHaveProperty("target");
+    // browser_act refuses this call without pressing anything, so nothing is asked.
+    forAct.mockResolvedValueOnce({ error: "Take a snapshot first." });
+    check.mockClear();
+    expect(await detectPurchase(ctx, "browser_act", args, "main")).toBeUndefined();
+    expect(check).not.toHaveBeenCalled();
+    // A desktop press lands on the screen, whatever tab an agent last used.
+    forAct.mockClear();
+    await detectPurchase(ctx, "computer_act", { actions: [{ kind: "click", x: 1, y: 2 }] }, "main");
+    expect(forAct).not.toHaveBeenCalled();
+  });
+
   it("never stores a value the run keeps secret, even when the page shows it on the button", async () => {
     const check = vi.fn(async () => ({
       purchase: { ...found, label: "Pay with 4242424242424242", amount: "$5" },
     }));
     const ctx = contextWith(check as never, { secrets: ["4242424242424242"] });
-    const purchase = await detectPurchase(ctx, "browser_act", {
-      actions: [{ kind: "click", ref: "e1" }],
-    });
+    const purchase = await detectPurchase(
+      ctx,
+      "browser_act",
+      {
+        actions: [{ kind: "click", ref: "e1" }],
+      },
+      "main",
+    );
     expect(purchase?.label).not.toContain("4242424242424242");
   });
 
@@ -235,6 +281,7 @@ describe("purchase detection for the page tools", () => {
       contextWith(async () => ({ purchase: found })),
       "computer_act",
       { actions: [{ kind: "click", x: 1, y: 2 }] },
+      "main",
     );
     expect(purchase).toEqual({
       steps: [],
@@ -251,6 +298,7 @@ describe("purchase detection for the page tools", () => {
       contextWith(async () => ({ purchase: long })),
       "computer_act",
       { actions: [{ kind: "click", x: 1, y: 2 }] },
+      "main",
     );
     expect(purchase?.label).toBe(`${"a".repeat(79)}😀`);
     expect(Array.from(purchase?.amount ?? "")).toHaveLength(40);
@@ -259,21 +307,23 @@ describe("purchase detection for the page tools", () => {
 
   it("asks about nothing when there is no way to check", async () => {
     const args = { actions: [{ kind: "click", x: 1, y: 2 }] };
-    expect(await detectPurchase(contextWith(undefined), "computer_act", args)).toBeUndefined();
+    expect(
+      await detectPurchase(contextWith(undefined), "computer_act", args, "main"),
+    ).toBeUndefined();
     const check = vi.fn(async () => ({ purchase: found }));
     const held = contextWith(check, {
       computer: { pageBrowserAllowed: true, heldForTakeover: true, get: async () => ({}) },
     });
-    expect(await detectPurchase(held, "computer_act", args)).toBeUndefined();
+    expect(await detectPurchase(held, "computer_act", args, "main")).toBeUndefined();
     const off = contextWith(check, { computer: { pageBrowserAllowed: false } });
-    expect(await detectPurchase(off, "computer_act", args)).toBeUndefined();
+    expect(await detectPurchase(off, "computer_act", args, "main")).toBeUndefined();
     expect(check).not.toHaveBeenCalled();
   });
 
   it("asks about a press after the batch opens a URL, without looking at the page first", async () => {
     const check = vi.fn(async () => ({ purchase: null }));
     const ctx = contextWith(check as never);
-    const act = (actions: unknown[]) => detectPurchase(ctx, "computer_act", { actions });
+    const act = (actions: unknown[]) => detectPurchase(ctx, "computer_act", { actions }, "main");
     const unchecked = { steps: [], site: "", label: "", amount: "", amountSource: "page" };
     const open = { kind: "focus", app: "chromium", uri: "https://shop.example.test/checkout" };
     for (const press of [

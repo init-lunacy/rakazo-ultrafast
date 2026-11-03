@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -1186,7 +1187,7 @@ class NewTabTest(unittest.TestCase):
         self.addCleanup(home.cleanup)
         self.home = home.name
 
-    def call(self, chromium, own, browser="browser-1", port=9222, ours=None):
+    def call(self, chromium, own, browser="browser-1", port=9222, ours=None, addressed=False):
         """One call's view of the tabs: those opened since the last call, and the note it gives."""
         with patch.object(helper, "page_tabs", chromium.list), \
                 patch.object(helper.urllib.request, "urlopen", chromium.urlopen):
@@ -1194,8 +1195,41 @@ class NewTabTest(unittest.TestCase):
             tabs.begin()
             chromium.ids[:0] = chromium.opening
             chromium.opening = []
-            now, opened, flooded = tabs.end(own, ours=ours)
+            now, opened, flooded = tabs.end(own, ours=ours, addressed=addressed)
         return [tab["id"] for tab in opened], tabs.note(now, opened, now[0]["url"]), flooded
+
+    def test_tabs_agents_open_one_call_after_another_are_never_counted_as_pop_ups(self):
+        # A bot and its helpers each open tabs of their own, up to the run's limit, and read them in turn.
+        chromium = FakeTabs("main")
+        self.call(chromium, "main")
+        mine = [f"t{index}" for index in range(11)]
+        for tab in mine:
+            # `open` makes a background tab: Chromium lists it behind the one in front.
+            chromium.ids.append(tab)
+            self.assertEqual(self.call(chromium, tab, ours=tab, addressed=True), ([], None, False))
+        for tab in ["main", *mine]:
+            self.assertEqual(self.call(chromium, tab, addressed=True), ([], None, False))
+        self.assertEqual((chromium.closed, chromium.activated), ([], []))
+        self.assertEqual(json.loads(Path(self.home, "tabs-9222.json").read_text())["opened"], [])
+        # A pop-up one agent's page opens is still news, and closing a flood leaves the agents' tabs open.
+        chromium.opening = [f"p{index}" for index in range(5)]
+        self.call(chromium, "t3", addressed=True)
+        self.assertEqual(sorted(chromium.ids), sorted(["main", *mine]))
+
+    def test_a_flood_from_a_tab_a_call_named_leaves_the_screen_where_it_was(self):
+        chromium = FakeTabs("front", "mine")
+        self.call(chromium, "front")
+        chromium.opening = [f"p{index}" for index in range(5)]
+        _, _, flooded = self.call(chromium, "mine", addressed=True)
+        self.assertEqual((flooded, chromium.ids, chromium.activated), (True, ["front", "mine"], []))
+
+    def test_a_flood_leaves_the_tab_the_person_pinned_in_front(self):
+        chromium = FakeTabs("pinned", "own")
+        self.call(chromium, "own")
+        with patch.object(helper, "read_pin", side_effect=lambda live: "pinned" if "pinned" in live else None):
+            chromium.opening = [f"p{index}" for index in range(5)]
+            _, _, flooded = self.call(chromium, "own")
+        self.assertEqual((flooded, chromium.ids, chromium.activated), (True, ["pinned", "own"], []))
 
     def test_names_the_tabs_opened_since_the_last_call(self):
         chromium = FakeTabs("a")
@@ -2633,6 +2667,154 @@ class AddressedTabTest(unittest.TestCase):
         result, _, _ = self.run_helper("open", {"url": "https://user:fake-password@example.test/"})
         self.assertIn("credentials", result["error"])
         self.assertNotIn("Target.createTarget", [method for method, _ in self.client.calls])
+
+
+class DisplayLockTest(unittest.TestCase):
+    """Agents of one run share a display's one agent-browser session, which each call moves to its own tab:
+    calls on that display take turns, so none runs in a tab another call moved the session to."""
+
+    def setUp(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        for patcher in (patch.object(helper, "PIN_DIR", home.name),
+                        patch.object(helper, "browser_home", return_value=home.name)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.home = home.name
+        self.client = FakeTargets([target("a"), target("b")])
+        self.listing = [{"type": "page", "id": "a", "url": "https://a.example.test/"},
+                        {"type": "page", "id": "b", "url": "https://b.example.test/"}]
+        self.events = []
+
+    def run_calls(self, calls, perform):
+        """Run each (command, args) in its own thread at once; perform(tab) stands in for the page work."""
+        browser = FakeAgentBrowser()
+        browser.home = self.home
+        browser.use_tab = lambda tab: self.events.append(("use_tab", tab))
+        browser.session_tab = Mock(return_value=None)
+
+        def record(current, *_args, **_kwargs):
+            return perform(current.target)
+
+        printed = []
+        with patch.dict(os.environ, {"RAKAZO_CDP_PORT": "9222"}), \
+                patch.object(helper, "wait_for_cdp", return_value={}), \
+                patch.object(helper, "browser_closed", return_value=False), \
+                patch.object(helper, "page_tabs", return_value=self.listing), \
+                patch.object(helper, "discover_ws_url", return_value="ws://127.0.0.1:9222/x"), \
+                patch.object(helper, "CdpClient", return_value=Mock(call=self.client.call)), \
+                patch.object(helper, "AgentBrowser", return_value=browser), \
+                patch.object(helper.PageBrowser, "act", autospec=True, side_effect=record), \
+                patch.object(helper.PageBrowser, "snapshot", autospec=True, side_effect=record), \
+                patch.object(helper.PageBrowser, "purchase_check", autospec=True, side_effect=record), \
+                patch("builtins.print", side_effect=lambda text: printed.append(json.loads(text))):
+            threads = []
+            for command, args in calls:
+                thread = threading.Thread(target=helper.run, args=(["rakazo-page-browser", command, json.dumps(args)],))
+                thread.start()
+                threads.append(thread)
+                # In this order: the first call is under way before the next one asks.
+                time.sleep(0.2)
+            for thread in threads:
+                thread.join(timeout=10)
+        return printed
+
+    def test_a_call_naming_another_tab_waits_until_the_call_before_it_is_done(self):
+        release = threading.Event()
+
+        def perform(tab):
+            self.events.append(("start", tab))
+            if tab == "a":
+                # The purchase check has looked at tab a; the click on it has not run yet.
+                release.wait(timeout=5)
+            self.events.append(("end", tab))
+            return {"ok": True, "url": f"https://{tab}.example.test/", "title": "", "tree": "", "elements": [],
+                    "completed": 1}
+
+        timer = threading.Timer(0.6, release.set)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        results = self.run_calls([("act", {"target": "a", "actions": [{"kind": "click", "ref": "e12"}]}),
+                                  ("snapshot", {"target": "b"})], perform)
+        self.assertEqual([result["target"] for result in results], ["a", "b"])
+        # The session moved to tab b only once the call in tab a had finished.
+        self.assertEqual([event for event in self.events if event[0] != "use_tab" or event[1] == "b"],
+                         [("start", "a"), ("end", "a"), ("use_tab", "b"), ("start", "b"), ("end", "b")])
+
+    def test_a_purchase_check_and_a_click_in_another_tab_never_interleave(self):
+        release = threading.Event()
+
+        def perform(tab):
+            self.events.append(("start", tab))
+            if tab == "a":
+                release.wait(timeout=5)
+            self.events.append(("end", tab))
+            return {"ok": True, "url": "", "title": "", "site": "", "purchase": None, "tree": "", "elements": [],
+                    "completed": 1}
+
+        timer = threading.Timer(0.6, release.set)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        self.run_calls([("purchase_check", {"target": "a", "actions": [{"kind": "click", "ref": "e12"}]}),
+                        ("act", {"target": "b", "actions": [{"kind": "click", "ref": "e3"}]})], perform)
+        self.assertEqual([event for event in self.events if event[0] != "use_tab"],
+                         [("start", "a"), ("end", "a"), ("start", "b"), ("end", "b")])
+
+    def test_a_call_that_fails_lets_the_next_one_start(self):
+        def perform(tab):
+            raise RuntimeError("net::ERR_FAILED")
+
+        results = self.run_calls([("act", {"target": "a", "actions": [{"kind": "click", "ref": "e1"}]})], perform)
+        self.assertEqual(results[0]["error"], "net::ERR_FAILED")
+        held = helper.hold_display(9222, wait=0)
+        self.assertIsNotNone(held)
+        os.close(held)
+
+    def test_a_display_held_too_long_is_reported_busy_with_nothing_done(self):
+        held = helper.hold_display(9222)
+        self.addCleanup(os.close, held)
+        with patch.object(helper, "DISPLAY_WAIT_SECONDS", 0.2):
+            results = self.run_calls([("act", {"target": "a", "actions": [{"kind": "click", "ref": "e1"}]})],
+                                     lambda tab: self.fail("ran while another call held the display"))
+        self.assertEqual(results, [{"ok": False, "error": helper.BROWSER_BUSY, "uncertain": False}])
+        self.assertEqual(self.events, [])
+
+    def test_only_the_one_display_waits_and_no_program_a_call_starts_keeps_it(self):
+        held = helper.hold_display(9222)
+        other = helper.hold_display(9223, wait=0)
+        self.assertIsNotNone(other)
+        os.close(other)
+        self.assertIsNone(helper.hold_display(9222, wait=0))
+        self.assertFalse(os.get_inheritable(held))
+        # A program the call started outlives it (a download finishing, agent-browser's daemon): the
+        # next call still starts.
+        child = subprocess.Popen(["sleep", "5"], close_fds=False)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        os.close(held)
+        again = helper.hold_display(9222, wait=0)
+        self.assertIsNotNone(again)
+        os.close(again)
+
+    def test_tab_listings_and_the_screen_never_wait_for_a_page_call(self):
+        held = helper.hold_display(9222)
+        self.addCleanup(os.close, held)
+        with patch.object(helper, "DISPLAY_WAIT_SECONDS", 0.2), patch.object(helper, "active_window", return_value=None):
+            results = self.run_calls([("tabs", {}), ("activate", {"target": "b"})], lambda tab: {})
+        self.assertEqual([result["ok"] for result in results], [True, True])
+
+    def test_a_purchase_check_naming_a_tab_looks_at_that_tab_not_the_one_in_front(self):
+        self.listing[0]["url"] = "chrome://newtab/"
+        seen = []
+
+        def perform(tab):
+            seen.append(tab)
+            return {"ok": True, "url": "", "title": "", "site": "b.example.test", "purchase": None}
+
+        results = self.run_calls([("purchase_check", {"target": "b", "actions": [{"kind": "click", "ref": "e1"}]})],
+                                 perform)
+        self.assertEqual((seen, results[0]["site"]), (["b"], "b.example.test"))
+        self.assertIn(("use_tab", "b"), self.events)
 
 
 if __name__ == "__main__":

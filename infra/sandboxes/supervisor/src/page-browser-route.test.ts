@@ -607,6 +607,8 @@ it("forwards a purchase check without acting", async () => {
     enter: false,
     points: [{ x: 640, y: 400 }],
     unplaced: true,
+    // The tab the act will run in, which need not be the one in front.
+    target: "T-mine",
   };
   expect(await (await browserRequest(body)).json()).toMatchObject({ ok: true });
   expect(JSON.parse(mock.stdin.join(""))).toEqual(body);
@@ -619,6 +621,7 @@ it("forwards a purchase check without acting", async () => {
 it.each([
   { command: "purchase_check", actions: Array.from({ length: 25 }, () => ({ kind: "click" })) },
   { command: "purchase_check", desktop: "yes" },
+  { command: "purchase_check", target: "" },
   { command: "purchase_check", unplaced: "yes" },
   { command: "purchase_check", points: [{ x: "1", y: 2 }] },
   { command: "purchase_check", points: Array.from({ length: 25 }, () => ({ x: 1, y: 2 })) },

@@ -160,6 +160,7 @@ export async function detectPurchase(
   ctx: RunContext,
   name: string,
   args: Record<string, unknown>,
+  agent: string,
 ): Promise<PurchaseApproval | undefined> {
   const probe = purchaseProbe(name, args);
   const { browser } = ctx.providers;
@@ -168,6 +169,13 @@ export async function detectPurchase(
   const unchecked = { steps: [], site: "", label: "", amount: "", amountSource: "page" } as const;
   // A press after the batch opens a URL lands on a page nobody could look at yet.
   if ("unchecked" in probe && probe.unchecked) return { ...unchecked, steps: [] };
+  let target: string | undefined;
+  if (name === "browser_act") {
+    // The tab browser_act will press in, chosen as it chooses it. A call it refuses presses nothing.
+    const where = await ctx.tabs.forAct(agent, args);
+    if ("error" in where) return undefined;
+    target = "target" in where ? where.target : undefined;
+  }
   let found: Awaited<ReturnType<NonNullable<typeof browser.purchaseCheck>>>["purchase"];
   let computer: Awaited<ReturnType<RunContext["computer"]["get"]>>;
   try {
@@ -180,7 +188,7 @@ export async function detectPurchase(
   try {
     ({ purchase: found } = await browser.purchaseCheck(
       computer,
-      { ...probe, signal: ctx.context.signal },
+      { ...probe, ...(target ? { target } : {}), signal: ctx.context.signal },
       ctx.context,
     ));
   } catch (error) {

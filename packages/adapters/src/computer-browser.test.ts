@@ -584,6 +584,9 @@ describe("page browser safety", () => {
       },
     });
     expect(commands).toEqual([{ command: "purchase_check", actions }]);
+    // The tab the act will run in, when it names one.
+    await provider.purchaseCheck(computer, { actions, target: "T-mine" }, baseContext);
+    expect(commands.pop()).toEqual({ command: "purchase_check", actions, target: "T-mine" });
     reply = { ...answer, purchase: null };
     expect(await provider.purchaseCheck(computer, { actions }, baseContext)).toEqual({
       purchase: null,

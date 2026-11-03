@@ -10,6 +10,7 @@ Saved logins, cards and pay tokens go through page_secrets instead.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import math
 import mimetypes
@@ -239,10 +240,12 @@ class Tabs:
             tabs = self.close_flood(tabs, self.known, keep)
         self.start = {tab.get("id") for tab in tabs}
 
-    def end(self, own: str, ours: str | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    def end(self, own: str, ours: str | None = None,
+            addressed: bool = False) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
         """The tabs now, the ones opened since the last call (or, for a browser started again, every
         tab but this call's own), and whether tabs opened during the call were closed. The call's own
-        tab is never closed."""
+        tab is never closed, and comes to the front after a flood only when the call read the tab in
+        front and the person has pinned none."""
         tabs = page_tabs(self.port)
         closed = self.closed
         tabs = self.close_flood(tabs, self.start | {own}, own)
@@ -253,7 +256,7 @@ class Tabs:
             self.opened = [tab for tab in self.opened if tab in ids] + [tab.get("id") for tab in opened]
             tabs = self.trim(tabs, own)
         flooded = self.closed > closed
-        if flooded:
+        if flooded and not addressed and read_pin({tab.get("id") for tab in tabs}) is None:
             with contextlib.suppress(OSError):
                 urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json/activate/{own}",
                                        timeout=left(self.deadline, 5.0)).close()
@@ -494,16 +497,49 @@ def screenshot(client: Any, target: str) -> dict[str, Any]:
             "scale": ratio if isinstance(ratio, (int, float)) and ratio > 0 else 1}
 
 
+def browser_home() -> str:
+    """The page browser's own folder: agent-browser's home, and each display's tab record and lock."""
+    home = os.path.join(tempfile.gettempdir(), f"rakazo-ab-{os.getuid()}")
+    os.makedirs(home, mode=0o700, exist_ok=True)
+    info = os.lstat(home)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise RuntimeError("The page browser's own folder is not this user's")
+    return home
+
+
+# Every call on a display shares agent-browser's one session, which each call moves to its own tab, and
+# one record of the display's tabs. Calls there take turns, so none acts in a tab another call moved the
+# session to, such as a click checked for a purchase in one tab and run in another. Other displays never
+# wait, and a call that cannot start in time says so with nothing done.
+DISPLAY_WAIT_SECONDS = 10.0
+BROWSER_BUSY = "The browser is busy with another agent's page call. Try again."
+
+
+def hold_display(port: int, wait: float | None = None) -> int | None:
+    """This display's lock, held until it is closed or the helper ends however it ends; None if another call
+    kept it for the whole wait. The descriptor is never inherited, so no program a call starts keeps it."""
+    fd = os.open(os.path.join(browser_home(), f"display-{port}.lock"), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    deadline = time.monotonic() + (DISPLAY_WAIT_SECONDS if wait is None else wait)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                return None
+            time.sleep(0.02)
+        except BaseException:
+            os.close(fd)
+            raise
+
+
 class AgentBrowser:
     """agent-browser's session for this display: one daemon, kept attached between calls."""
 
     def __init__(self, port: int) -> None:
         self.port = port
-        self.home = os.path.join(tempfile.gettempdir(), f"rakazo-ab-{os.getuid()}")
-        os.makedirs(self.home, mode=0o700, exist_ok=True)
-        info = os.lstat(self.home)
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
-            raise RuntimeError("The page browser's own folder is not this user's")
+        self.home = browser_home()
         # Its own configuration, never one from the bot's home or working folder.
         self.config = os.path.join(self.home, "config.json")
         with open(self.config, "w", encoding="utf-8") as config:
@@ -2576,6 +2612,24 @@ def run(argv: list[str]) -> int:
             return 1
         return 0
     port = cdp_port()
+    # Tab listings, the person's pin and screen captures read Chromium alone: they never wait for a page call.
+    if command in ("tabs", "activate", "screenshot"):
+        return run_on_display(command, args, port)
+    try:
+        held = hold_display(port)
+    except (OSError, RuntimeError) as error:
+        print(json.dumps({"ok": False, "error": str(error), "fallback": "computer_act", "uncertain": False}))
+        return 0
+    if held is None:
+        print(json.dumps({"ok": False, "error": BROWSER_BUSY, "uncertain": False}))
+        return 0
+    try:
+        return run_on_display(command, args, port)
+    finally:
+        os.close(held)
+
+
+def run_on_display(command: str, args: dict[str, Any], port: int) -> int:
     downloads: Downloads | None = None
     client: CdpClient | None = None
     saved: list[dict[str, Any]] = []
@@ -2603,7 +2657,7 @@ def run(argv: list[str]) -> int:
                 address = ""
                 if not browser_closed(port):
                     wait_for_cdp(port)
-                    address = front_tab(port)[1]
+                    address = tab_address(port, requested) if requested else front_tab(port)[1]
             except RuntimeError as error:
                 if str(error) != NO_TAB:
                     raise
@@ -2714,7 +2768,9 @@ def run(argv: list[str]) -> int:
             new: list[dict[str, Any]] = []
             browser.deadline = tabs.deadline = tab_deadline()
             try:
-                now, new, _ = tabs.end(target, ours=target if opened else None)
+                # A named tab, or one `open` made in the background, stays where it is on the screen.
+                now, new, _ = tabs.end(target, ours=target if opened else None,
+                                       addressed=bool(requested) or command == "open")
             except Exception:  # noqa: BLE001
                 pass  # The tabs it closed before failing are still counted below.
             try:

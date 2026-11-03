@@ -392,6 +392,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
         enter: request.enter,
         points: request.points,
         unplaced: request.unplaced,
+        target: request.target,
       },
       context,
     );

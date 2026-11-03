@@ -586,6 +586,7 @@ app.post("/computers/:id/browser", async (c) => {
           .array(z.object({ x: z.number().finite(), y: z.number().finite() }))
           .max(24)
           .optional(),
+        target: tabTarget.optional(),
       }),
       z.object({
         command: z.literal("act"),

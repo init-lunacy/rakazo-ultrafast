@@ -37,6 +37,7 @@ Last upstream sync: `eaa7a794a` (2026-11-03).
      packages/adapters/src/run-turn.ts packages/adapters/src/run-tool-selection.ts \
      packages/adapters/src/run-instructions.ts packages/adapters/src/run-tools.ts \
      packages/adapters/src/run-tools-computer.ts packages/adapters/src/run-tools-fleet.ts \
+     packages/adapters/src/purchase-gate.ts packages/adapters/src/run-tool-request.ts \
      packages/adapter-kit/src apps/api/src/router.ts apps/api/src/routes \
      apps/api/src/thread-target.ts \
      packages/contracts/src/domain.ts packages/contracts/src/rpc.ts \
@@ -63,7 +64,7 @@ Status: **fork-only** (stays here), **to upstream** (worth proposing), **propose
 | --- | --- | --- | --- | --- |
 | Action cards (`action_offers`) | feature | fork-only | `db/prisma/schema.prisma`, `db/src/events.ts`, `db/src/row-security.ts`, `adapters/src/{executor,run-context,run-turn,run-tools}.ts`, `api/src/thread-target.ts`, `api/src/routes`, `contracts/src/{domain,rpc}.ts`, web shell and settings, mobile settings, locales | — |
 | Page decider | feature | fork-only (model decider and element rects: to upstream) | `adapters/src/{executor,browser-tools,computer-browser,fake-browser,run-tools-computer}.ts`, `adapter-kit/src/{types,interfaces}.ts`, `rakazo-page-browser`, web bot settings | upstream ships a pluggable page decider |
-| Browser tabs | feature | fork-only (runs index, no launch on cleanup: to upstream) | `adapters/src/{executor,browser-tools,computer-browser,pi-runtime}.ts`, `supervisor/src/{index,supervisor-logic}.ts`, `rakazo-page-browser`, web shell, mobile computer screen | upstream ships addressable tabs |
+| Browser tabs | feature | fork-only (runs index, no launch on cleanup: to upstream) | `adapters/src/{executor,browser-tools,computer-browser,pi-runtime,purchase-gate,run-tool-request}.ts`, `adapter-kit/src/types.ts`, `supervisor/src/{index,supervisor-logic}.ts`, `rakazo-page-browser`, web shell, mobile computer screen | upstream ships addressable tabs |
 | Browsing benchmark | test | to upstream (fixture server sharing first) | `testkit/src/cli/evals.ts`, `testkit/src/evals/{runner,suites,sandbox}.ts`, `docs/agent-verification.md` | upstream adds a browsing suite |
 | Eval step timings (splits upstream's task time into model, computer and product time) | test | to upstream | `testkit/src/evals/{runner,report}.ts` | upstream merges it |
 | Page text paging and snapshot sizing | bug fix | to upstream | `rakazo-page-browser`, `adapters/src/{browser-tools,computer-browser}.ts` | upstream merges it |

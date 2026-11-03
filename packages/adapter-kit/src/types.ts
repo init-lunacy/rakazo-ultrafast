@@ -1258,6 +1258,8 @@ export interface BrowserPurchaseCheckRequest {
   points?: Array<{ x: number; y: number }>;
   /** A click whose spot cannot be told (the page may have changed under it): the page decides. */
   unplaced?: boolean;
+  /** The tab browser_act will press in; the focused tab when absent. */
+  target?: string;
   signal?: AbortSignal;
 }
 
@@ -1350,6 +1352,7 @@ export type PageBrowserCommand =
       enter?: boolean;
       points?: BrowserPurchaseCheckRequest["points"];
       unplaced?: boolean;
+      target?: string;
     };
 
 export type PageBrowserResult = Partial<
