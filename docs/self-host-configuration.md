@@ -13,7 +13,7 @@ Do not commit `.env`. Never put `COMPOSIO_API_KEY`, OpenRouter keys, or provider
 
 ## Settings with names you choose
 
-The Compose files pass the API and worker only the settings each one reads, listed by name, rather than the whole `.env`. A setting whose name you choose, such as `TELEGRAM_BOT_TOKEN_<NAME>`, therefore needs its own line: add it under `api` and `worker` `environment` in an override file layered after the base file (and in `RAKAZO_COMPOSE_FILE` when the updater is enabled), with no value so Compose fills it from `.env`. `install-images.sh` names any `.env` setting that no container receives.
+The Compose files pass the API and worker only the settings each one reads, listed by name, rather than the whole `.env`. A setting whose name you choose, such as `TELEGRAM_BOT_TOKEN_<NAME>` or `PHOTON_PROJECT_ID_<NAME>`, therefore needs its own line: add it under `api` and `worker` `environment` in an override file layered after the base file (and in `RAKAZO_COMPOSE_FILE` when the updater is enabled), with no value so Compose fills it from `.env`. `install-images.sh` names any `.env` setting that no container receives.
 
 ```yaml
 # docker-compose.override.yml
@@ -45,6 +45,7 @@ SANDBOX_IDLE_MS=600000    # pause or stop after 10 minutes idle; 0 disables idle
 # Set 0 when self-hosting with Docker, where an idle computer costs nothing, to keep long-running apps and sessions up.
 # E2B, CreateOS and Boat still apply their own timeouts.
 COMPUTER_MAX_ACTIVE_MS=7200000 # uptime cap for providers that bill while running; minimum 60000; 0 disables
+COMPUTER_MAX_ACTIVE_UNBILLED_MS=0 # uptime cap for providers that do not bill while running (Docker, Kubernetes); minimum 60000; 0 (default) disables; needs SANDBOX_IDLE_MS on
 SANDBOX_COMMAND_TIMEOUT_MS=300000 # stop a shell command after 5 minutes
 MAX_TOOL_CALLS_PER_TURN=  # optional Pi turn tool-call fuse; unset/0 = unlimited
 RAKAZO_MESSAGE_USER_MAX_CHARS=500 # message_user length cap; narration stays at 500
@@ -61,6 +62,20 @@ screen lasts before control expires.
 
 `MODEL_STREAM_MAX_RETRIES` (0 to 5, default `1`) retries a model stream that fails partway; more
 retries let long turns survive brief provider failures.
+
+Three model timeouts take milliseconds from `1000` to `300000`; other values keep the default.
+Raise them when several bots share one model server that queues requests. Five minutes is the
+ceiling because Node's HTTP client stops waiting at that point on its own.
+
+- `MODEL_STREAM_TIMEOUT_MS` (default `120000`) is the time budget for retrying the same model. It
+  is also how long a request waits for the response to start when it uses the OpenAI Chat
+  Completions, Responses or Codex API, Anthropic Messages, Mistral or Azure OpenAI. Other APIs,
+  such as Google, Vertex AI, Bedrock and some routed models, use their client's own wait.
+- `MODEL_STREAM_IDLE_TIMEOUT_MS` (default `180000`) is how long a started response may go silent,
+  for every provider.
+- `MODEL_CONNECT_TIMEOUT_MS` (default `30000`) bounds connecting to an OpenAI-compatible model or
+  speech connection added in the app. `RAKAZO_LOCAL_MODELS` servers and built-in providers keep
+  Node's own connect wait; the other two settings apply to them as described above.
 
 ## Feature switches
 
@@ -98,7 +113,9 @@ returns nothing from other Spaces. A background job that acts for one run, routi
 skill, thread or cloud agent runs as that row's Space and user, so agent tools get the same
 backstop. Security events are written and read only in system scope. Reconcilers, queue sweeps,
 the messaging outbox drain and webhooks run in a named system scope (`runAsSystem` in
-`packages/db`). The job queue's tables (`graphile_worker`) hold job metadata, not Space content:
+`packages/db`). That scope also sends a key derived from the app login's password, which
+`pnpm db:migrate` registers, so SQL that runs for one Space cannot switch itself into system scope.
+An app login without a password in `DATABASE_URL` has no key, and `pnpm db:migrate` warns. The job queue's tables (`graphile_worker`) hold job metadata, not Space content:
 graphile-worker turns on row-level security for them, and `pnpm db:migrate` adds a policy that
 gives the app login every row.
 
@@ -136,6 +153,8 @@ The API listens on `API_HOST` (default `127.0.0.1`) and `API_PORT` (default `310
 unless a container or a trusted reverse proxy must reach it; the Compose files set this for you.
 The published-images stack publishes the web app on `127.0.0.1:5173` and the API on
 `127.0.0.1:3100`; set `RAKAZO_WEB_PORT` or `RAKAZO_API_PORT` to use other host ports.
+For LAN access, set `RAKAZO_WEB_BIND` as described in
+[Connecting a phone on the same network](./self-host-clients.md#connecting-a-phone-on-the-same-network).
 
 ## Outbound proxy
 

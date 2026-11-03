@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/server";
-import type { JobPublisher } from "@rakazo/adapter-kit";
+import type { JobPublisher, SandboxProvider } from "@rakazo/adapter-kit";
 import type { ActionOfferStatus, Actor } from "@rakazo/contracts";
 import { effectiveOfferStatus } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
@@ -27,7 +27,12 @@ export type ActionOfferForTake = {
  * A busy bot gets the task queued behind its run; a bot waiting for the user refuses it.
  */
 export async function takeActionOffer(
-  deps: { prisma: PrismaClient; events: ThreadEvents; jobs: JobPublisher },
+  deps: {
+    prisma: PrismaClient;
+    events: ThreadEvents;
+    jobs: JobPublisher;
+    sandbox: SandboxProvider;
+  },
   actor: Actor,
   target: ThreadTarget,
   offer: ActionOfferForTake,

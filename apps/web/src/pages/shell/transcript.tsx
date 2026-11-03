@@ -6,7 +6,7 @@ import type {
   MessageReaction,
   ThreadMessage,
 } from "@rakazo/contracts";
-import type { FoldedTranscript } from "@rakazo/core";
+import type { ChildBotBlock, FoldedTranscript } from "@rakazo/core";
 import {
   expandPeerReplies,
   groupVoiceChats,
@@ -37,7 +37,8 @@ import {
 import { ActiveBotGlyph } from "../../components/ai/CollaborationMarker";
 import { VoiceChatCard } from "../../components/call/VoiceChatCard";
 import type { ArtifactTarget } from "../../lib/artifact-open";
-import { quoteDraftForSelection } from "../../lib/quote-selection";
+import { projectPageCards } from "../../lib/page-cards";
+import { lastSelectedText, quoteDraftForSelection } from "../../lib/quote-selection";
 import { messageHasVisibleBlocks } from "../../lib/tool-activity-view";
 import { TRANSCRIPT_CONTENT_PADDING } from "../../lib/transcript-layout";
 import { transcriptIsNearEnd, transcriptMovedDown } from "../../lib/transcript-scroll";
@@ -57,6 +58,7 @@ export const Transcript = memo(function Transcript({
   scrollRef,
   scrollRequest,
   onScrollRequestHandled,
+  followRequest,
   artifactTarget,
   transcript,
   showToolActivity,
@@ -93,6 +95,8 @@ export const Transcript = memo(function Transcript({
   scrollRef: RefObject<HTMLDivElement | null>;
   scrollRequest: { messageId: string; nonce: number } | null;
   onScrollRequestHandled: () => void;
+  /** Changes when you send: the view moves to the end and follows the reply. */
+  followRequest: number;
   artifactTarget: ArtifactTarget;
   transcript: FoldedTranscript<ThreadMessage>;
   showToolActivity: boolean;
@@ -140,6 +144,7 @@ export const Transcript = memo(function Transcript({
   const { t } = useLingui();
   const [atEnd, setAtEnd] = useState(true);
   const following = useRef(true);
+  const jumpScrolling = useRef(false);
   const autoScrolling = useRef(false);
   const lastScrollTop = useRef<number | null>(null);
   const autoScrollTimer = useRef<number | undefined>(undefined);
@@ -163,15 +168,54 @@ export const Transcript = memo(function Transcript({
     () => new Map(messages.map((message) => [message.id, message])),
     [messages],
   );
-  const mentionView = useMemo(() => projectBotMentions(messages), [messages]);
+  const committedMentions = useRef(new Map<string, ChildBotBlock[]>());
+  const mentionView = useMemo(() => {
+    const view = projectBotMentions(messages);
+    for (const [id, mentions] of view.mentions) {
+      const previous = committedMentions.current.get(id);
+      if (
+        previous?.length === mentions.length &&
+        mentions.every((block, index) => block === previous[index])
+      ) {
+        view.mentions.set(id, previous);
+      }
+    }
+    return view;
+  }, [messages]);
+  const committedPages = useRef<ReturnType<typeof projectPageCards> | null>(null);
+  const pageView = useMemo(() => {
+    const view = projectPageCards(mentionView.visibleMessages);
+    const committed = committedPages.current;
+    if (!committed) return view;
+    for (const [id, pages] of view.pages) {
+      const previous = committed.pages.get(id);
+      if (
+        previous?.length === pages.length &&
+        pages.every((block, index) => block === previous[index])
+      ) {
+        view.pages.set(id, previous);
+      }
+    }
+    if (committed.cardsKey === view.cardsKey) view.isSuperseded = committed.isSuperseded;
+    return view;
+  }, [mentionView]);
+  // A progress tick rebuilds these views. The jump still reads the latest folds, without a new
+  // callback that would rerender every memoized message.
+  const foldViews = useRef({ mentionView, pageView });
+  useLayoutEffect(() => {
+    foldViews.current = { mentionView, pageView };
+    committedMentions.current = mentionView.mentions;
+    committedPages.current = pageView;
+  }, [mentionView, pageView]);
   const jumpToMessage = useCallback(
-    (messageId: string) => onJumpToMessage(mentionView.foldedInto.get(messageId) ?? messageId),
-    [mentionView, onJumpToMessage],
+    (messageId: string) => {
+      const views = foldViews.current;
+      const target = views.mentionView.foldedInto.get(messageId) ?? messageId;
+      onJumpToMessage(views.pageView.foldedInto.get(target) ?? target);
+    },
+    [onJumpToMessage],
   );
-  const reactionView = useMemo(
-    () => projectMessageReactions(mentionView.visibleMessages),
-    [mentionView],
-  );
+  const reactionView = useMemo(() => projectMessageReactions(pageView.visibleMessages), [pageView]);
   const visibleReceipts = reactionView.visibleMessages.filter((message) =>
     messageHasVisibleBlocks(message.blocks, showToolActivity),
   );
@@ -201,7 +245,7 @@ export const Transcript = memo(function Transcript({
         "[data-quote-message-id]",
       ) ?? null;
     const startContent = contentOf(range.startContainer);
-    const endContent = contentOf(range.endContainer);
+    const endContent = contentOf(lastSelectedText(range));
     // selection.toString() serializes the whole range (a Ctrl+A transcript is
     // unbounded), so it only runs once both endpoints sit in one message.
     const draft = quoteDraftForSelection(
@@ -231,6 +275,15 @@ export const Transcript = memo(function Transcript({
     });
   }, [messageById]);
 
+  // A click, selection or small nudge that ends near the end leaves the reader at the
+  // latest message, so new messages keep following; scrolling away beyond it does not.
+  const followIfNearEnd = useCallback(() => {
+    const element = scrollRef.current;
+    if (element && !jumpScrolling.current && transcriptIsNearEnd(element)) {
+      following.current = true;
+    }
+  }, [scrollRef]);
+
   // Keyboard and assistive-tech selections never reach a mouseup, so the pill
   // lifecycle listens on selectionchange; the mouse flag keeps it hidden while
   // a drag is still in flight.
@@ -242,6 +295,8 @@ export const Transcript = memo(function Transcript({
     };
     const onMouseUp = () => {
       selectingWithMouse.current = false;
+      // Clicks and selection drags end here even when released over the composer.
+      followIfNearEnd();
       evaluateSelection();
     };
     const onSelectionChange = () => {
@@ -267,7 +322,7 @@ export const Transcript = memo(function Transcript({
       document.removeEventListener("keydown", onKey);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, [evaluateSelection]);
+  }, [evaluateSelection, followIfNearEnd]);
   const snapToEnd = useCallback(() => {
     const element = scrollRef.current;
     if (!element) return;
@@ -299,7 +354,6 @@ export const Transcript = memo(function Transcript({
   }, [scrollRef]);
 
   const scrolledJump = useRef<number | null>(null);
-  const jumpScrolling = useRef(false);
   const jumpScrollTimer = useRef<number | undefined>(undefined);
   const endJumpScroll = useCallback(() => {
     jumpScrolling.current = false;
@@ -342,9 +396,19 @@ export const Transcript = memo(function Transcript({
     onScrollRequestHandled();
   }, [messages, scrollRequest, scrollRef, endJumpScroll, onScrollRequestHandled, exchanges.lineOf]);
 
+  const followedRequest = useRef(followRequest);
   useLayoutEffect(() => {
+    if (followedRequest.current === followRequest) return;
+    followedRequest.current = followRequest;
+    snapToEnd();
+  }, [followRequest, snapToEnd]);
+
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
     if (following.current) snapToEnd();
-  }, [messages, running, snapToEnd]);
+    // Content can grow below a reader who is not following without any scroll event.
+    else if (element) setAtEnd(transcriptIsNearEnd(element));
+  }, [messages, running, scrollRef, snapToEnd]);
 
   useLayoutEffect(() => {
     const button = jumpButtonRef.current;
@@ -393,6 +457,7 @@ export const Transcript = memo(function Transcript({
           autoScrolling.current = false;
           following.current = false;
         }}
+        onScrollEnd={followIfNearEnd}
         onWheel={(event) => {
           if (event.deltaY < 0) {
             lastScrollTop.current = event.currentTarget.scrollTop;
@@ -421,7 +486,7 @@ export const Transcript = memo(function Transcript({
             following.current = false;
           }
         }}
-        className={`rk-scroll isolate flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto scroll-pt-16 scroll-pb-7 pt-20 pb-12 md:pt-[84px] md:pb-13 ${TRANSCRIPT_CONTENT_PADDING}`}
+        className={`rk-scroll isolate flex min-h-0 flex-1 flex-col gap-2 overflow-x-hidden overflow-y-auto scroll-pt-16 scroll-pb-7 pt-20 pb-12 md:pt-[84px] md:pb-13 ${TRANSCRIPT_CONTENT_PADDING}`}
         style={
           userBubble
             ? ({
@@ -500,8 +565,8 @@ export const Transcript = memo(function Transcript({
                         : message.blocks.some(
                               (block) => block.kind === "ask" || block.kind === "mcp_approval",
                             )
-                          ? "relative w-full min-w-0 max-w-full"
-                          : `relative ${message.blocks.some((block) => block.kind === "app_connect") ? "w-full" : "w-fit"} min-w-0 ${bubbleFrameWidth(message.role)}`
+                          ? "relative w-full min-w-0 max-w-xl"
+                          : `relative ${message.blocks.some((block) => block.kind === "app_connect" || block.kind === "page") || pageView.pages.has(message.id) ? "w-full" : "w-fit"} min-w-0 ${bubbleFrameWidth(message.role)}`
                     }
                   >
                     <MessageView
@@ -509,6 +574,8 @@ export const Transcript = memo(function Transcript({
                       message={message}
                       markedUnread={message.id === markedUnreadMessageId}
                       mentions={mentionView.mentions.get(message.id)}
+                      pages={pageView.pages.get(message.id)}
+                      isPageSuperseded={pageView.isSuperseded}
                       canAnswer={answerableAskIds.has(message.id)}
                       canDismiss={dismissableAskIds.has(message.id)}
                       onOpenBot={onOpenBot}
@@ -535,7 +602,7 @@ export const Transcript = memo(function Transcript({
                       onAddRoutine={onAddRoutine}
                       voiceReady={voiceReady}
                       speaking={speakingMessageId === message.id}
-                      onSpeak={() => onSpeak(message)}
+                      onSpeak={onSpeak}
                       onOpenComputer={onOpenComputer}
                       onOpenImportSetup={onOpenImportSetup}
                       showToolActivity={showToolActivity}

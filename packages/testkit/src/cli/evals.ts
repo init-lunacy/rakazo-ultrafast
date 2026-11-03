@@ -8,6 +8,7 @@ import type { AgentRunRequest, SandboxProvider } from "@rakazo/adapter-kit";
 import { ModelConnectInputSchema } from "@rakazo/contracts";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { wakesRoutines } from "../evals/cases.js";
 import type { DiagnosticToolObservation, HistoryDiagnostic } from "../evals/history-observer.js";
 import { observeSyntheticHistory } from "../evals/history-observer.js";
 import type { EvalJudge } from "../evals/judge.js";
@@ -16,8 +17,9 @@ import type { CacheDecisionMeasurement, EvalPricing, MeasuredCall } from "../eva
 import { measureCalls, SpendBudget, validatePricing } from "../evals/measurement.js";
 import { emptyTrial, redact, summarize, validateControls } from "../evals/report.js";
 import type { ComputerFixture } from "../evals/runner.js";
-import { SILENCE_JUDGE_CALIBRATION, SILENCE_JUDGE_VERSION } from "../evals/silence.js";
 import { resolveControls, resolveSuite } from "../evals/suites.js";
+import type { ObservedToolCall, ObservedToolList } from "../evals/tool-calls.js";
+import { loadToolChoiceCases } from "../evals/tool-choice.js";
 import type { DiagnosticWireObservation } from "../evals/wire-observer.js";
 import { diagnosticWireFetch } from "../evals/wire-observer.js";
 import { runApprovalSuite } from "./approval-eval.js";
@@ -53,11 +55,14 @@ async function main() {
       "max-output-tokens": { type: "string" },
       trials: { type: "string", default: "3" },
       case: { type: "string", multiple: true },
+      "cases-file": { type: "string" },
       "timeout-ms": { type: "string" },
       "max-tool-calls": { type: "string" },
       output: { type: "string", default: "test-report/evals/report.json" },
     },
   });
+  if (values["cases-file"] && values.suite !== "tool-choice")
+    throw new Error("--cases-file adds tool-choice cases; use --suite tool-choice");
   if (values.suite === "approval")
     // The other suites choose their own timeout; this one keeps the former CLI default.
     return runApprovalSuite(
@@ -69,7 +74,14 @@ async function main() {
       },
     );
   const suite = resolveSuite(values.suite!);
-  const { cases, fixtureVersion } = suite;
+  const suiteJudge = suite.judge;
+  const extraCases = values["cases-file"] ? loadToolChoiceCases(values["cases-file"]) : [];
+  const cases = [...suite.cases, ...extraCases];
+  const fixtureVersion = extraCases.length
+    ? `${suite.fixtureVersion}+${extraCases.length}-local`
+    : suite.fixtureVersion;
+  if (new Set(cases.map((c) => c.id)).size !== cases.length)
+    throw new Error("Case ids must be unique across the suite and --cases-file");
   if (values["wire-diagnostics"] && values.suite !== "history")
     throw new Error("Synthetic wire diagnostics require the history suite");
   const strategies = [...new Set(values.strategy?.length ? values.strategy : ["current"])];
@@ -247,6 +259,7 @@ async function main() {
   };
   let judge: EvalJudge | undefined;
   if (selected.some((c) => c.judge) && !values["cache-probe"]) {
+    if (!suiteJudge) return notRun("This suite has no judge rubric; no inference was scheduled");
     if (!values["judge-connection"] || !values["judge-pricing"])
       return notRun(
         "Semantic cases require --judge-connection and --judge-pricing; no inference was scheduled",
@@ -272,7 +285,7 @@ async function main() {
     report.judge = {
       model: judgeConnection.modelId!,
       provider: judgeConnection.provider,
-      rubricVersion: SILENCE_JUDGE_VERSION,
+      rubricVersion: suiteJudge.version,
       pricing: judgePricing,
       calibration: [],
       modelCalls: 0,
@@ -323,7 +336,7 @@ async function main() {
       }
     };
     try {
-      for (const anchor of SILENCE_JUDGE_CALIBRATION) {
+      for (const anchor of suiteJudge.calibration) {
         const verdict = await judge(anchor.input, AbortSignal.timeout(60_000));
         report.judge.calibration.push({
           expected: anchor.pass,
@@ -468,6 +481,10 @@ async function main() {
       CURSOR_API_KEY: "",
       CLOUD_AGENT_PROVIDER: "",
       MODEL_API_KEY: "",
+      // A developer .env with Stripe keys would put the disposable app behind billing.
+      STRIPE_SECRET_KEY: "",
+      STRIPE_WEBHOOK_SECRET: "",
+      STRIPE_PRICE_ID: "",
     });
     execFileSync("pnpm", ["--filter", "@rakazo/db", "generate"], {
       stdio: "pipe",
@@ -498,6 +515,7 @@ async function main() {
       );
       docker = { sandbox, fixture: createFixture(sandbox), close: supervisor.close };
     }
+    const { observeToolCalls } = await import("../evals/tool-calls.js");
     for (let i = 0; i < trials.length; i++) {
       if (stopRequested) {
         for (const remaining of trials.slice(i))
@@ -572,8 +590,10 @@ async function main() {
               [connection.apiKey ?? "", connection.baseUrl ?? ""],
               toolLoopDiagnostics,
             );
+            const toolCallObservations: ObservedToolCall[] = [];
+            const toolLists: ObservedToolList[] = [];
             const handles = await createApp({
-              runtime: observedRuntime,
+              runtime: observeToolCalls(observedRuntime, toolCallObservations, toolLists),
               contextStrategy: planned.strategy as
                 | "current"
                 | "retrieval"
@@ -591,7 +611,7 @@ async function main() {
               wakeupDriver: "memory",
               composio,
               messaging,
-              ...(scenario.routine ? witnesses : {}),
+              ...(wakesRoutines(scenario) ? witnesses : {}),
               messagingOpenSignup: false,
               defaultProvider: connection.provider,
               defaultModel: connection.modelId!,
@@ -633,6 +653,8 @@ async function main() {
               cacheDecisions,
               historyDiagnostics,
               toolLoopDiagnostics,
+              toolCallObservations,
+              toolLists,
               finalizeBackground: async () => {
                 acceptingCalls = false;
                 await handles.jobs.close();

@@ -26,7 +26,7 @@ import { LinuxDesktop, onBotScreen } from "./linux-desktop.js";
 import { sandboxCommandArgv } from "./sandbox-command-environment.js";
 import {
   shouldSkipPortableWorkspaceFile,
-  workspaceSaveFindExpression,
+  workspaceSaveFindCommand,
 } from "./workspace-save-policy.js";
 
 const DISPLAY_START = 20;
@@ -461,7 +461,7 @@ export class KubernetesSandboxProvider implements SandboxProvider {
       [
         "bash",
         "-c",
-        `cd ${shellQuote(WORKSPACE)} && find . ${workspaceSaveFindExpression()} -printf '%P\\0'`,
+        `cd ${shellQuote(WORKSPACE)} && ${workspaceSaveFindCommand()} -printf '%P\\0'`,
       ],
       context,
     );
@@ -626,6 +626,12 @@ export class KubernetesSandboxProvider implements SandboxProvider {
               { name: "VNC_RESOLUTION", value: "1280x800" },
             ],
             ports: [{ name: "screen", containerPort: READY_PORT, protocol: "TCP" }],
+            // Matches the Docker computer: no capabilities, no privilege escalation, default seccomp.
+            securityContext: {
+              allowPrivilegeEscalation: false,
+              capabilities: { drop: ["ALL"] },
+              seccompProfile: { type: "RuntimeDefault" },
+            },
             readinessProbe: {
               tcpSocket: { port: READY_PORT },
               initialDelaySeconds: 1,

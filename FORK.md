@@ -4,7 +4,7 @@ Rakazo Ultrafast is a downstream fork of [Rakazo](https://github.com/elie222/rak
 tracks upstream closely and carries a small set of changes on top. This file lists every
 change the fork carries, where it touches upstream code, and when it can be dropped.
 
-Last upstream sync: `6e31c3fe9` (2026-10-30).
+Last upstream sync: `eaa7a794a` (2026-11-03).
 
 ## How the fork stays close
 
@@ -28,7 +28,7 @@ Last upstream sync: `6e31c3fe9` (2026-10-30).
 1. `git fetch upstream` and list the upstream commits that touch the fork's hooks:
 
    ```sh
-   git log --oneline 6e31c3fe9..upstream/main -- \
+   git log --oneline eaa7a794a..upstream/main -- \
      packages/db/prisma/schema.prisma packages/db/src/events.ts packages/db/src/row-security.ts \
      packages/db/src/usage.ts packages/adapters/src/executor.ts packages/adapters/src/pi-runtime.ts \
      packages/adapters/src/builtin-tools.ts packages/adapters/src/context-selection.ts \
@@ -73,7 +73,7 @@ Status: **fork-only** (stays here), **to upstream** (worth proposing), **propose
 | Reaction lock order | bug fix | to upstream | `api` reaction path | upstream merges it |
 | Row-level security coverage test | test | to upstream | `db/src/row-security.ts` | upstream merges it |
 | Fork integration fixes | glue | fork-only | `testkit/src/authorization.test.ts`, `adapters/src/executor.ts` | — |
-| CI and release guards | CI | fork-only | `.github/workflows/*`, `apps/desktop` release test | — |
+| CI and release guards (standard GitHub runners in place of upstream's paid runner label) | CI | fork-only | `.github/workflows/*`, `apps/desktop` release test | — |
 | Branding and docs | docs | fork-only | `README.md`, `docs/self-host.md`, image defaults in `infra/compose/*.yml` (a test rejects upstream's registry) | — |
 
 Migrations the fork adds: `20261013120000_page_decider`, `20261014120000_run_bot_created_index`,

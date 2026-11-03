@@ -39,7 +39,7 @@ describe("eval suites", () => {
 
   it("names every suite when one is unknown", () => {
     expect(() => resolveSuite("nope")).toThrow(
-      "Unknown suite; use product, history, silence, browsing",
+      "Unknown suite; use product, history, group, silence, initiative, deliberation, memory, tool-choice, browsing, or approval",
     );
   });
 });

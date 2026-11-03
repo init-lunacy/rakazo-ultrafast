@@ -7,9 +7,25 @@ web app may load.
 
 The iOS and Android app can also point at a self-hosted origin at runtime. On the sign-in screen, tap **Use a custom server** and enter the same HTTPS origin as `WEB_ORIGIN` (for example `https://app.example.com`). Store builds still default to `EXPO_PUBLIC_API_URL`; the in-app setting is an override for people running their own API. Changing the server signs the device out of any previous session.
 
-Plain `http://` is accepted only for a private IP, `localhost`, or a `.local` name. A hostname reached over a VPN such as WireGuard or Tailscale needs HTTPS with a certificate the phone trusts, for example a real domain with a Let's Encrypt certificate issued through a DNS challenge.
+The app accepts plain `http://` only for a private IP, `localhost`, or a `.local` name, but Docker Compose publishes the web port on loopback by default. For LAN access, follow [Connecting a phone on the same network](#connecting-a-phone-on-the-same-network). A hostname reached over a VPN such as WireGuard or Tailscale needs HTTPS with a certificate the phone trusts, for example a real domain with a Let's Encrypt certificate issued through a DNS challenge.
 
 Native apps need a setting on the server before they can use its [passkeys](./self-host-accounts.md#passkeys).
+
+## Connecting a phone on the same network
+
+In the Compose stack's `.env`, set `RAKAZO_WEB_BIND=0.0.0.0` (or the host's LAN IP),
+and set `WEB_ORIGIN`, `BETTER_AUTH_URL` and `API_URL` to `http://<LAN-IP>:5173`.
+Replace `<LAN-IP>` with the server's LAN IP. This publishes only the web port; the API
+and other ports stay on loopback. For published images, if you changed `RAKAZO_WEB_PORT`,
+use that port instead of `5173` in the origins, firewall rule and app address below.
+The source-build stack uses port `5173`.
+
+Recreate the services with `docker compose up -d`, using the same Compose file and env-file
+options as your install. Allow TCP port 5173 only from your LAN subnet in the host firewall,
+then enter `http://<LAN-IP>:5173` in the app's **Use a custom server** field.
+
+This exposes plain-HTTP sign-in to everyone on the local network. Tailscale or an HTTPS
+reverse proxy is the safer option.
 
 ## Mobile push notifications
 
@@ -24,6 +40,51 @@ EXPO_ACCESS_TOKEN=replace-with-your-expo-access-token
 
 Leave it unset when enhanced security is off. A missing or revoked token fails the push with an
 error that names `EXPO_ACCESS_TOKEN`; the token itself is never logged.
+
+### Mobile incoming calls
+
+Incoming calls ring in the mobile app while it is open. Registered devices also receive an
+expiring high-priority push: a native call notification on Android, and a time-sensitive
+notification on iOS. Android uses the existing Expo push setup (including the Firebase
+configuration in the native build). Android 14 and later may deny full-screen notification
+access; the call then uses a heads-up notification. Notification permissions and channel
+settings still apply.
+
+For iOS to ring while locked or backgrounded, optionally configure APNs VoIP delivery on
+both the API and worker. In Apple Developer, open **Certificates, Identifiers & Profiles →
+Keys**, create a key with **Apple Push Notifications service (APNs)** enabled for the app,
+and download its `.p8` file. Configure these server secrets through your deployment's
+normal environment/secret manager:
+
+| Setting | Value |
+| --- | --- |
+| `APNS_VOIP_KEY_ID` | `<APNS_KEY_ID>` |
+| `APNS_VOIP_TEAM_ID` | `<APPLE_TEAM_ID>` |
+| `APNS_VOIP_PRIVATE_KEY` | Contents of the `.p8` file; literal `\n` escapes are accepted |
+| `APNS_VOIP_ENVIRONMENT` | `sandbox` for development signing, `production` for TestFlight/App Store (default) |
+| `APNS_VOIP_BUNDLE_ID` | Your iOS bundle identifier; defaults to `com.rakazo.app` |
+
+The adapter uses the `<bundle identifier>.voip` topic. Keep keys on the server; never put
+them in the app or repository. Enable Push Notifications and Background Modes (Voice over
+IP, Audio, and Remote notifications) for the iOS App ID and provisioning profile. The Expo
+app config declares those modes and the time-sensitive notification capability. Development
+profiles must use the matching APNs entitlement/environment. Ship a new native build;
+an over-the-air JavaScript update cannot add these capabilities. PushKit registration is
+independent of permission for ordinary notifications.
+
+Without APNs configuration, or if APNs delivery fails, iOS falls back to the Expo notification.
+That fallback cannot provide CallKit ringing when iOS has suspended the app. Every VoIP
+push is reported immediately to CallKit in native code; an expired push is reported and
+immediately ended. When the call is answered or declined elsewhere, Android devices get a
+second push that stops the ring. iOS stops ringing through the open app; a VoIP push would ring
+again, so a backgrounded iPhone rings until the call expires. Declining from the lock screen uses the authenticated decline endpoint.
+Its session is kept in the device keychain with access after first unlock, on that device
+only, so a locked phone can reject the call; sign-out clears it and revokes delivery.
+Payloads contain only the call ID, bot ID/name, and expiry, never message content or credentials.
+
+Verify locked-screen delivery, answering, declining, token rotation, and multiple-device
+races on physical iOS and Android devices with the matching push credentials. Simulators
+and offline unit tests cannot validate APNs delivery or operating-system push throttling.
 
 ## Client updates
 

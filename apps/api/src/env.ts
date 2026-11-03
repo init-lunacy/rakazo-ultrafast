@@ -1,8 +1,14 @@
-import type { TelegramBotCredentials } from "@rakazo/adapters";
+import type {
+  ApnsVoipConfig,
+  PhotonProjectCredentials,
+  TelegramBotCredentials,
+} from "@rakazo/adapters";
 import {
+  apnsVoipConfig,
   boatApiKeyFromEnv,
   boatApiUrlFromEnv,
   mcpStdioOptionsFromEnv,
+  photonProjectsFromEnv,
   resolveCloudAgentProvider,
   resolveDeploymentModel,
   resolveSandboxProvider,
@@ -27,6 +33,9 @@ import {
 import { monitoringPseudonymSecret } from "@rakazo/logging";
 
 export { resolveCloudAgentProvider, resolveSandboxProvider } from "@rakazo/adapters";
+
+/** Where a local development stack serves the web client. */
+const DEFAULT_WEB_ORIGIN = "http://127.0.0.1:5173";
 
 export interface AppEnv {
   passwordAuth?: boolean;
@@ -64,7 +73,8 @@ export interface AppEnv {
   userDevicesEnabled: boolean;
   /** Operator menu links that frame a same-origin page (RAKAZO_NAV_LINKS). */
   navLinks?: NavLink[];
-  /** Verified accounts that review plugin submissions (RAKAZO_ADMIN_EMAILS), lowercased. */
+  /** Verified accounts that review plugin submissions, add stdio MCP servers, and grant access
+   * (RAKAZO_ADMIN_EMAILS), lowercased. */
   adminEmails: string[];
   phoneCallsEnabled: boolean;
   phoneCallRingSeconds: number;
@@ -109,6 +119,7 @@ export interface AppEnv {
   sendblueSigningSecret: string | undefined;
   sendbluePhoneNumber: string | undefined;
   expoAccessToken: string | undefined;
+  apnsVoip?: ApnsVoipConfig;
   smtpUrl: string | undefined;
   emailProvider?: string;
   welcomeEmailEnabled?: boolean;
@@ -137,6 +148,11 @@ export interface AppEnv {
   larkVerificationToken: string | undefined;
   larkEncryptKey: string | undefined;
   larkDomain: string | undefined;
+  photonProjectId: string | undefined;
+  photonProjectSecret: string | undefined;
+  photonWebhookSecret: string | undefined;
+  /** Extra named Photon projects (PHOTON_PROJECT_ID_<NAME>), each with its own number. */
+  photonProjects?: PhotonProjectCredentials[];
   /** Unknown chat senders auto-provision their own accounts when true. */
   messagingOpenSignup: boolean;
   /** Bot that owns team/external chat rooms on the messaging surface. */
@@ -210,6 +226,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
         }
       : undefined;
   const authSecret = resolveAuthSecret(source);
+  const webOrigin = resolveWebOrigin(source.WEB_ORIGIN, DEFAULT_WEB_ORIGIN, "WEB_ORIGIN");
   const sandboxProvider = resolveSandboxProvider(source);
   const cloudAgentProvider = resolveCloudAgentProvider(source);
   const deploymentModel = resolveDeploymentModel(source);
@@ -222,8 +239,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     realtimeDatabaseUrl: source.REALTIME_DATABASE_URL ?? required(source, "DATABASE_URL"),
     desktopStackToken: optional(source.RAKAZO_DESKTOP_STACK_TOKEN),
     authSecret,
-    authUrl: source.BETTER_AUTH_URL ?? source.WEB_ORIGIN ?? "http://127.0.0.1:5173",
-    webOrigin: source.WEB_ORIGIN ?? "http://127.0.0.1:5173",
+    authUrl: resolveWebOrigin(source.BETTER_AUTH_URL, webOrigin, "BETTER_AUTH_URL"),
+    webOrigin,
     passkeyAppleAppIds: list(source.PASSKEY_APPLE_APP_IDS),
     passkeyAndroidCertFingerprints: androidCertFingerprints(source.PASSKEY_ANDROID_CERT_SHA256),
     privacyPolicyUrl: optional(source.PRIVACY_POLICY_URL),
@@ -284,6 +301,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     sendblueSigningSecret: optional(source.SENDBLUE_SIGNING_SECRET),
     sendbluePhoneNumber: optional(source.SENDBLUE_PHONE_NUMBER),
     expoAccessToken: optional(source.EXPO_ACCESS_TOKEN),
+    apnsVoip: apnsVoipConfig(source),
     smtpUrl: optional(source.SMTP_URL),
     emailProvider: optional(source.EMAIL_PROVIDER),
     emailApiKey: optional(source.EMAIL_API_KEY),
@@ -310,6 +328,10 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     larkVerificationToken: optional(source.LARK_VERIFICATION_TOKEN),
     larkEncryptKey: optional(source.LARK_ENCRYPT_KEY),
     larkDomain: optional(source.LARK_DOMAIN),
+    photonProjectId: optional(source.PHOTON_PROJECT_ID),
+    photonProjectSecret: optional(source.PHOTON_PROJECT_SECRET),
+    photonWebhookSecret: optional(source.PHOTON_WEBHOOK_SECRET),
+    photonProjects: photonProjectsFromEnv(source),
     messagingOpenSignup: source.MESSAGING_OPEN_SIGNUP === "true",
     teamChatBotId: optional(source.TEAM_CHAT_BOT_ID) ?? optional(source.SLACK_RAKAZO_BOT_ID),
     teamChatJudgeProvider: optional(source.TEAM_CHAT_JUDGE_PROVIDER),
@@ -330,6 +352,22 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     browserMonitoring: browserMonitoringFromEnv(source),
     crispWebsiteId: parseCrispWebsiteId(source.CRISP_WEBSITE_ID),
   };
+}
+
+/**
+ * An origin used to build absolute links. Trailing slashes are dropped so
+ * `${webOrigin}/path` cannot produce `https://host//path`; providers reject a
+ * double-slash redirect URI as a mismatch against the one registered with them.
+ */
+function resolveWebOrigin(value: string | undefined, fallback: string, name: string): string {
+  const origin = (optional(value) ?? fallback).replace(/\/+$/, "");
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error();
+  } catch {
+    throw new Error(`${name} must be an absolute http(s) URL`);
+  }
+  return origin;
 }
 
 function required(source: NodeJS.ProcessEnv, key: string): string {

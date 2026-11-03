@@ -188,7 +188,8 @@ describe("cards from a run that does not end with its own reply", () => {
     offerActionsMock.mockClear();
     const f = fixture(async function* (request) {
       await request.executeTool!("offer_actions", offer, "call-1");
-      for (let index = 0; index < 6; index++) {
+      // An unchanged answer may be waiting on the page, so it gets the longer limit.
+      for (let index = 0; index < 25; index++) {
         yield {
           type: "tool" as const,
           name: "browser_snapshot",

@@ -6,7 +6,7 @@ import { builtinToolRunsUnasked, redactSecrets, sandboxCommandTimeoutMs } from "
 import { RunHistoryWriteError } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { redactShellStreams } from "./agent-environment.js";
-import { resolveLoginFill, shellCommandEnvironment } from "./bot-secrets.js";
+import { resolveCodeFill, resolveLoginFill, shellCommandEnvironment } from "./bot-secrets.js";
 import {
   browserActFromTool,
   browserNavigateFromTool,
@@ -17,6 +17,7 @@ import {
 } from "./browser-tools.js";
 import { BACKGROUND_WORK_LAUNCH } from "./computer-idle.js";
 import {
+  displayBotWorkspacePath,
   resolveBotUploadPath,
   resolveBotWorkspaceCwd,
   resolveBotWorkspacePath,
@@ -32,11 +33,13 @@ import {
   unchangedVisualStreakAfterPageBrowser,
 } from "./computer-tools.js";
 import {
+  desktopGuardApplies,
   desktopProtectionGuardMessage,
   protectedComputerLifecycleRefusal,
 } from "./desktop-command-guard.js";
 import { nativeShellCommandArgv, usesNativeShell } from "./native-shell.js";
 import { normalizeGoal } from "./page-decision-chain.js";
+import { purchaseApprovalOf } from "./purchase-gate.js";
 import { resolvePurchaseCardFill, resolvePurchasePayTokenFill } from "./purchase-service.js";
 import type { RunContext } from "./run-context.js";
 import { addRunSecrets } from "./run-context.js";
@@ -155,6 +158,13 @@ export async function pageBrowserTool(ctx: RunContext, call: ToolCall) {
   const redactions = () => [...ctx.secrets];
   const desktopTools =
     ctx.computer.graphicalToolsAllowed && builtinOffered(ctx.tools.disabled, "computer_act");
+  // A file the page downloads goes to the bot's own Downloads folder. Its name is redacted like any
+  // page text, so one that echoes a secret is listed under another name than it has on disk.
+  const downloads = {
+    folder: resolveBotWorkspacePath(ctx.computer.mode, bot.id, "Downloads"),
+    botPath: (path: string) =>
+      displayBotWorkspacePath(ctx.computer.mode, bot.id, "Downloads", path),
+  };
   // Resolved only when this call carries a goal. The chain's clicks are browser_act actions
   // no one approved, so it runs only where the model's own browser_act would run unasked.
   const decider =
@@ -163,6 +173,8 @@ export async function pageBrowserTool(ctx: RunContext, call: ToolCall) {
       ? await ctx.pageDecider()
       : undefined;
   return computerScreenToolResult(async () => {
+    // A call that presses an approved purchase spends it: a card it types leaves no pass for the next one.
+    const paying = purchaseApprovalOf(args.purchaseApproval);
     const result =
       name === "browser_navigate"
         ? redactBrowserResult(
@@ -171,7 +183,7 @@ export async function pageBrowserTool(ctx: RunContext, call: ToolCall) {
               await ctx.computer.get("tool", name),
               context,
               args,
-              { desktopTools, decider, redactions, tabs },
+              { desktopTools, downloads, decider, redactions, tabs },
             ),
             redactions(),
           )
@@ -182,7 +194,7 @@ export async function pageBrowserTool(ctx: RunContext, call: ToolCall) {
                 await ctx.computer.get("tool", name),
                 context,
                 args,
-                { desktopTools, tabs },
+                { desktopTools, downloads, tabs },
               ),
               redactions(),
             )
@@ -193,9 +205,11 @@ export async function pageBrowserTool(ctx: RunContext, call: ToolCall) {
               args,
               {
                 desktopTools,
+                downloads,
                 redactions,
                 decider,
                 tabs,
+                approvedPurchase: paying,
                 // Team bots may send only their own folder or shared/ off the computer; a
                 // private computer's helper already confines uploads to its home folder.
                 uploadRoots:
@@ -230,7 +244,20 @@ export async function pageBrowserTool(ctx: RunContext, call: ToolCall) {
                   );
                   if ("error" in resolved) return resolved;
                   addRunSecrets(ctx, resolved.redactions);
+                  if (!paying) ctx.state.walletHosts.add(new URL(resolved.origin).host);
                   return { text: resolved.text, origin: resolved.origin };
+                },
+                resolveCodeFill: async () => {
+                  const resolved = await resolveCodeFill({
+                    prisma: deps.prisma,
+                    secretStore: deps.secretStore,
+                    scope: run,
+                    runId: run.id,
+                  });
+                  if ("error" in resolved) return resolved;
+                  addRunSecrets(ctx, resolved.redactions);
+                  const { text, origin, claim, restore } = resolved;
+                  return { text, origin, claim, restore };
                 },
                 resolvePayTokenFill: async (step) => {
                   const paymentWallet = deps.paymentWallet;
@@ -243,10 +270,13 @@ export async function pageBrowserTool(ctx: RunContext, call: ToolCall) {
                   if ("error" in resolved) return resolved;
                   addRunSecrets(ctx, resolved.redactions);
                   const { text, origin, merchantAccountId } = resolved;
+                  if (!paying) ctx.state.walletHosts.add(new URL(origin).host);
                   return { text, origin, merchantAccountId };
                 },
               },
             );
+    // A snapshot saves the PDF its tab shows, which is a new file on the computer.
+    if ((result as { downloads?: unknown } | null)?.downloads) ctx.computer.checkpoint.markDirty();
     ctx.state.screen.unchangedVisualStreak = unchangedVisualStreakAfterPageBrowser(
       ctx.state.screen.unchangedVisualStreak,
       name,
@@ -309,7 +339,7 @@ export const computerTools: ToolHandlers = {
     const { name, args, executionId, observer } = call;
     const command = String(args.command ?? args.cmd ?? "");
     const refusal = protectedComputerLifecycleRefusal(command);
-    if (ctx.computer.graphical && refusal) {
+    if (desktopGuardApplies(ctx.computer) && refusal) {
       return call.finish({ error: desktopProtectionGuardMessage(refusal) });
     }
     const cwd = resolveBotWorkspaceCwd(
