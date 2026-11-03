@@ -259,10 +259,13 @@ async function main() {
           },
         );
       } catch (error) {
-        const failedRuns = await handles.prisma.run.findMany({
-          where: { status: "failed" },
-          select: { id: true, error: true },
-        });
+        // Every space's runs: an unscoped read returns none under row-level security.
+        const failedRuns = await runAsSystem("e2e report of failed agent runs", () =>
+          handles.prisma.run.findMany({
+            where: { status: "failed" },
+            select: { id: true, error: true },
+          }),
+        );
         if (failedRuns.length) console.error("Failed agent runs:", failedRuns);
         throw error;
       }
