@@ -93,6 +93,8 @@ export function SettingsOverlays({
   spaces,
   renameSpace,
   removeSpace,
+  refreshSpaces,
+  openAgentImport,
   alive,
   user,
   refetchSession,
@@ -114,6 +116,8 @@ export function SettingsOverlays({
   spaces: Space[];
   renameSpace: (spaceId: string, name: string) => Promise<void>;
   removeSpace: (spaceId: string) => Promise<void>;
+  refreshSpaces: () => Promise<void>;
+  openAgentImport: () => void;
   alive: RefObject<boolean>;
   user: { name?: string | null; email?: string } | undefined;
   refetchSession: () => Promise<unknown>;
@@ -155,6 +159,7 @@ export function SettingsOverlays({
           onSectionChange={(section) => setOverlay({ ...overlay, section })}
           billingEnabled={bootstrapMe?.billingEnabled === true}
           sandboxProvider={bootstrapMe?.sandboxProvider}
+          canConfigureComputers={bootstrapMe?.isAdmin === true}
           onSandboxProviderChange={(sandboxProvider) =>
             setBootstrapMe((prev) => (prev ? { ...prev, sandboxProvider } : prev))
           }
@@ -171,6 +176,11 @@ export function SettingsOverlays({
           onTimezoneChange={async (timezone) => {
             const nextMe = await rpc.preferences.update({ timezone });
             setBootstrapMe((prev) => (prev ? { ...prev, timezone: nextMe.timezone } : nextMe));
+          }}
+          onAccountImported={refreshSpaces}
+          onImportAgent={() => {
+            setOverlay(null);
+            openAgentImport();
           }}
           memoryConfig={memoryConfig}
           onMemoryConfigChange={(config) => {

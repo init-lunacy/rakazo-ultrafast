@@ -11,6 +11,7 @@ import {
   createSpaceForMember,
   InvalidSpaceNameError,
   IsolationError,
+  recordAuditEvent,
   renameSpaceForMember,
   runAsSystem,
   runAsTenant,
@@ -77,6 +78,12 @@ export function spacesRoutes(ctx: RouterContext) {
             }
             throw error;
           }
+          await recordAuditEvent({
+            action: "space.created",
+            actor: { type: "user", id: context.actor.userId },
+            spaceId: space.id,
+            target: { type: "space", id: space.id, label: space.name },
+          });
           return {
             id: space.id,
             name: space.name,
@@ -96,12 +103,19 @@ export function spacesRoutes(ctx: RouterContext) {
       rename: authed.spaces.rename.handler(({ context, input }) =>
         asMemberOf(deps.prisma, context.actor, input.spaceId, async () => {
           try {
-            return await renameSpaceForMember(deps.prisma, {
+            const renamed = await renameSpaceForMember(deps.prisma, {
               currentSpaceId: context.actor.spaceId,
               userId: context.actor.userId,
               spaceId: input.spaceId,
               name: input.name,
             });
+            await recordAuditEvent({
+              action: "space.renamed",
+              actor: { type: "user", id: context.actor.userId },
+              spaceId: renamed.id,
+              target: { type: "space", id: renamed.id, label: renamed.name },
+            });
+            return renamed;
           } catch (error) {
             if (error instanceof SpaceNotFoundError) {
               throw new ORPCError("NOT_FOUND", { message: error.message });
@@ -124,12 +138,26 @@ export function spacesRoutes(ctx: RouterContext) {
       remove: authed.spaces.remove.handler(({ context, input }) =>
         asMemberOf(deps.prisma, context.actor, input.spaceId, async () => {
           try {
+            const space = await deps.prisma.space.findUnique({
+              where: { id: input.spaceId },
+              select: { organizationId: true, name: true },
+            });
             const { activeSpaceId } = await deleteSpaceWithContent(
               deps,
               context.actor,
               input.spaceId,
               context.signal,
             );
+            if (space) {
+              await recordAuditEvent({
+                action: "space.deleted",
+                actor: { type: "user", id: context.actor.userId },
+                spaceId: input.spaceId,
+                organizationId: space.organizationId,
+                spaceName: space.name,
+                target: { type: "space", id: input.spaceId, label: space.name },
+              });
+            }
             return { ok: true as const, activeSpaceId };
           } catch (error) {
             if (error instanceof SpaceNotFoundError) {
@@ -304,7 +332,7 @@ async function memberSpaceNavigation(
           parentBotId: bot.parentBotId,
           spaceId: bot.spaceId,
           name: bot.name,
-          title: bot.title,
+          title: "",
           color: bot.color,
           avatarSet: bot.avatarSet,
           notifyOnFinish: bot.notifyOnFinish,

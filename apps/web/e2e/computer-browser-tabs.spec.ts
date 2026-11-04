@@ -1,5 +1,13 @@
-import { expect, type Page, test } from "@playwright/test";
-import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
+import type { Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  openBotPanelTab,
+  rpc,
+  signup,
+} from "./helpers";
 
 async function openComputer(page: Page) {
   const screenUrl = "https://screen.example/vnc.html";
@@ -15,7 +23,7 @@ async function openComputer(page: Page) {
       body: JSON.stringify({ json: { url: screenUrl } }),
     }),
   );
-  await page.getByRole("button", { name: "Agent computer", exact: true }).click();
+  await openBotPanelTab(page, "Computer");
   const preview = page.getByTestId("computer-preview");
   await preview.hover();
   await preview.getByTestId("computer-preview-open").click();

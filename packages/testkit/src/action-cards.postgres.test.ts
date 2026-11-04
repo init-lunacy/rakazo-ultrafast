@@ -54,7 +54,11 @@ describeWithDatabase("action cards (PostgreSQL)", () => {
   async function runUntilDone(runId: string) {
     for (let i = 0; i < 100; i++) {
       const run = await asSystem(handles.prisma).run.findUniqueOrThrow({ where: { id: runId } });
-      if (["completed", "failed", "cancelled"].includes(run.status)) return run;
+      if (["completed", "failed", "cancelled"].includes(run.status)) {
+        // The run job sends its push after the run is marked done.
+        await handles.awaitIdle?.();
+        return run;
+      }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     throw new Error("run did not finish");

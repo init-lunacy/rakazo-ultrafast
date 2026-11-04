@@ -248,6 +248,21 @@ it.each([
       cardField: "track2",
     },
   ],
+  ["a code fill without its origin", { kind: "fill", ref: "e1", text: "123456", field: "code" }],
+  [
+    "a code fill without its ref",
+    { kind: "fill", text: "123456", origin: "https://login.example.test", field: "code" },
+  ],
+  [
+    "a code typed by key presses",
+    {
+      kind: "type",
+      ref: "e1",
+      text: "123456",
+      origin: "https://login.example.test",
+      field: "code",
+    },
+  ],
   [
     "a pay token without the merchant's origin",
     { kind: "pay_token", text: "lpt_fake_secret", merchantAccountId: "acct_fake123" },
@@ -265,7 +280,9 @@ it.each([
     },
     body: JSON.stringify({ command: "act", actions: [action] }),
   });
-  expect(response.status).toBeGreaterThanOrEqual(400);
+  // The refusal is the supervisor's own, with a code that proves nothing was sent to the computer.
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ ok: false, code: "invalid_browser_request" });
   expect(mock.exec).not.toHaveBeenCalled();
 });
 
@@ -312,6 +329,7 @@ it.each([
     { text: "fake-password-1", origin: "https://login.example.test", field: "password" },
   ],
   ["card", { text: "4242424242424242", origin: "https://shop.example.test", field: "card" }],
+  ["one-time code", { text: "123456", origin: "https://login.example.test", field: "code" }],
   [
     "ref-less card",
     {
@@ -442,6 +460,49 @@ it.each([
   expect(result.uncertain).toBe(body.command === "act");
 });
 
+it("passes a settled step error through with the page, without a desktop fallback", async () => {
+  const settled = {
+    ok: false,
+    completed: 0,
+    uncertain: false,
+    url: "https://portal.example.test/",
+    title: "Portal",
+    tree: '- combobox "Year" [e5] options: "2023", "2024"',
+    elements: [
+      { ref: "e5", role: "combobox", name: "Year", options: [{ label: "2024", value: "2024" }] },
+    ],
+    error: 'This dropdown has no option "2019". Its options: "2023", "2024".',
+  };
+  const defaultExec = mock.exec.getMockImplementation()!;
+  mock.exec.mockImplementation(async (options: { Cmd: string[] }) =>
+    options.Cmd.includes("/usr/local/bin/rakazo-page-browser")
+      ? {
+          start: async () =>
+            Duplex.from({
+              readable: Readable.from([Buffer.from(JSON.stringify(settled))]),
+              writable: new PassThrough(),
+            }),
+          inspect: async () => ({ ExitCode: 0 }),
+        }
+      : defaultExec(options),
+  );
+  const response = await supervisorApp.request("/computers/computer-settled/browser", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+      "content-type": "application/json",
+      "x-rakazo-bot-id": "home",
+      "x-rakazo-space-id": "space",
+      "x-rakazo-screen-id": "first",
+      "x-rakazo-screen-lease-id": "run:1",
+    },
+    body: JSON.stringify({ command: "act", actions: [{ kind: "fill", ref: "e5", text: "2019" }] }),
+  });
+  const result = await response.json();
+  expect(result).toEqual(settled);
+  expect(result).not.toHaveProperty("fallback");
+});
+
 async function uploadRequest(roots?: unknown) {
   return supervisorApp.request("/computers/computer-upload/browser", {
     method: "POST",
@@ -476,6 +537,101 @@ it.each([["a", "b", "c"], [""], ["x".repeat(1025)]])(
     expect(mock.inspect).not.toHaveBeenCalled();
   },
 );
+
+async function browserRequest(body: Record<string, unknown>) {
+  return supervisorApp.request("/computers/computer-downloads/browser", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+      "content-type": "application/json",
+      "x-rakazo-bot-id": "home",
+      "x-rakazo-space-id": "space",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+it.each([
+  { command: "navigate", url: "https://bank.example/files/statement.pdf" },
+  { command: "act", actions: [{ kind: "click", ref: "e1" }] },
+  { command: "snapshot" },
+])("forwards the bot's download folder: $command", async (command) => {
+  const body = { ...command, downloads: "bots/b1/Downloads" };
+  expect(await (await browserRequest(body)).json()).toMatchObject({ ok: true });
+  expect(JSON.parse(mock.stdin.join(""))).toEqual(body);
+});
+
+it("forwards a snapshot's query", async () => {
+  const body = { command: "snapshot", query: "newsletter signup" };
+  expect(await (await browserRequest(body)).json()).toMatchObject({ ok: true });
+  expect(JSON.parse(mock.stdin.join(""))).toEqual(body);
+});
+
+it.each(["", "x".repeat(1025), 7])(
+  "rejects an invalid download folder before running commands: %j",
+  async (downloads) => {
+    const body = { command: "act", actions: [{ kind: "click", ref: "e1" }], downloads };
+    expect((await browserRequest(body)).status).toBeGreaterThanOrEqual(400);
+    expect(mock.exec).not.toHaveBeenCalled();
+  },
+);
+
+it("forwards a purchase approval on a click step, and nothing else on it", async () => {
+  const click = {
+    kind: "click",
+    ref: "e1",
+    approved: true,
+    site: "shop.example.test",
+    label: "Pay $5",
+    amount: "$5",
+  };
+  expect(
+    await (await browserRequest({ command: "act", actions: [{ ...click, extra: 1 }] })).json(),
+  ).toMatchObject({ ok: true });
+  expect(JSON.parse(mock.stdin.join("")).actions[0]).toEqual(click);
+});
+
+it("forwards an approved click on a page without a host, whose site is empty", async () => {
+  const click = { kind: "click", ref: "e1", approved: true, site: "", label: "Pay", amount: "" };
+  expect(await (await browserRequest({ command: "act", actions: [click] })).json()).toMatchObject({
+    ok: true,
+  });
+  expect(JSON.parse(mock.stdin.join("")).actions[0]).toEqual(click);
+});
+
+it("forwards a purchase check without acting", async () => {
+  const body = {
+    command: "purchase_check",
+    actions: [{ kind: "click", ref: "e1" }, { kind: "fill_card" }],
+    desktop: true,
+    enter: false,
+    points: [{ x: 640, y: 400 }],
+    unplaced: true,
+    // The tab the act will run in, which need not be the one in front.
+    target: "T-mine",
+  };
+  expect(await (await browserRequest(body)).json()).toMatchObject({ ok: true });
+  expect(JSON.parse(mock.stdin.join(""))).toEqual(body);
+  const helper = mock.exec.mock.calls.find(([options]) =>
+    options.Cmd.includes("/usr/local/bin/rakazo-page-browser"),
+  )!;
+  expect(helper[0].Cmd).toContain("purchase_check");
+});
+
+it.each([
+  { command: "purchase_check", actions: Array.from({ length: 25 }, () => ({ kind: "click" })) },
+  { command: "purchase_check", desktop: "yes" },
+  { command: "purchase_check", target: "" },
+  { command: "purchase_check", unplaced: "yes" },
+  { command: "purchase_check", points: [{ x: "1", y: 2 }] },
+  { command: "purchase_check", points: Array.from({ length: 25 }, () => ({ x: 1, y: 2 })) },
+  { command: "act", actions: [{ kind: "click", ref: "e1", site: "x".repeat(254) }] },
+  { command: "act", actions: [{ kind: "click", ref: "e1", label: "x".repeat(201) }] },
+  { command: "act", actions: [{ kind: "click", ref: "e1", amount: 5 }] },
+])("rejects a malformed purchase request before running commands: %j", async (body) => {
+  expect((await browserRequest(body)).status).toBeGreaterThanOrEqual(400);
+  expect(mock.exec).not.toHaveBeenCalled();
+});
 
 it.each([undefined, "5"])("forwards the upload size override only when set: %j", async (limit) => {
   const original = process.env.RAKAZO_BROWSER_UPLOAD_MAX_BYTES;

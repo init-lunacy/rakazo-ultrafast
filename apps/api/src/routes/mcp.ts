@@ -4,6 +4,7 @@ import { runContinueJob } from "@rakazo/adapter-kit";
 import {
   createPluginMarketplace,
   isTransientFetchError,
+  McpOAuthClientRequiredError,
   persistPreparedSecret,
   pluginPreviewDto,
   prepareApiInstall,
@@ -15,7 +16,7 @@ import {
 } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import { signupSurveyAsksTeamSize } from "@rakazo/contracts";
-import { containsSecret } from "@rakazo/core";
+import { comparePlugins, containsSecret, matchesPluginQuery } from "@rakazo/core";
 import type { Prisma } from "@rakazo/db";
 import {
   AVAILABILITY_SELECT,
@@ -25,6 +26,7 @@ import {
   spaceAvailability,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import { requireAdmin } from "../admins.js";
 import {
   assertNameFreeWhereAvailable,
   lockOwner,
@@ -37,10 +39,11 @@ import {
   resolveMcpApprovalCards,
   revertConnectedMcpApprovals,
 } from "../mcp-approval.js";
-import { buildMcpUpdateMaterial } from "../mcp-material.js";
+import { buildMcpUpdateMaterial, legacyMcpArgs } from "../mcp-material.js";
 import {
   assertMcpOAuthTemplates,
   assertMcpRemoteEndpoint,
+  assertMcpStdioAdmin,
   assertMcpStdioCommand,
   MCP_OAUTH_PENDING_MESSAGE,
   mayUsePrivateEndpoint,
@@ -55,6 +58,11 @@ import {
   startOnboarding,
 } from "../onboarding.js";
 import { installPlugin, lockPluginInstalls, setPluginParts } from "../plugin-installs.js";
+import {
+  approvedPluginEntries,
+  listPluginSubmissions,
+  reviewPluginSubmission,
+} from "../plugin-submissions.js";
 import type { RouterContext } from "./context.js";
 import { computerContext, isUniqueViolation } from "./shared.js";
 
@@ -110,9 +118,29 @@ export function mcpRoutes(ctx: RouterContext) {
   };
   return {
     marketplace: {
-      catalog: authed.marketplace.catalog.handler(({ input }) =>
-        pluginMarketplace.catalog(input.query),
-      ),
+      catalog: authed.marketplace.catalog.handler(async ({ input }) => {
+        const [catalog, approved] = await Promise.all([
+          pluginMarketplace.catalog(input.query),
+          approvedPluginEntries(deps.prisma),
+        ]);
+        // A plugin also listed by another registry shows once, as the version we reviewed.
+        const reviewed = new Set(approved.map((entry) => entry.installedSource));
+        return {
+          ...catalog,
+          entries: [
+            ...approved.filter((entry) => matchesPluginQuery(entry, input.query)),
+            ...catalog.entries.filter((entry) => !reviewed.has(entry.installedSource)),
+          ].sort(comparePlugins),
+        };
+      }),
+      submissions: authed.marketplace.submissions.handler(async ({ context, input }) => {
+        await requireAdmin(deps, context.actor.userId);
+        return listPluginSubmissions(deps.prisma, input.status);
+      }),
+      review: authed.marketplace.review.handler(async ({ context, input }) => {
+        await requireAdmin(deps, context.actor.userId);
+        return reviewPluginSubmission(deps, input, context.signal);
+      }),
     },
     capabilities: {
       list: authed.capabilities.list.handler(async ({ context }) => {
@@ -429,6 +457,7 @@ export function mcpRoutes(ctx: RouterContext) {
                     name: existing.name,
                     description: existing.description,
                     enabled: existing.enabled,
+                    verbatimResults: existing.verbatimResults,
                     transport: existing.transport as "streamable_http" | "sse",
                     endpoint: existing.endpoint!,
                     headers: (existingMaterial.headers ?? {}) as Record<string, string>,
@@ -442,13 +471,17 @@ export function mcpRoutes(ctx: RouterContext) {
               await assertMcpRemoteEndpoint(nextEndpoint, deps);
             }
             if (config.transport === "stdio") {
-              assertMcpStdioCommand(config.command, deps);
+              await assertMcpStdioCommand(config.command, context.actor, deps);
               await assertMcpRemoteEndpoint(config.oauthClient?.authorizationServer, deps);
+            } else if (existing.transport === "stdio") {
+              await assertMcpStdioAdmin(context.actor, deps);
             }
             const endpointChanged = existing.endpoint !== nextEndpoint;
+            existingMaterial.args ??= legacyMcpArgs(existing.args);
             const update = buildMcpUpdateMaterial(existingMaterial, config, {
               clearOAuth: endpointChanged,
               endpointChanged,
+              commandChanged: existing.command !== ("command" in config ? config.command : null),
             });
             if (update.action === "store" && config.transport === "stdio") {
               await assertMcpRemoteEndpoint(
@@ -533,7 +566,8 @@ export function mcpRoutes(ctx: RouterContext) {
                       transport: config.transport,
                       endpoint: nextEndpoint,
                       command: "command" in config ? config.command : null,
-                      args: ("args" in config ? config.args : []) as Prisma.InputJsonValue,
+                      args: [],
+                      hasArgs: update.action === "store" && Boolean(update.material.args?.length),
                       env: ("env" in config
                         ? Object.fromEntries(Object.keys(config.env).map((key) => [key, true]))
                         : {}) as Prisma.InputJsonValue,
@@ -549,6 +583,7 @@ export function mcpRoutes(ctx: RouterContext) {
                         ? Object.fromEntries(Object.keys(config.headers).map((key) => [key, true]))
                         : {}) as Prisma.InputJsonValue,
                       enabled: config.enabled,
+                      verbatimResults: config.verbatimResults,
                       revision: { increment: 1 },
                       // The old verdict is about the old config.
                       healthStatus: "unknown",
@@ -596,6 +631,68 @@ export function mcpRoutes(ctx: RouterContext) {
           const fresh = await deps.prisma.mcpServer.findFirst({ where: scope });
           if (!fresh) throw new IsolationError();
           return mcpServerDto(fresh, oauth);
+        }),
+        agents: authed.mcp.servers.agents.handler(async ({ context, input }) => {
+          const owner = { spaceId: context.actor.spaceId, userId: context.actor.userId };
+          const { server, assignments, seqs } = await deps.prisma.$transaction(async (tx) => {
+            const existing = await tx.mcpServer.findFirst({
+              where: { id: input.id, ...availableInSpace(context.actor) },
+              select: { id: true },
+            });
+            if (!existing) throw new IsolationError();
+            const server = await tx.mcpServer.update({
+              where: { id: existing.id },
+              data: { allBots: input.allBots },
+              include: { availableIn: AVAILABILITY_SELECT },
+            });
+            let seqs: Array<{ threadId: string; seq: number }> = [];
+            // Under allBots the assignments stay as they were, so choosing agents again restores them.
+            if (!input.allBots) {
+              const botIds = [...new Set(input.botIds)];
+              const bots = await tx.bot.findMany({
+                where: { ...owner, id: { in: botIds } },
+                select: { id: true },
+              });
+              if (bots.length !== botIds.length) throw new IsolationError();
+              const previous = await tx.botMcpServer.findMany({
+                where: { ...owner, serverId: server.id },
+                select: { botId: true },
+              });
+              const removed = previous
+                .map((row) => row.botId)
+                .filter((botId) => !botIds.includes(botId));
+              await tx.botMcpServer.deleteMany({
+                where: { ...owner, serverId: server.id, botId: { in: removed } },
+              });
+              await tx.botMcpServer.createMany({
+                data: botIds.map((botId) => ({ ...owner, botId, serverId: server.id })),
+                skipDuplicates: true,
+              });
+              seqs = (
+                await Promise.all(
+                  removed.map((botId) =>
+                    revertConnectedMcpApprovals(
+                      onboardingDeps,
+                      context.actor,
+                      { botId, serverId: server.id, status: "pending" },
+                      tx,
+                    ),
+                  ),
+                )
+              ).flat();
+            }
+            const assignments = await tx.botMcpServer.findMany({
+              where: { ...owner, serverId: server.id },
+              orderBy: { createdAt: "asc" },
+            });
+            return { server, assignments, seqs };
+          });
+          for (const event of seqs) await deps.events.notify(event.threadId, event.seq);
+          const oauth = await mcpOAuth.summaryFor(server, context.actor);
+          return {
+            server: mcpServerDto(server, oauth),
+            assignments: assignments.map(mcpAssignmentDto),
+          };
         }),
         remove: authed.mcp.servers.remove.handler(async ({ context, input }) => {
           const server = await deps.prisma.mcpServer.findFirst({
@@ -803,15 +900,26 @@ export function mcpRoutes(ctx: RouterContext) {
         begin: authed.mcp.oauth.begin.handler(async ({ context, input }) => {
           try {
             const expectedRedirect = new URL("/mcp/oauth/callback", deps.env.webOrigin).toString();
-            if (new URL(input.redirectUri).toString() !== expectedRedirect) {
+            // Native clients omit the redirect; the registered web callback is always used.
+            if (input.redirectUri && new URL(input.redirectUri).toString() !== expectedRedirect) {
               throw new Error("MCP OAuth redirect URI is not allowed");
             }
             return await mcpOAuth.begin({
               ...input,
+              redirectUri: expectedRedirect,
               spaceId: context.actor.spaceId,
               userId: context.actor.userId,
             });
           } catch (error) {
+            if (error instanceof McpOAuthClientRequiredError) {
+              await recordMcpServerHealth(
+                deps.prisma,
+                input.serverId,
+                { status: "error", message: error.message },
+                error.revision,
+              );
+              throw new ORPCError(error.code, { status: 400, message: error.message });
+            }
             throw new ORPCError("BAD_REQUEST", {
               message: error instanceof Error ? error.message : "Could not start MCP OAuth",
             });

@@ -27,7 +27,9 @@ describePostgres("taking an action card (PostgreSQL)", () => {
   const deps = () => ({
     prisma,
     events: createThreadEvents(prisma),
-    jobs: { enqueue: async () => undefined },
+    // Only enqueue is reached; the rest of each port would never be called here.
+    jobs: { enqueue: async () => undefined } as never,
+    sandbox: {} as never,
   });
 
   beforeAll(async () => {
@@ -243,7 +245,7 @@ describePostgres("taking an action card (PostgreSQL)", () => {
       blocks: [{ kind: "text", text: "Done." }],
       markUnread: false,
     });
-    const continuationRunId = finished?.continuationRunId;
+    const continuationRunId = finished ? finished.continuationRunId : undefined;
     expect(continuationRunId).toEqual(expect.any(String));
     const sent = await sentFor(ids.threadId, offer.id);
     expect(await prisma.steeringMessage.findFirst({ where: { messageId: sent.id } })).toMatchObject(
